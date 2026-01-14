@@ -1,0 +1,70 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------- PACKAGES ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage[backend=biber,style=numeric,language=french]{biblatex}
+\addbibresource{references.bib}
+
+% ---------- Bibliography ----------
+\usepackage{filecontents}
+% ---------- PAGE SETUP ----------
+\geometry{
+  margin=1in
+}
+\setstretch{1.15}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+% ---------- TITLE INFO ----------
+\title{\textbf{Research Proposal: Modeling Nicotinic Receptor Dynamics in Alzheimer's Disease}}
+\author{Valentin Jacquin}
+\date{\today}
+
+% ---------- DOCUMENT ----------
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Alzheimer's disease (AD) is a widespread neurodegenerative disorder with a high prevalence in the aging population, currently affecting over 50 millions individuals worldwide~\cite{Breijyeh2020}. However, the cognitive impairments associated with Alzheimer's disease (AD) remain poorly understood. While several studies have reported increases in cortical activity in AD~\cite{Palop2007}, the underlying mechanisms remain debated. Experimental evidence indicates that amyloid-beta (A$\beta$) peptides modulate the function of nicotinic acetylcholine receptor (nAChR) subtypes either by activating or inhibiting them. More specifically, $\alpha7$ and $\beta2^*$ subunits seems to be particularly affected by A$\beta$ interactions~\cite{Lombardo2015},~\cite{Parri2011}.
+
+In this work, we hypothesize that the progressive accumulation of A$\beta$ disrupts nAChR mechanisms, leading to an disregulation in prefrontal cortex (PFC) network dynamics. This disruption would be one of the contributor factors to the cognitive deficits observed in AD. Previous studies have demonstrated that nAChRs play a key role in modulating interneuron activity and the coordination of network states within the PFC~\cite{Koukouli2017}. The specific contribution of different receptor subunits to this modulation has also been highlighted~\cite{Maskos2014}. Still, the precise interactions between nAChR dysfunction and the resulting alterations in PFC network dynamics in AD remain to be explained.
+
+To better capture these mechanisms, previous work has developed reduced population-level models describing the interactions between pyramidal neurons and major interneuron subtypes within PFC~\cite{Koukouli2025}. This modeling framework reproduces the hyperactivity observed in early AD stages and identifies $\alpha7$ nAChRs as critical modulators of this phenomenon. Moreover, it suggests that $\beta2^*$ and $\alpha5$ nAChRs could represent promising therapeutic targets for restoring physiological network balance.
+
+\section{Proposed Research}
+
+Previous research has primarily focused on resting-state network dynamics in AD. These first explorations have showned promising results in linking nAChR dysfunction to altered PFC activity patterns~\cite{Rooy2021},~\cite{Koukouli2025}. However, to link these findings to the observed cognitive deficits in AD, it is essential to investigate how these network alterations manifest during active cognitive tasks.
+The PFC is known to be a key region in working memory, which deteriorate in early AD~\cite{Huntley2010}. Furthermore, electrophysiological recordings during working memory tasks have been shown to reliably distinguish AD patients from healthy controls~\cite{Perpetuini2020}, underscoring the connection between altered neural dynamics and cognitive impairment.
+
+In this project, we will extend the existing model to investigate how nAChR dysfunction alters PFC network activity during task-like conditions. First, we will examine how varying external input currents affect the alternation between high- and low-activity states previously observed~\cite{Rooy2021}. But also the frequency regime of these states. Indeed, previous results have shown an oscillation between high and low activity states in the PFC~\cite{Rooy2021}, but at another order of magnitude than the one observed experimentally during working memory tasks ~\cite{Compte2003}. We will explore whether modulating the input current can bring the model dynamics closer to these experimental observations.
+Then, we will adapt the previously developed model on~\cite{Barbosa2020}'s bump attractor framework for working memory, using our nAChR-modulated PFC network as the underlying architecture. Finally, through these simulations, we will simulate receptor-specific perturbations to assess their impact on these dynamics with various input levels.
+
+
+\subsubsection*{Objectives and expected results}
+\begin{itemize}
+  \item \textbf{Characterize the effect of input modulation on network dynamics.} We will test whether varying the input current alters the bi-stability characteristics of the network, anylising the frequency of high and low activity states. Our hypothesis is that stronger input currents may increase the duration of high-activity periods, possibly leading to a one-stability state at a certain treshold input. The interneuron activity would be the key mediator of a self-sustained state. This would align with experimental observations of increased cortical activity during the delay periods of working memory tasks~\cite{Funahashi2006}.
+  
+  \item \textbf{Implement a bump attractor model of working memory using the nAChR-modulated PFC network.} We will adapt~\cite{Barbosa2020}'s bump attractor framework to our existing model, using our reduced-population model as the underlying architecture. We expect that the network will be able to maintain localized activity bumps during delay periods, mimicking working memory processes. With our dynamical model of neuron populations, we will be able to investigate the precise role of interactions in the emergence and stability of these bumps.
+
+  \item \textbf{Assess the impact of different nAChR subunit dysfunctions on working memory dynamics.} Based on previous work simulating specific receptor perturbations (e.g., $\alpha7$ or $\beta2^*$ nAChR dysfunction), we will simulate these alterations within the working memory framework. We would expect to have concordance with the previous findings on resting-state dynamics~\cite{Rooy2021}, with $\alpha7$ nAChR dysfunction leading to a longer but weaker high-activity state, while $\beta2^*$ nAChR dysfunction would results in a more stable high-activity state. We expect that these changes would be observed in the working memory dynamics as change in the delay period lastency and stability.
+  \item \textbf{Nicotinic regulation explorations.} Previous work has highlighted the impact of nicotine supplementation on restoring physiological network dynamics in AD models~\cite{Koukouli2017}. We will explore a nicotine-like input to the network in our build context of working memory, assessing its potential to rescue normal activity patterns and improve working memory performance under nAChR dysfunction conditions.
+\end{itemize}
+
+
+% ---------- REFERENCES ----------
+\printbibliography[]
+\end{document}
