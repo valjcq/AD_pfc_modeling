@@ -94,6 +94,7 @@ def add_simulation_args(parser: argparse.ArgumentParser) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """Run a simulation and plot the results."""
+    from dataclasses import replace
     from .plotting import plot_simulation_dashboard, print_simulation_summary
 
     # Load or create parameters
@@ -104,11 +105,28 @@ def cmd_run(args: argparse.Namespace) -> None:
         params = CircuitParams()
         print("Using default parameters")
 
+    # Apply transient settings if enabled
+    use_transient = args.enable_transient
+    if use_transient:
+        params = replace(
+            params,
+            trans_enabled=True,
+            trans_start_ms=args.trans_start_ms,
+            trans_duration_ms=args.trans_duration_ms,
+            I_trans=args.trans_magnitude,
+        )
+
     # Print key parameter values
     print("\nKey parameters:")
     print(f"  tau_s = {params.tau_s:.2f} ms")
     print(f"  sigma_s = {params.sigma_s:.2f} (noise)")
     print(f"  g_gaba = {params.g_gaba():.2f} (GABA scaling)")
+
+    if use_transient:
+        trans_end = params.trans_start_ms + params.trans_duration_ms
+        print(f"\nTransient current:")
+        print(f"  I_trans = {params.I_trans:.2f}")
+        print(f"  Window: {params.trans_start_ms:.1f} - {trans_end:.1f} ms")
 
     # Run simulation
     print(f"\nRunning simulation: T={args.T_ms} ms, dt={args.dt_ms} ms, noise={args.noise_type}")
@@ -120,6 +138,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         seed=args.seed,
         noise_type=args.noise_type,
         tau_noise_ms=args.tau_noise_ms,
+        use_transient=use_transient,
     )
 
     # Print summary
@@ -134,6 +153,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             time_range = (float(parts[0]), float(parts[1]))
 
     title = f"Circuit Model Simulation (noise={args.noise_type})"
+    if use_transient:
+        title += f" [Transient: {params.trans_start_ms:.0f}-{params.trans_start_ms + params.trans_duration_ms:.0f} ms]"
+
     plot_simulation_dashboard(
         result,
         title=title,
@@ -291,6 +313,16 @@ Examples:
     run_parser.add_argument("--no_show", action="store_true",
                             help="Don't display the plot (useful for batch processing)")
 
+    # Transient current options
+    run_parser.add_argument("--enable_transient", action="store_true",
+                            help="Enable time-dependent transient current (applied only during transient window)")
+    run_parser.add_argument("--trans_start_ms", type=float, default=1000.0,
+                            help="Time when transient starts (ms), default=1000")
+    run_parser.add_argument("--trans_duration_ms", type=float, default=500.0,
+                            help="Duration of transient pulse (ms), default=500")
+    run_parser.add_argument("--trans_magnitude", type=float, default=5.0,
+                            help="Magnitude of transient current (I_trans), default=5.0")
+
     # =========================================================================
     # OPTIMIZE subcommand
     # =========================================================================
@@ -352,9 +384,9 @@ Examples:
                             help="Show which parameters are free vs frozen")
 
     # I/O settings
-    opt_parser.add_argument("--save_best_json", type=str, default="",
+    opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
                             help="Save best parameters to JSON file")
-    opt_parser.add_argument("--log_file", type=str, default="",
+    opt_parser.add_argument("--log_file", type=str, default="results_log.jsonl",
                             help="Log results to JSONL file")
     opt_parser.add_argument("--log_interval", type=int, default=50,
                             help="Log every N steps")
