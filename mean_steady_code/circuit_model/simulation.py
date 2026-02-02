@@ -27,6 +27,8 @@ class SimulationResult:
     t_ms: np.ndarray      # Shape: (n_steps,) - Time points in ms
     r: np.ndarray         # Shape: (n_steps, 4) - Firing rates [pyr, som, pv, vip]
     I_adapt: np.ndarray   # Shape: (n_steps, 2) - Adaptation currents [pyr, som]
+    # Optional transient window info for plotting
+    transient_window: Optional[tuple[float, float]] = None  # (start_ms, end_ms)
 
 
 def simulate_circuit(
@@ -39,6 +41,7 @@ def simulate_circuit(
     seed: Optional[int] = None,
     noise_type: NoiseType = "none",
     tau_noise_ms: float = 5.0,
+    use_transient: bool = False,
 ) -> SimulationResult:
     """
     Simulate the 4-population circuit using Euler integration.
@@ -58,6 +61,8 @@ def simulate_circuit(
         seed: Random seed for reproducibility
         noise_type: "none", "white" (Gaussian), or "ou" (Ornstein-Uhlenbeck)
         tau_noise_ms: Time constant for OU noise (if used)
+        use_transient: If True and params.trans_enabled=True, apply time-dependent
+                       transient current to PYR (only during transient window)
 
     Returns:
         SimulationResult with time points, firing rates, and adaptation currents
@@ -126,11 +131,16 @@ def simulate_circuit(
         # synapses that reduce input resistance, effectively dividing excitation.
         # This is biologically accurate: PV targets soma/proximal dendrites.
         denom = 1.0 + ggaba * params.w_pe * r_pv  # Shunting denominator
+        # Use time-dependent current if transient mode is enabled
+        if use_transient:
+            I_ext_pyr_val = params.I_ext_pyr_at_time(t[k])
+        else:
+            I_ext_pyr_val = params.I_ext_pyr()
         I_pyr = (
             (params.w_ee * r_pyr) / denom  # Recurrent excitation (divided by PV)
             - ggaba * params.w_se * r_som  # SOM dendritic inhibition (subtractive)
             - Iap                          # Spike-frequency adaptation
-            + params.I_ext_pyr()           # External input (baseline + transient)
+            + I_ext_pyr_val                # External input (baseline + transient)
         )
 
         # --- SOM INPUT ---
@@ -194,7 +204,13 @@ def simulate_circuit(
         I_adapt[k + 1, 0] = Iap + dt_ms * dIap
         I_adapt[k + 1, 1] = Ias + dt_ms * dIas
 
-    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt)
+    # Compute transient window for plotting if enabled
+    transient_window = None
+    if use_transient and params.trans_enabled:
+        trans_end = params.trans_start_ms + params.trans_duration_ms
+        transient_window = (params.trans_start_ms, trans_end)
+
+    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt, transient_window=transient_window)
 
 
 def mean_rates(result: SimulationResult, burn_in_ms: float, window_ms: float) -> np.ndarray:

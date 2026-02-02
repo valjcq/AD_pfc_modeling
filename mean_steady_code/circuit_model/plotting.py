@@ -49,6 +49,44 @@ ADAPTATION_COLORS = {
     "PYR": "#D55E00",  # Vermillion (darker orange)
     "SOM": "#0072B2",  # Blue (darker)
 }
+TRANSIENT_COLOR = "#888888"  # Gray for transient markers
+
+
+def _add_transient_markers(
+    ax,
+    transient_window: tuple[float, float],
+    time_range: Optional[tuple[float, float]] = None,
+    add_legend: bool = False,
+):
+    """
+    Add vertical lines and shading to indicate transient current window.
+
+    Parameters:
+        ax: Matplotlib axis
+        transient_window: (start_ms, end_ms) of transient
+        time_range: Optional (t_start, t_end) for clipping
+        add_legend: Whether to add a legend entry
+    """
+    t_start, t_end = transient_window
+
+    # Clip to visible range if specified
+    if time_range is not None:
+        vis_start, vis_end = time_range
+        # Only draw if transient overlaps with visible range
+        if t_end < vis_start or t_start > vis_end:
+            return
+        # Clip transient window to visible range
+        t_start = max(t_start, vis_start)
+        t_end = min(t_end, vis_end)
+
+    # Shaded region
+    ax.axvspan(t_start, t_end, alpha=0.15, color=TRANSIENT_COLOR,
+               label="Transient ON" if add_legend else None)
+    # Vertical lines at boundaries
+    ax.axvline(transient_window[0], color=TRANSIENT_COLOR, linestyle="--",
+               linewidth=1.5, alpha=0.7)
+    ax.axvline(transient_window[1], color=TRANSIENT_COLOR, linestyle="--",
+               linewidth=1.5, alpha=0.7)
 
 
 def plot_firing_rates(
@@ -57,6 +95,7 @@ def plot_firing_rates(
     title: str = "Population Firing Rates",
     show_legend: bool = True,
     time_range: Optional[tuple[float, float]] = None,
+    show_transient: bool = True,
 ):
     """
     Plot firing rates over time for all 4 populations.
@@ -67,6 +106,7 @@ def plot_firing_rates(
         title: Plot title
         show_legend: Whether to show legend
         time_range: Optional (t_start, t_end) in ms to zoom in
+        show_transient: Whether to show transient window markers (if present)
 
     Returns:
         The matplotlib axis object
@@ -84,6 +124,10 @@ def plot_firing_rates(
         mask = (t >= time_range[0]) & (t <= time_range[1])
         t = t[mask]
         r = r[mask]
+
+    # Draw transient markers first (so they're behind the data)
+    if show_transient and result.transient_window is not None:
+        _add_transient_markers(ax, result.transient_window, time_range, add_legend=show_legend)
 
     for i, name in enumerate(POPULATION_NAMES):
         ax.plot(t, r[:, i], label=name, color=POPULATION_COLORS[name], linewidth=1.5)
@@ -108,6 +152,7 @@ def plot_adaptation(
     title: str = "Adaptation Currents",
     show_legend: bool = True,
     time_range: Optional[tuple[float, float]] = None,
+    show_transient: bool = True,
 ):
     """
     Plot adaptation currents (I_adapt) over time for PYR and SOM.
@@ -118,6 +163,7 @@ def plot_adaptation(
         title: Plot title
         show_legend: Whether to show legend
         time_range: Optional (t_start, t_end) in ms to zoom in
+        show_transient: Whether to show transient window markers (if present)
 
     Returns:
         The matplotlib axis object
@@ -135,6 +181,10 @@ def plot_adaptation(
         mask = (t >= time_range[0]) & (t <= time_range[1])
         t = t[mask]
         I_adapt = I_adapt[mask]
+
+    # Draw transient markers first (so they're behind the data)
+    if show_transient and result.transient_window is not None:
+        _add_transient_markers(ax, result.transient_window, time_range, add_legend=False)
 
     ax.plot(t, I_adapt[:, 0], label="I_adapt (PYR)", color=ADAPTATION_COLORS["PYR"], linewidth=1.5)
     ax.plot(t, I_adapt[:, 1], label="I_adapt (SOM)", color=ADAPTATION_COLORS["SOM"], linewidth=1.5)

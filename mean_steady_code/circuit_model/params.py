@@ -117,6 +117,15 @@ class CircuitParams:
     act_alpha5: float = 1.0  # alpha5 nAChR activation (affects VIP)
 
     # =========================================================================
+    # TRANSIENT CURRENT TIMING (for time-varying stimulation)
+    # =========================================================================
+    # When trans_enabled=True, I_trans is applied only during [trans_start_ms, trans_start_ms + trans_duration_ms)
+    # When trans_enabled=False, I_trans is always added to PYR input (backward compatible)
+    trans_start_ms: float = 1000.0     # When transient starts (ms)
+    trans_duration_ms: float = 500.0   # Duration of transient pulse (ms)
+    trans_enabled: bool = False        # Whether to use time-dependent transient
+
+    # =========================================================================
     # TRANSFER FUNCTION PARAMETERS (Wong-Wang)
     # =========================================================================
     # Each population has its own threshold (Theta) and gain (alpha)
@@ -142,8 +151,23 @@ class CircuitParams:
         return self.g_gaba_base + self.g_alpha7
 
     def I_ext_pyr(self) -> float:
-        """Total external current to PYR."""
+        """Total external current to PYR (static, for optimization)."""
         return self.I0_pyr + self.I_trans
+
+    def I_ext_pyr_at_time(self, t_ms: float) -> float:
+        """
+        Total external current to PYR at time t_ms.
+
+        When trans_enabled=True, I_trans is only applied during the transient window.
+        When trans_enabled=False, behaves like I_ext_pyr() (always includes I_trans).
+        """
+        if not self.trans_enabled:
+            return self.I0_pyr + self.I_trans
+        # Time-dependent transient
+        trans_end_ms = self.trans_start_ms + self.trans_duration_ms
+        if self.trans_start_ms <= t_ms < trans_end_ms:
+            return self.I0_pyr + self.I_trans
+        return self.I0_pyr
 
     def I_ext_pv(self) -> float:
         """Total external current to PV (with alpha7 modulation)."""
