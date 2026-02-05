@@ -104,10 +104,10 @@ def loss_from_ko_pyr(
     2. The change from baseline should be in the correct direction
     3. The effect magnitude should be similar to expected
 
-    Example: If alpha7 KO should increase PYR firing from 5 Hz to 7 Hz:
+    Example: If alpha7 KO should increase PYR firing from 5 to 7:
         - target_pyr = 7.0 (expected under KO)
         - base_pyr = 5.0 (baseline condition)
-        - expected change = +2 Hz
+        - expected change = +2
         - If actual change is negative, apply wrong_direction penalty
         - If actual change is too small, apply min_effect penalty
     """

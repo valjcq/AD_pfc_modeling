@@ -50,7 +50,8 @@ def print_parameter_status(
         "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs", "w_vv"],
-        "External currents": ["I0_pyr", "I_trans", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
+        "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
+        "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g_e", "g_i"],
         "Receptor activation": ["act_alpha7", "act_beta2", "act_alpha5"],
     }
@@ -113,7 +114,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             trans_enabled=True,
             trans_start_ms=args.trans_start_ms,
             trans_duration_ms=args.trans_duration_ms,
-            I_trans=args.trans_magnitude,
+            trans_factor=args.trans_factor,
         )
 
     # Print key parameter values
@@ -124,8 +125,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     if use_transient:
         trans_end = params.trans_start_ms + params.trans_duration_ms
-        print(f"\nTransient current:")
-        print(f"  I_trans = {params.I_trans:.2f}")
+        print(f"\nTransient current (applied to all populations):")
+        print(f"  trans_factor = {params.trans_factor:.2f} (fraction of I0)")
         print(f"  Window: {params.trans_start_ms:.1f} - {trans_end:.1f} ms")
 
     # Run simulation
@@ -162,6 +163,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         time_range=time_range,
         save_path=args.save_plot if args.save_plot else None,
         show=not args.no_show,
+        unit=args.unit,
     )
 
 
@@ -209,17 +211,18 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     # Print targets
+    unit = args.unit
     print("\nOptimization targets:")
-    print(f"  PYR: {target.mean_r_pyr} Hz")
-    print(f"  SOM: {target.mean_r_som} Hz")
-    print(f"  PV:  {target.mean_r_pv} Hz")
-    print(f"  VIP: {target.mean_r_vip} Hz")
+    print(f"  PYR: {target.mean_r_pyr} {unit}")
+    print(f"  SOM: {target.mean_r_som} {unit}")
+    print(f"  PV:  {target.mean_r_pv} {unit}")
+    print(f"  VIP: {target.mean_r_vip} {unit}")
     if target.alpha7_ko_pyr is not None:
-        print(f"  alpha7 KO PYR: {target.alpha7_ko_pyr} Hz")
+        print(f"  alpha7 KO PYR: {target.alpha7_ko_pyr} {unit}")
     if target.alpha5_ko_pyr is not None:
-        print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} Hz")
+        print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} {unit}")
     if target.beta2_ko_pyr is not None:
-        print(f"  beta2 KO PYR: {target.beta2_ko_pyr} Hz")
+        print(f"  beta2 KO PYR: {target.beta2_ko_pyr} {unit}")
     print()
 
     # Run optimization
@@ -320,8 +323,11 @@ Examples:
                             help="Time when transient starts (ms), default=1000")
     run_parser.add_argument("--trans_duration_ms", type=float, default=500.0,
                             help="Duration of transient pulse (ms), default=500")
-    run_parser.add_argument("--trans_magnitude", type=float, default=5.0,
-                            help="Magnitude of transient current (I_trans), default=5.0")
+    run_parser.add_argument("--trans_factor", type=float, default=0.2,
+                            help="Transient as fraction of each population's I0, default=0.2")
+    run_parser.add_argument("--unit", type=str, default="transients/min",
+                            choices=["transients/min", "Hz"],
+                            help="Rate unit for display and plots (default: transients/min)")
 
     # =========================================================================
     # OPTIMIZE subcommand
@@ -332,15 +338,20 @@ Examples:
         description="Run Nevergrad optimization to find parameters matching target firing rates."
     )
 
+    # Unit selection
+    opt_parser.add_argument("--unit", type=str, default="transients/min",
+                            choices=["transients/min", "Hz"],
+                            help="Rate unit for display (default: transients/min)")
+
     # Target firing rates (required)
     opt_parser.add_argument("--target_pyr", type=float, required=True,
-                            help="Target mean firing rate for PYR (Hz)")
+                            help="Target mean firing rate for PYR")
     opt_parser.add_argument("--target_som", type=float, required=True,
-                            help="Target mean firing rate for SOM (Hz)")
+                            help="Target mean firing rate for SOM")
     opt_parser.add_argument("--target_pv", type=float, required=True,
-                            help="Target mean firing rate for PV (Hz)")
+                            help="Target mean firing rate for PV")
     opt_parser.add_argument("--target_vip", type=float, required=True,
-                            help="Target mean firing rate for VIP (Hz)")
+                            help="Target mean firing rate for VIP")
 
     # Optional knockout targets
     opt_parser.add_argument("--target_alpha7_ko_pyr", type=float, default=None,

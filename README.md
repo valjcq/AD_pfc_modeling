@@ -39,7 +39,7 @@ The prefrontal cortex (PFC) is critical for executive functions including workin
 PV interneurons receive excitation from PYR cells and provide fast, perisomatic inhibition back to PYR. This creates a negative feedback loop that:
 - Stabilizes network activity
 - Sharpens response timing
-- Generates gamma oscillations (30-80 Hz)
+- Regulates network synchronization
 
 #### 2. Disinhibition (VIP → SOM → PYR)
 VIP interneurons inhibit SOM cells, which in turn inhibit PYR dendrites. When VIP is active:

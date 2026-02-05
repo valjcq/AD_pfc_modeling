@@ -62,7 +62,8 @@ def simulate_circuit(
         noise_type: "none", "white" (Gaussian), or "ou" (Ornstein-Uhlenbeck)
         tau_noise_ms: Time constant for OU noise (if used)
         use_transient: If True and params.trans_enabled=True, apply time-dependent
-                       transient current to PYR (only during transient window)
+                       transient current to ALL populations (trans_factor * I0_pop
+                       is added during the transient window)
 
     Returns:
         SimulationResult with time points, firing rates, and adaptation currents
@@ -126,16 +127,23 @@ def simulate_circuit(
         # COMPUTE INPUT CURRENTS FOR EACH POPULATION
         # =====================================================================
 
+        # --- EXTERNAL CURRENTS (time-dependent if transient enabled) ---
+        if use_transient:
+            I_ext_pyr_val = params.I_ext_pyr_at_time(t[k])
+            I_ext_som_val = params.I_ext_som_at_time(t[k])
+            I_ext_pv_val = params.I_ext_pv_at_time(t[k])
+            I_ext_vip_val = params.I_ext_vip_at_time(t[k])
+        else:
+            I_ext_pyr_val = params.I_ext_pyr()
+            I_ext_som_val = params.I_ext_som()
+            I_ext_pv_val = params.I_ext_pv()
+            I_ext_vip_val = params.I_ext_vip()
+
         # --- PYR INPUT ---
         # PV provides DIVISIVE (shunting) inhibition: models perisomatic GABA
         # synapses that reduce input resistance, effectively dividing excitation.
         # This is biologically accurate: PV targets soma/proximal dendrites.
         denom = 1.0 + ggaba * params.w_pe * r_pv  # Shunting denominator
-        # Use time-dependent current if transient mode is enabled
-        if use_transient:
-            I_ext_pyr_val = params.I_ext_pyr_at_time(t[k])
-        else:
-            I_ext_pyr_val = params.I_ext_pyr()
         I_pyr = (
             (params.w_ee * r_pyr) / denom  # Recurrent excitation (divided by PV)
             - ggaba * params.w_se * r_som  # SOM dendritic inhibition (subtractive)
@@ -151,7 +159,7 @@ def simulate_circuit(
             - ggaba * params.w_ps * r_pv   # Inhibition from PV
             - params.w_vs * r_vip          # Inhibition from VIP (disinhibition pathway)
             - Ias                          # Spike-frequency adaptation
-            + params.I_ext_som()           # External (baseline + alpha7 + beta2 currents)
+            + I_ext_som_val                # External (baseline + alpha7 + beta2 + transient)
         )
 
         # --- PV INPUT ---
@@ -161,7 +169,7 @@ def simulate_circuit(
             - ggaba * params.w_pp * r_pv   # Self-inhibition (limits PV rate)
             - ggaba * params.w_sp * r_som  # Weak inhibition from SOM
             - params.w_vp * r_vip          # Weak inhibition from VIP
-            + params.I_ext_pv()            # External (baseline + alpha7 current)
+            + I_ext_pv_val                 # External (baseline + alpha7 + transient)
         )
 
         # --- VIP INPUT ---
@@ -170,13 +178,13 @@ def simulate_circuit(
         I_vip = (
             params.w_ev * r_pyr   # Very weak excitation from PYR
             - params.w_vv * r_vip  # Self-inhibition
-            + params.I_ext_vip()   # External (baseline + alpha5 current)
+            + I_ext_vip_val        # External (baseline + alpha5 + transient)
         )
 
         # =====================================================================
         # APPLY TRANSFER FUNCTION
-        # =====================================================================
-        # Convert input currents to firing rates via Wong-Wang function
+        # =====================================================================f
+        # Convert input currents to firing rates via Wong-Wang function (sigmoid like shape)
         Phi = np.array(
             [
                 phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_e).item(),
