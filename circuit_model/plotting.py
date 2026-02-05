@@ -96,6 +96,7 @@ def plot_firing_rates(
     show_legend: bool = True,
     time_range: Optional[tuple[float, float]] = None,
     show_transient: bool = True,
+    unit: str = "transients/min",
 ):
     """
     Plot firing rates over time for all 4 populations.
@@ -107,6 +108,7 @@ def plot_firing_rates(
         show_legend: Whether to show legend
         time_range: Optional (t_start, t_end) in ms to zoom in
         show_transient: Whether to show transient window markers (if present)
+        unit: Rate unit for Y-axis label (default: "transients/min")
 
     Returns:
         The matplotlib axis object
@@ -133,7 +135,7 @@ def plot_firing_rates(
         ax.plot(t, r[:, i], label=name, color=POPULATION_COLORS[name], linewidth=1.5)
 
     ax.set_xlabel("Time (ms)", fontsize=11)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=11)
+    ax.set_ylabel(f"Firing Rate ({unit})", fontsize=11)
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_xlim(t[0], t[-1])
     ax.set_ylim(bottom=0)
@@ -209,6 +211,7 @@ def plot_simulation_dashboard(
     figsize: tuple[float, float] = (12, 8),
     save_path: Optional[str] = None,
     show: bool = True,
+    unit: str = "transients/min",
 ):
     """
     Create a comprehensive dashboard showing simulation results.
@@ -225,6 +228,7 @@ def plot_simulation_dashboard(
         figsize: Figure size (width, height)
         save_path: If provided, save figure to this path
         show: Whether to call plt.show()
+        unit: Rate unit for Y-axis labels (default: "transients/min")
 
     Returns:
         The matplotlib figure object
@@ -241,7 +245,7 @@ def plot_simulation_dashboard(
 
     # Top plot: Combined firing rates
     ax_combined = fig.add_subplot(gs[0, :])
-    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range)
+    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range, unit=unit)
 
     # Middle row: Individual populations
     t = result.t_ms
@@ -259,7 +263,7 @@ def plot_simulation_dashboard(
         ax.plot(t_plot, r_plot[:, i], color=POPULATION_COLORS[name], linewidth=1.2)
         ax.set_title(name, fontsize=11, fontweight="bold", color=POPULATION_COLORS[name])
         ax.set_xlabel("Time (ms)", fontsize=9)
-        ax.set_ylabel("Rate (Hz)", fontsize=9)
+        ax.set_ylabel(f"Rate ({unit})", fontsize=9)
         ax.set_xlim(t_plot[0], t_plot[-1])
         ax.set_ylim(bottom=0)
         ax.spines["top"].set_visible(False)
@@ -296,6 +300,7 @@ def plot_mean_rates_bar(
     target: Optional[np.ndarray] = None,
     ax=None,
     title: str = "Mean Firing Rates",
+    unit: str = "transients/min",
 ):
     """
     Plot mean firing rates as a bar chart, optionally with target comparison.
@@ -305,6 +310,7 @@ def plot_mean_rates_bar(
         target: Optional array of shape (4,) with target rates
         ax: Matplotlib axis (creates new figure if None)
         title: Plot title
+        unit: Rate unit for Y-axis label (default: "transients/min")
 
     Returns:
         The matplotlib axis object
@@ -336,7 +342,7 @@ def plot_mean_rates_bar(
 
     ax.set_xticks(x)
     ax.set_xticklabels(POPULATION_NAMES)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=11)
+    ax.set_ylabel(f"Firing Rate ({unit})", fontsize=11)
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_ylim(bottom=0)
     ax.spines["top"].set_visible(False)

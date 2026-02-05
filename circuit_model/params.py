@@ -36,7 +36,7 @@ class CircuitParams:
     # =========================================================================
     # TIME CONSTANTS (ms)
     # =========================================================================
-    tau_s: float = 37.3479          # Synaptic time constant (all populations)
+    tau_s: float = 20.0          # Synaptic time constant (all populations)
     tau_adapt_pyr: float = 186.602  # PYR adaptation time constant (~200ms)
     tau_adapt_som: float = 2320.51  # SOM adaptation time constant (~2.3s, much slower)
 
@@ -67,24 +67,24 @@ class CircuitParams:
     # Notation: w_XY = weight from Y to X (e=PYR, p=PV, s=SOM, v=VIP)
 
     # --- Connections FROM PYR (excitatory) ---
-    w_ee: float = 6.27108   # PYR -> PYR: Recurrent excitation (maintains persistent activity)
-    w_ep: float = 42.5334   # PYR -> PV:  Drives fast feedback inhibition
-    w_es: float = 6.56939   # PYR -> SOM: Recruits dendritic inhibition
-    w_ev: float = 2.9622e-06  # PYR -> VIP: Very weak (VIP driven by other inputs)
+    w_ee: float = 21.18   # PYR -> PYR: Recurrent excitation (maintains persistent activity)
+    w_ep: float = 36.89   # PYR -> PV:  Drives fast feedback inhibition
+    w_es: float = 28.47   # PYR -> SOM: Recruits dendritic inhibition
+    w_ev: float = 1.07  # PYR -> VIP: Very weak (VIP driven by other inputs)
 
     # --- Connections FROM PV (inhibitory, perisomatic) ---
-    w_pe: float = 2.22239   # PV -> PYR: Perisomatic inhibition (divisive, shunting)
-    w_pp: float = 105.44    # PV -> PV:  Self-inhibition (limits PV firing rate)
-    w_ps: float = 2.22239   # PV -> SOM: Cross-inhibition between interneuron types
+    w_pe: float = 13.4   # PV -> PYR: Perisomatic inhibition (divisive, shunting)
+    w_pp: float = 2.41    # PV -> PV:  Self-inhibition (limits PV firing rate)
+    w_ps: float = 0   # PV -> SOM: Cross-inhibition between interneuron types This connection doesn't exist in the schematic diagram but is included in the code ? 
 
     # --- Connections FROM SOM (inhibitory, dendritic) ---
-    w_se: float = 2.61788   # SOM -> PYR: Dendritic inhibition (subtractive)
-    w_sp: float = 6.12585e-06  # SOM -> PV: Very weak cross-inhibition
+    w_se: float = 2.74   # SOM -> PYR: Dendritic inhibition (subtractive)
+    w_sp: float = 1.86  # SOM -> PV: Very weak cross-inhibition
 
     # --- Connections FROM VIP (inhibitory, disinhibitory) ---
-    w_vp: float = 0.0105234  # VIP -> PV:  Weak disinhibition of PV
-    w_vs: float = 1.27414    # VIP -> SOM: Core disinhibition pathway (VIP->SOM->PYR)
-    w_vv: float = 24.7962    # VIP -> VIP: Self-inhibition (regulates VIP activity)
+    w_vp: float = 4.71  # VIP -> PV:  Weak disinhibition of PV
+    w_vs: float = 19.01    # VIP -> SOM: Core disinhibition pathway (VIP->SOM->PYR)
+    w_vv: float = 0    # VIP -> VIP: Self-inhibition (regulates VIP activity)  This connection doesn't exist in the schematic diagram but is included in the code ? 
 
     # =========================================================================
     # EXTERNAL CURRENTS
@@ -92,26 +92,25 @@ class CircuitParams:
     # Each population receives baseline + receptor-mediated currents
 
     # --- PYR external input ---
-    I0_pyr: float = 1.7854    # Baseline tonic drive
-    I_trans: float = 5.03758  # Transient/task-related input (e.g., sensory, task cue)
+    I0_pyr: float = 24.86    # Baseline tonic drive
 
     # --- PV external input ---
-    I0_pv: float = 5.58459        # Baseline tonic drive
-    I_alpha7_pv: float = 9.90322  # alpha7 nAChR-mediated current (cholinergic enhancement)
+    I0_pv: float = 10.78        # Baseline tonic drive
+    I_alpha7_pv: float = 14.08  # alpha7 nAChR-mediated current (cholinergic enhancement)
 
     # --- SOM external input ---
-    I0_som: float = 5.48551        # Baseline tonic drive
-    I_alpha7_som: float = 5.84835  # alpha7 nAChR-mediated current
-    I_beta2_som: float = 9.05679   # beta2 nAChR-mediated current (alpha4beta2 receptors on SOM)
+    I0_som: float = 6.71        # Baseline tonic drive
+    I_alpha7_som: float = 10.124  # alpha7 nAChR-mediated current
+    I_beta2_som: float = 14.67   # beta2 nAChR-mediated current (alpha4beta2 receptors on SOM)
 
     # --- VIP external input ---
-    I0_vip: float = 7.57337        # Baseline tonic drive
-    I_alpha5_vip: float = 1.44659  # alpha5 nAChR-mediated current (alpha4beta2alpha5 on VIP)
+    I0_vip: float = 8.412        # Baseline tonic drive
+    I_alpha5_vip: float = 2.52  # alpha5 nAChR-mediated current (alpha4beta2alpha5 on VIP)
 
     # =========================================================================
     # RECEPTOR ACTIVATION MULTIPLIERS (for knockout experiments)
     # =========================================================================
-    # Set to 0 to simulate receptor knockout; set to 1 for normal condition
+    # Set to 0 to simulate receptor knockout; set to 1 for normal condition; use intermediate values for partial blockade/desensitization
     act_alpha7: float = 1.0  # alpha7 nAChR activation (affects PV, SOM, GABA scaling)
     act_beta2: float = 1.0   # beta2 nAChR activation (affects SOM)
     act_alpha5: float = 1.0  # alpha5 nAChR activation (affects VIP)
@@ -119,8 +118,10 @@ class CircuitParams:
     # =========================================================================
     # TRANSIENT CURRENT TIMING (for time-varying stimulation)
     # =========================================================================
-    # When trans_enabled=True, I_trans is applied only during [trans_start_ms, trans_start_ms + trans_duration_ms)
-    # When trans_enabled=False, I_trans is always added to PYR input (backward compatible)
+    # When trans_enabled=True, a transient current = trans_factor * I0_pop is applied
+    # to ALL populations during [trans_start_ms, trans_start_ms + trans_duration_ms)
+    # trans_factor is a multiplier (e.g., 0.2 means +20% of baseline I0)
+    trans_factor: float = 0.2          # Transient as fraction of each population's I0
     trans_start_ms: float = 1000.0     # When transient starts (ms)
     trans_duration_ms: float = 500.0   # Duration of transient pulse (ms)
     trans_enabled: bool = False        # Whether to use time-dependent transient
@@ -131,59 +132,83 @@ class CircuitParams:
     # Each population has its own threshold (Theta) and gain (alpha)
     # g_e/g_i control curvature for excitatory/inhibitory populations
 
-    Theta_pyr: float = 5.01691   # PYR threshold (moderate)
-    alpha_pyr: float = 0.685403  # PYR gain
+    Theta_pyr: float = 7.0   # PYR threshold (fixed)
+    alpha_pyr: float = 1.9  # PYR gain
 
-    Theta_pv: float = 16.3771    # PV threshold (high - PV needs strong drive)
-    alpha_pv: float = 1.47638    # PV gain (steep response once threshold crossed)
+    Theta_pv: float = 7.0    # PV threshold (fixed)
+    alpha_pv: float = 2.6    # PV gain (steep response once threshold crossed)
 
-    Theta_som: float = 5.88155   # SOM threshold
-    alpha_som: float = 0.817185  # SOM gain
+    Theta_som: float = 7.0   # SOM threshold (fixed)
+    alpha_som: float = 1.5  # SOM gain
 
-    Theta_vip: float = 13.9068   # VIP threshold (high)
-    alpha_vip: float = 0.100998  # VIP gain (very low - gradual response)
+    Theta_vip: float = 7.0   # VIP threshold (fixed)
+    alpha_vip: float = 1.2  # VIP gain (very low - gradual response)
 
-    g_e: float = 0.377039  # Curvature for excitatory (PYR)
-    g_i: float = 0.400125  # Curvature for inhibitory (PV, SOM, VIP)
+    g_e: float = 0.16  # Curvature for excitatory (PYR)
+    g_i: float = 0.087  # Curvature for inhibitory (PV, SOM, VIP)
 
     def g_gaba(self) -> float:
         """Total GABA scaling factor."""
         return self.g_gaba_base + self.g_alpha7
 
-    def I_ext_pyr(self) -> float:
-        """Total external current to PYR (static, for optimization)."""
-        return self.I0_pyr + self.I_trans
-
-    def I_ext_pyr_at_time(self, t_ms: float) -> float:
-        """
-        Total external current to PYR at time t_ms.
-
-        When trans_enabled=True, I_trans is only applied during the transient window.
-        When trans_enabled=False, behaves like I_ext_pyr() (always includes I_trans).
-        """
+    def _in_transient_window(self, t_ms: float) -> bool:
+        """Check if time t_ms is within the transient window."""
         if not self.trans_enabled:
-            return self.I0_pyr + self.I_trans
-        # Time-dependent transient
+            return False
         trans_end_ms = self.trans_start_ms + self.trans_duration_ms
-        if self.trans_start_ms <= t_ms < trans_end_ms:
-            return self.I0_pyr + self.I_trans
+        return self.trans_start_ms <= t_ms < trans_end_ms
+
+    def I_ext_pyr(self) -> float:
+        """Total external current to PYR (static, no transient)."""
         return self.I0_pyr
 
+    def I_ext_pyr_at_time(self, t_ms: float) -> float:
+        """Total external current to PYR at time t_ms (with transient if enabled)."""
+        base = self.I0_pyr
+        if self._in_transient_window(t_ms):
+            return base + self.trans_factor * self.I0_pyr
+        return base
+
     def I_ext_pv(self) -> float:
-        """Total external current to PV (with alpha7 modulation)."""
+        """Total external current to PV (with alpha7 modulation, no transient)."""
         return self.I0_pv + self.act_alpha7 * self.I_alpha7_pv
 
+    def I_ext_pv_at_time(self, t_ms: float) -> float:
+        """Total external current to PV at time t_ms (with transient if enabled)."""
+        base = self.I0_pv + self.act_alpha7 * self.I_alpha7_pv
+        if self._in_transient_window(t_ms):
+            return base + self.trans_factor * self.I0_pv
+        return base
+
     def I_ext_som(self) -> float:
-        """Total external current to SOM (with alpha7 and beta2 modulation)."""
+        """Total external current to SOM (with alpha7 and beta2 modulation, no transient)."""
         return (
             self.I0_som
             + self.act_alpha7 * self.I_alpha7_som
             + self.act_beta2 * self.I_beta2_som
         )
 
+    def I_ext_som_at_time(self, t_ms: float) -> float:
+        """Total external current to SOM at time t_ms (with transient if enabled)."""
+        base = (
+            self.I0_som
+            + self.act_alpha7 * self.I_alpha7_som
+            + self.act_beta2 * self.I_beta2_som
+        )
+        if self._in_transient_window(t_ms):
+            return base + self.trans_factor * self.I0_som
+        return base
+
     def I_ext_vip(self) -> float:
-        """Total external current to VIP (with alpha5 modulation)."""
+        """Total external current to VIP (with alpha5 modulation, no transient)."""
         return self.I0_vip + self.act_alpha5 * self.I_alpha5_vip
+
+    def I_ext_vip_at_time(self, t_ms: float) -> float:
+        """Total external current to VIP at time t_ms (with transient if enabled)."""
+        base = self.I0_vip + self.act_alpha5 * self.I_alpha5_vip
+        if self._in_transient_window(t_ms):
+            return base + self.trans_factor * self.I0_vip
+        return base
 
 
 @dataclass(frozen=True)
@@ -245,7 +270,7 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
 
     # External currents
     b["I0_pyr"] = ParamBound(0.0, 10.0, mode="lin")
-    b["I_trans"] = ParamBound(0.0, 10.0, mode="lin")
+    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # Transient as fraction of I0 (0-100%)
 
     b["I0_pv"] = ParamBound(0.0, 15.0, mode="lin")
     b["I_alpha7_pv"] = ParamBound(0.0, 10.0, mode="lin")
