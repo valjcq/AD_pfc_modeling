@@ -231,6 +231,7 @@ def _run_single_sim(seed: int) -> np.ndarray:
         seed=seed,
         noise_type=cfg.noise_type,
         tau_noise_ms=cfg.tau_noise_ms,
+        use_transient=False,
     )
     return mean_rates(result, burn_in_ms=cfg.burn_in_ms, window_ms=cfg.window_ms)
 

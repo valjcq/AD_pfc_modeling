@@ -340,7 +340,7 @@ Examples:
   python -m circuit_model run --params_json my_params.json --T_ms 5000
 
   # Run with noise
-  python -m circuit_model run --noise_type ou --tau_noise_ms 10
+  python -m circuit_model run --noise_type ou
 
   # Optimize parameters to match target rates
   python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8
