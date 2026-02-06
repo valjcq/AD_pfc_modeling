@@ -339,13 +339,8 @@ Examples:
     # Run with custom parameters
     python -m circuit_model run --params_json my_params.json --T_ms 5000
 
-<<<<<<< Updated upstream
-  # Run with noise
-  python -m circuit_model run --noise_type ou
-=======
     # Run with noise
     python -m circuit_model run --noise_type ou --tau_noise_ms 10
->>>>>>> Stashed changes
 
     # Optimize parameters to match target rates
     python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8
@@ -485,14 +480,6 @@ Examples:
     study_parser.add_argument("--no_show", action="store_true",
                               help="Don't display the plot")
 
-<<<<<<< Updated upstream
-    # Receptor activation mode
-    study_parser.add_argument("--fixed_receptor_values", action="store_true",
-                              help="Use fixed mean receptor values instead of sampling "
-                                   "from distributions (default: sample from distributions)")
-
-=======
->>>>>>> Stashed changes
     # Simulation parameters
     study_parser.add_argument("--T_ms", type=float, default=2500.0,
                               help="Simulation duration (ms)")
@@ -507,14 +494,11 @@ Examples:
     study_parser.add_argument("--params_json", type=str, default="",
                               help="Load base parameters from JSON file")
 
-<<<<<<< Updated upstream
-=======
     # Receptor activation mode
     study_parser.add_argument("--fixed_receptor_values", action="store_true",
                               help="Use fixed mean receptor values instead of sampling "
                                    "from distributions (default: sample from distributions)")
 
->>>>>>> Stashed changes
     # Statistics parameters
     study_parser.add_argument("--burn_in_ms", type=float, default=1800.0,
                               help="Burn-in period for statistics (ms)")
