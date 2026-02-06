@@ -18,6 +18,12 @@ For command-line usage:
 
     # Run optimization
     python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8
+
+    # Run study
+    python -m circuit_model study --n_runs 200 --noise_type white --tau_noise_ms 10
+
+    # Run ring
+    
 """
 
 # Re-export everything from the package for backward compatibility
