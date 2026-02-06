@@ -1,0 +1,65 @@
+{
+  "tau_s": 20.0,
+  "tau_adapt_pyr": 186.602,
+  "tau_adapt_som": 2320.51,
+
+  "J_adapt_pyr": 0.270443,
+  "J_adapt_som": 27.2356,
+
+  "sigma_s": 5.88856,
+
+  "g_gaba_base": 3.93207,
+  "g_alpha7": 0.95607,
+
+  "w_ee": 21.18,
+  "w_ep": 36.89,
+  "w_es": 28.47,
+  "w_ev": 1.07,
+
+  "w_pe": 13.4,
+  "w_pp": 2.41,
+  "w_ps": 0.0,
+
+  "w_se": 2.74,
+  "w_sp": 1.86,
+
+  "w_vp": 4.71,
+  "w_vs": 19.01,
+  "w_vv": 0.0,
+
+  "I0_pyr": 24.86,
+
+  "I0_pv": 10.78,
+  "I_alpha7_pv": 14.08,
+
+  "I0_som": 6.71,
+  "I_alpha7_som": 10.124,
+  "I_beta2_som": 14.67,
+
+  "I0_vip": 8.412,
+  "I_alpha5_vip": 2.52,
+
+  "act_alpha7": 1.0,
+  "act_beta2": 1.0,
+  "act_alpha5": 1.0,
+
+  "trans_factor": 0.2,
+  "trans_start_ms": 1000.0,
+  "trans_duration_ms": 500.0,
+  "trans_enabled": false,
+
+  "Theta_pyr": 7.0,
+  "alpha_pyr": 1.9,
+
+  "Theta_pv": 7.0,
+  "alpha_pv": 2.6,
+
+  "Theta_som": 7.0,
+  "alpha_som": 1.5,
+
+  "Theta_vip": 7.0,
+  "alpha_vip": 1.2,
+
+  "g_e": 0.16,
+  "g_i": 0.087
+}
