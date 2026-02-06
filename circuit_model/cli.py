@@ -167,6 +167,61 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_study(args: argparse.Namespace) -> None:
+    """Run batch study across experimental conditions and generate box plots."""
+    from .study import (
+        STUDY_CONDITIONS,
+        StudyConfig,
+        run_study,
+        plot_study_boxplots,
+    )
+
+    # Load base parameters
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    # Build config
+    cfg = StudyConfig(
+        n_runs=args.n_runs,
+        T_ms=args.T_ms,
+        dt_ms=args.dt_ms,
+        burn_in_ms=args.burn_in_ms,
+        window_ms=args.window_ms,
+        noise_type=args.noise_type,
+        tau_noise_ms=args.tau_noise_ms,
+        n_workers=args.n_workers,
+        fixed_receptor_values=args.fixed_receptor_values,
+    )
+
+    # Print study info
+    print(f"\nStudy configuration:")
+    print(f"  Conditions: {len(STUDY_CONDITIONS)}")
+    print(f"  Runs per condition: {cfg.n_runs}")
+    print(f"  Total simulations: {len(STUDY_CONDITIONS) * cfg.n_runs}")
+    print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={cfg.noise_type}, tau_noise={cfg.tau_noise_ms}ms")
+    print(f"  Receptor activation: {'fixed mean values' if cfg.fixed_receptor_values else 'sampled from distributions'}")
+    print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
+    print()
+
+    # Run study
+    seed = args.seed if args.seed is not None else 0
+    results = run_study(base_params, cfg, base_seed=seed, verbose=True)
+
+    # Generate box plot
+    print("\nGenerating box plot...")
+    plot_study_boxplots(
+        results,
+        title=f"Firing Rate Distribution ({cfg.n_runs} runs per condition)",
+        save_path=args.save_plot if args.save_plot else None,
+        show=not args.no_show,
+        unit=args.unit,
+    )
+
+
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Run parameter optimization."""
     # Build target rates
@@ -404,18 +459,71 @@ Examples:
     opt_parser.add_argument("--n_workers", type=int, default=None,
                             help="Parallel workers (auto if None)")
 
+    # =========================================================================
+    # STUDY subcommand
+    # =========================================================================
+    study_parser = subparsers.add_parser(
+        "study",
+        help="Run batch study across experimental conditions",
+        description="Run simulations across 8 conditions (WT, APP, KO variants) "
+                    "and generate box plots of firing rate distributions."
+    )
+
+    # Study-specific arguments
+    study_parser.add_argument("--n_runs", type=int, default=50,
+                              help="Number of simulations per condition (default: 50)")
+    study_parser.add_argument("--save_plot", type=str, default="",
+                              help="Save box plot to file (e.g., 'study_results.png')")
+    study_parser.add_argument("--no_show", action="store_true",
+                              help="Don't display the plot")
+
+    # Receptor activation mode
+    study_parser.add_argument("--fixed_receptor_values", action="store_true",
+                              help="Use fixed mean receptor values instead of sampling "
+                                   "from distributions (default: sample from distributions)")
+
+    # Simulation parameters
+    study_parser.add_argument("--T_ms", type=float, default=2500.0,
+                              help="Simulation duration (ms)")
+    study_parser.add_argument("--dt_ms", type=float, default=0.1,
+                              help="Integration time step (ms)")
+    study_parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="white",
+                              help="Noise type (default: white)")
+    study_parser.add_argument("--tau_noise_ms", type=float, default=5.0,
+                              help="OU noise time constant (ms)")
+    study_parser.add_argument("--seed", type=int, default=None,
+                              help="Random seed for reproducibility")
+    study_parser.add_argument("--params_json", type=str, default="",
+                              help="Load base parameters from JSON file")
+
+    # Statistics parameters
+    study_parser.add_argument("--burn_in_ms", type=float, default=1800.0,
+                              help="Burn-in period for statistics (ms)")
+    study_parser.add_argument("--window_ms", type=float, default=500.0,
+                              help="Averaging window (ms)")
+
+    # Parallel processing
+    study_parser.add_argument("--n_workers", type=int, default=None,
+                              help="Parallel workers (auto if None)")
+
+    # Display options
+    study_parser.add_argument("--unit", type=str, default="transients/min",
+                              choices=["transients/min", "Hz"],
+                              help="Rate unit for display (default: transients/min)")
+
     # Parse arguments
     args = parser.parse_args()
 
     if args.command is None:
-        # Default to run if no command specified
         parser.print_help()
-        print("\nNo command specified. Use 'run' or 'optimize'.")
+        print("\nNo command specified. Use 'run', 'optimize', or 'study'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
     elif args.command == "optimize":
         cmd_optimize(args)
+    elif args.command == "study":
+        cmd_study(args)
     else:
         parser.print_help()
         sys.exit(1)
