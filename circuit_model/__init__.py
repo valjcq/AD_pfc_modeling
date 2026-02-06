@@ -48,6 +48,18 @@ from .plotting import (
     POPULATION_NAMES,
     POPULATION_COLORS,
 )
+from .study import (
+    ExperimentalCondition,
+    STUDY_CONDITIONS,
+    CONDITION_ORDER,
+    StudyConfig,
+    StudyResults,
+    apply_condition,
+    run_single_simulation,
+    run_condition_batch,
+    run_study,
+    plot_study_boxplots,
+)
 from .cli import main
 
 __all__ = [
@@ -88,6 +100,17 @@ __all__ = [
     "print_simulation_summary",
     "POPULATION_NAMES",
     "POPULATION_COLORS",
+    # Study
+    "ExperimentalCondition",
+    "STUDY_CONDITIONS",
+    "CONDITION_ORDER",
+    "StudyConfig",
+    "StudyResults",
+    "apply_condition",
+    "run_single_simulation",
+    "run_condition_batch",
+    "run_study",
+    "plot_study_boxplots",
     # CLI
     "main",
 ]
