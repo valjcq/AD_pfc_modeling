@@ -93,7 +93,10 @@ def simulate_circuit(
             raise ValueError("I_adapt0 must have shape (2,)")
         I_adapt[0] = I_adapt0
 
-    rng = np.random.default_rng(seed)
+    if seed is not None:
+        rng = np.random.default_rng(seed)
+    else:
+        rng = np.random.default_rng()
     xi_state = np.zeros(4, dtype=float)
 
     ggaba = params.g_gaba()
