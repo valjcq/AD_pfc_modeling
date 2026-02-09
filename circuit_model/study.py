@@ -470,7 +470,8 @@ def plot_study_boxplots(
         if _check_display_available():
             plt.show(block=True)
         else:
-            fallback_path = save_path or "study_boxplots.png"
+            noise_type = results.config.noise_type
+            fallback_path = save_path or f"study_boxplots_{noise_type}.png"
             if not save_path:
                 fig.savefig(fallback_path, dpi=150, bbox_inches='tight')
                 print(f"No display available. Figure saved to: {fallback_path}")
