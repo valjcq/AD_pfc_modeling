@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python analysis_external_currents.py:*)"
+    ]
+  }
+}

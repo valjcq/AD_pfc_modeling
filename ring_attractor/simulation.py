@@ -183,9 +183,9 @@ def simulate_ring(
         Ias = I_adapt[k, :, 1]  # SOM adaptation
 
         # === INTER-NODE CURRENTS ===
-        I_pyr_inter, I_pv_inter = connectivity.compute_inter_node_inputs(r_pyr, r_pv)
+        I_pyr_inter, I_pv_pyr_inter = connectivity.compute_inter_node_inputs(r_pyr, r_pv)
         I_inter_pyr[k] = I_pyr_inter
-        I_inter_pv[k] = I_pv_inter
+        I_inter_pv[k] = I_pv_pyr_inter
 
         # === STIMULUS CURRENT ===
         I_stim = np.zeros(n_nodes)
@@ -216,6 +216,7 @@ def simulate_ring(
         I_pyr = (
             (p.w_ee * r_pyr) / denom  # Local recurrent excitation (divided by PV)
             + I_pyr_inter  # Inter-node PYR excitation (from neighbors)
+            - ggaba * I_pv_pyr_inter  # Global PV→PYR inhibition (from all nodes)
             - ggaba * p.w_se * r_som  # SOM dendritic inhibition (subtractive)
             - Iap  # Spike-frequency adaptation
             + I_ext_pyr_val  # External input
@@ -231,14 +232,13 @@ def simulate_ring(
             + I_ext_som_val  # External input
         )
 
-        # PV: local + global PV inhibition from other nodes
+        # PV: local only (inter-node PV effect is on PYR, not PV)
         I_pv = (
-            p.w_ep * r_pyr  # Strong excitation from PYR
+            p.w_ep * r_pyr  # Strong excitation from local PYR
             - ggaba * p.w_pp * r_pv  # Self-inhibition
             - ggaba * p.w_sp * r_som  # Weak inhibition from SOM
             - p.w_vp * r_vip  # Weak inhibition from VIP
             + I_ext_pv_val  # External input
-            - ggaba * I_pv_inter  # Global PV inhibition (inhibitory, hence minus)
         )
 
         # VIP: local only (no inter-node connections)

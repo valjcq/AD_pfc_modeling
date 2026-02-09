@@ -319,10 +319,91 @@ def plot_node_activity(
     return ax
 
 
+def plot_bump_metrics_over_time(
+    result: "RingSimulationResult",
+    population: int = 0,
+    ax=None,
+    time_range: Optional[tuple[float, float]] = None,
+):
+    """
+    Plot decoded bump center, amplitude, and width over time.
+
+    Parameters:
+        result: RingSimulationResult
+        population: Which population to decode (0=PYR)
+        ax: Array of 3 axes (created if None)
+        time_range: Optional (start_ms, end_ms) to restrict time
+
+    Returns:
+        axes: Array of 3 Matplotlib axes
+    """
+    import matplotlib.pyplot as plt
+    from .analysis import decode_bump_center, estimate_bump_width
+
+    center_deg, amplitude = decode_bump_center(result, population)
+    t = result.t_ms
+
+    # Time range filtering
+    if time_range:
+        mask = (t >= time_range[0]) & (t <= time_range[1])
+        t = t[mask]
+        center_deg = center_deg[mask]
+        amplitude = amplitude[mask]
+        activity = result.r[mask, :, population]
+    else:
+        mask = np.ones(len(t), dtype=bool)
+        activity = result.r[:, :, population]
+
+    # Compute width at sampled time points (expensive, so subsample)
+    n_samples = min(200, len(t))
+    sample_idx = np.linspace(0, len(t) - 1, n_samples, dtype=int)
+    t_width = t[sample_idx]
+    widths = np.array([
+        estimate_bump_width(
+            activity[i],
+            result.ring_params.node_angles_rad,
+            center_deg[sample_idx[j]] * np.pi / 180,
+        )
+        for j, i in enumerate(sample_idx)
+    ])
+
+    if ax is None:
+        fig, ax = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
+
+    # --- Center position ---
+    ax[0].scatter(t, center_deg, c=amplitude, cmap="viridis", s=1, alpha=0.5)
+    if result.stim_angle_deg > 0:
+        ax[0].axhline(result.stim_angle_deg, color="red", ls="--", lw=1,
+                       label=f"Cue: {result.stim_angle_deg:.0f}°")
+        ax[0].legend(loc="upper right", fontsize=9)
+    ax[0].set_ylabel("Center (°)")
+    ax[0].set_ylim(0, 360)
+    ax[0].set_title("Bump Metrics Over Time")
+
+    # --- Amplitude ---
+    ax[1].plot(t, amplitude, color="#009E73", lw=1)
+    ax[1].set_ylabel("Amplitude")
+    ax[1].set_ylim(0, max(1, amplitude.max() * 1.1))
+
+    # --- Width ---
+    ax[2].plot(t_width, widths, color="#CC79A7", lw=1)
+    ax[2].set_ylabel("Width (°)")
+    ax[2].set_xlabel("Time (ms)")
+
+    # Mark stimulus window on all axes
+    if result.stim_window[1] > result.stim_window[0]:
+        for a in ax:
+            a.axvspan(result.stim_window[0], result.stim_window[1],
+                      alpha=0.15, color="red")
+
+    return ax
+
+
 def plot_ring_dashboard(
     result: "RingSimulationResult",
     figsize: tuple = (14, 10),
     save_path: Optional[str] = None,
+    time_range: Optional[tuple[float, float]] = None,
 ):
     """
     Comprehensive visualization dashboard for ring attractor simulation.
@@ -331,6 +412,7 @@ def plot_ring_dashboard(
         result: RingSimulationResult
         figsize: Figure size (width, height)
         save_path: If provided, save figure to this path
+        time_range: Optional (start_ms, end_ms) to restrict displayed time
 
     Returns:
         fig: Matplotlib figure
@@ -342,7 +424,7 @@ def plot_ring_dashboard(
 
     # Top row: Activity heatmap (spans 2 columns)
     ax_heat = fig.add_subplot(gs[0, :2])
-    plot_ring_activity_heatmap(result, ax=ax_heat)
+    plot_ring_activity_heatmap(result, ax=ax_heat, time_range=time_range)
 
     # Top right: Snapshot at end of delay
     ax_snap = fig.add_subplot(gs[0, 2], projection="polar")
@@ -352,10 +434,14 @@ def plot_ring_dashboard(
     # Middle row: Bump tracking
     ax_track = fig.add_subplot(gs[1, :])
     plot_bump_tracking(result, ax=ax_track)
+    if time_range:
+        ax_track.set_xlim(time_range)
 
     # Bottom left: Activity at specific nodes
     ax_nodes = fig.add_subplot(gs[2, :2])
     plot_node_activity(result, ax=ax_nodes)
+    if time_range:
+        ax_nodes.set_xlim(time_range)
 
     # Bottom right: Metrics text
     ax_metrics = fig.add_subplot(gs[2, 2])
@@ -389,6 +475,151 @@ def plot_ring_dashboard(
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return fig
+
+
+def plot_ring_connectome(
+    ring_params,
+    ax=None,
+    n_highlight: int = 8,
+    excit_color: str = "#D62728",
+    inhib_color: str = "#1F77B4",
+    weight_threshold: float = 0.05,
+    save_path: Optional[str] = None,
+):
+    """
+    Plot the ring network connectivity as a connectome diagram.
+
+    Nodes are arranged in a circle. Excitatory (PYR→PYR) connections are
+    drawn as solid lines and inhibitory (PV→PV) connections as dashed lines,
+    with line width proportional to connection strength.
+
+    Parameters:
+        ring_params: RingParams configuration
+        ax: Matplotlib axis (created if None)
+        n_highlight: Number of evenly-spaced source nodes to show connections from
+        excit_color: Color for excitatory connections
+        inhib_color: Color for inhibitory connections
+        weight_threshold: Fraction of peak weight below which connections are hidden
+        save_path: If provided, save figure to this path
+
+    Returns:
+        ax: Matplotlib axis
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib.lines import Line2D
+    from .connectivity import build_pyr_pyr_weights, build_pv_pyr_weights
+
+    n = ring_params.n_nodes
+    angles = ring_params.node_angles_rad
+
+    # Node positions on unit circle (0° at top, clockwise)
+    x = np.sin(angles)
+    y = np.cos(angles)
+
+    # Build weight matrices
+    W_exc = build_pyr_pyr_weights(ring_params)
+    W_inh = build_pv_pyr_weights(ring_params)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+    # Select source nodes evenly spaced around the ring
+    sources = np.linspace(0, n, n_highlight, endpoint=False, dtype=int)
+
+    max_exc = W_exc.max()
+    max_inh = W_inh.max()
+    lw_max = 3.0
+
+    # --- Inhibitory connections (draw first, behind) ---
+    # Show from 2 source nodes to a sparse subset of targets
+    inh_sources = sources[::4]  # 2 source nodes
+    tgt_step = max(1, n // 16)  # show ~16 target endpoints per source
+    inh_segments = []
+    inh_linewidths = []
+    inh_alphas = []
+    for src in inh_sources:
+        for tgt in range(0, n, tgt_step):
+            if tgt == src:
+                continue
+            w = W_inh[tgt, src]
+            if w > 0:
+                inh_segments.append([(x[src], y[src]), (x[tgt], y[tgt])])
+                inh_linewidths.append(0.8)
+                inh_alphas.append(0.3)
+
+    if inh_segments:
+        inh_lc = LineCollection(
+            inh_segments,
+            linewidths=inh_linewidths,
+            colors=[(*plt.matplotlib.colors.to_rgb(inhib_color), a) for a in inh_alphas],
+            linestyles="dashed",
+            zorder=0,
+        )
+        ax.add_collection(inh_lc)
+
+    # --- Excitatory connections (draw on top) ---
+    exc_segments = []
+    exc_linewidths = []
+    exc_alphas = []
+    for src in sources:
+        for tgt in range(n):
+            if tgt == src:
+                continue
+            w = W_exc[tgt, src]
+            if w > weight_threshold * max_exc:
+                exc_segments.append([(x[src], y[src]), (x[tgt], y[tgt])])
+                exc_linewidths.append(lw_max * (w / max_exc))
+                exc_alphas.append(0.25 + 0.55 * (w / max_exc))
+
+    if exc_segments:
+        exc_lc = LineCollection(
+            exc_segments,
+            linewidths=exc_linewidths,
+            colors=[(*plt.matplotlib.colors.to_rgb(excit_color), a) for a in exc_alphas],
+            zorder=1,
+        )
+        ax.add_collection(exc_lc)
+
+    # --- Draw nodes ---
+    ax.scatter(x, y, s=25, c="black", zorder=3)
+    # Highlight source nodes
+    ax.scatter(
+        x[sources], y[sources],
+        s=60, c=excit_color, edgecolors="black", linewidth=0.5, zorder=4,
+    )
+
+    # --- Degree labels around the ring ---
+    label_nodes = np.linspace(0, n, 8, endpoint=False, dtype=int)
+    for i in label_nodes:
+        deg = ring_params.node_angles_deg[i]
+        offset = 1.12
+        ax.text(
+            x[i] * offset, y[i] * offset,
+            f"{deg:.0f}°",
+            ha="center", va="center", fontsize=9, color="gray",
+        )
+
+    # --- Legend ---
+    legend_elements = [
+        Line2D([0], [0], color=excit_color, linewidth=2.5,
+               label=f"PYR→PYR excitatory (σ={ring_params.sigma_pyr_deg:.0f}°)"),
+        Line2D([0], [0], color=inhib_color, linewidth=1, linestyle="--",
+               label=f"PV→PYR inhibitory ({ring_params.pv_global_type})"),
+    ]
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=11,
+              framealpha=0.9)
+
+    ax.set_aspect("equal")
+    ax.set_title(f"Ring Connectome ({n} nodes)", fontsize=14, fontweight="bold")
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.axis("off")
+
+    if save_path:
+        ax.figure.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return ax
 
 
 def print_simulation_summary(result: "RingSimulationResult") -> None:

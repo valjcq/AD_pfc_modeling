@@ -13,19 +13,46 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import fields
+from pathlib import Path
 
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
-from .io import load_params_json, save_params_json, format_params_as_code
+from .io import load_params_json, format_params_as_code
 from .optimization import nevergrad_optimize
 from .simulation import simulate_circuit
+
+
+def _output_dir(base_dir: str, params_json: str) -> str:
+    """Derive output directory from params file: base_dir/<stem>/ or base_dir/default/."""
+    if params_json:
+        stem = Path(params_json).stem
+    else:
+        stem = "default"
+    out = os.path.join(base_dir, stem)
+    os.makedirs(out, exist_ok=True)
+    return out
 
 
 def parse_freeze_list(s: str) -> set[str]:
     """Parse comma-separated list of parameter names to freeze."""
     return {x.strip() for x in s.split(",") if x.strip()}
+
+
+def parse_set_params(s: str) -> dict[str, float]:
+    """Parse 'name=value,name=value' into a dict of overrides."""
+    overrides: dict[str, float] = {}
+    for item in s.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid --set format: '{item}' (expected name=value)")
+        name, val = item.split("=", 1)
+        overrides[name.strip()] = float(val.strip())
+    return overrides
 
 
 def print_parameter_status(
@@ -157,11 +184,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     if use_transient:
         title += f" [Transient: {params.trans_start_ms:.0f}-{params.trans_start_ms + params.trans_duration_ms:.0f} ms]"
 
+    # Determine save path
+    if args.save_plot:
+        save_path = args.save_plot
+    else:
+        out_dir = _output_dir("figs/runs", args.params_json)
+        save_path = os.path.join(out_dir, "circuit_simulation.png")
+
     plot_simulation_dashboard(
         result,
         title=title,
         time_range=time_range,
-        save_path=args.save_plot if args.save_plot else None,
+        save_path=save_path,
         show=not args.no_show,
         unit=args.unit,
     )
@@ -211,12 +245,19 @@ def cmd_study(args: argparse.Namespace) -> None:
     seed = args.seed if args.seed is not None else 0
     results = run_study(base_params, cfg, base_seed=seed, verbose=True)
 
+    # Determine save path
+    if args.save_plot:
+        save_path = args.save_plot
+    else:
+        out_dir = _output_dir("figs/boxplot", args.params_json)
+        save_path = os.path.join(out_dir, "study_boxplots.png")
+
     # Generate box plot
     print("\nGenerating box plot...")
     plot_study_boxplots(
         results,
         title=f"Firing Rate Distribution ({cfg.n_runs} runs per condition)",
-        save_path=args.save_plot if args.save_plot else None,
+        save_path=save_path,
         show=not args.no_show,
         unit=args.unit,
     )
@@ -242,6 +283,19 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     else:
         base = CircuitParams()
         print("Using default base parameters")
+
+    # Apply --set overrides (e.g. --set w_vv=0,w_sp=0)
+    if args.set_params:
+        from dataclasses import replace
+        overrides = parse_set_params(args.set_params)
+        allowed = {f.name for f in fields(CircuitParams)}
+        for name in overrides:
+            if name not in allowed:
+                print(f"Warning: '{name}' is not a valid parameter, skipping.")
+        clean = {k: v for k, v in overrides.items() if k in allowed}
+        if clean:
+            base = replace(base, **clean)
+            print(f"Overrides applied: {', '.join(f'{k}={v}' for k, v in clean.items())}")
 
     bounds = default_bounds(base)
     freeze = parse_freeze_list(args.freeze)
@@ -294,6 +348,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         log_file=args.log_file or None,
         log_interval=args.log_interval,
         n_workers=args.n_workers,
+        save_best_json=args.save_best_json or None,
     )
 
     if not best:
@@ -322,8 +377,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     print(format_params_as_code(best[0].params))
 
     if args.save_best_json:
-        save_params_json(args.save_best_json, best[0].params)
-        print(f"\nSaved best params to: {args.save_best_json}")
+        print(f"\nBest params saved to: {args.save_best_json}")
 
 
 def main() -> None:
@@ -449,6 +503,8 @@ Examples:
     # Parameter control
     opt_parser.add_argument("--freeze", type=str, default="",
                             help="Comma-separated parameter names to freeze")
+    opt_parser.add_argument("--set", dest="set_params", type=str, default="",
+                            help="Override parameter values: 'name=val,name=val' (e.g. --set w_vv=0,w_sp=0)")
     opt_parser.add_argument("--show_params", action="store_true",
                             help="Show which parameters are free vs frozen")
 
