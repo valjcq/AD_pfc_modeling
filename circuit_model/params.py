@@ -132,17 +132,17 @@ class CircuitParams:
     # Each population has its own threshold (Theta) and gain (alpha)
     # g_e/g_i control curvature for excitatory/inhibitory populations
 
-    Theta_pyr: float = 5.01691   # PYR threshold (fixed)
+    Theta_pyr: float = 5.01691   # PYR threshold
     alpha_pyr: float = 0.685403  # PYR gain
 
-    Theta_pv: float = 16.3771    # PV threshold (fixed)
-    alpha_pv: float = 1.47638    # PV gain (steep response once threshold crossed)
+    Theta_pv: float = 16.3771    # PV threshold
+    alpha_pv: float = 1.47638    # PV gain
 
-    Theta_som: float = 5.88155   # SOM threshold (fixed)
+    Theta_som: float = 5.88155   # SOM threshold
     alpha_som: float = 0.817185  # SOM gain
 
-    Theta_vip: float = 13.9068   # VIP threshold (fixed)
-    alpha_vip: float = 0.100998  # VIP gain (very low - gradual response)
+    Theta_vip: float = 13.9068   # VIP threshold
+    alpha_vip: float = 0.100998  # VIP gain
 
     g_e: float = 0.377039  # Curvature for excitatory (PYR)
     g_i: float = 0.400125  # Curvature for inhibitory (PV, SOM, VIP)

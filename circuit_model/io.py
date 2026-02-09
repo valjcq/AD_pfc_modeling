@@ -26,6 +26,9 @@ def load_params_json(path: str) -> "CircuitParams":
 
     with open(path, "r", encoding="utf-8") as f:
         d = json.load(f)
+    # Handle nested {"params": {...}} format (e.g. from log_best_result)
+    if "params" in d and isinstance(d["params"], dict):
+        d = d["params"]
     base = CircuitParams()
     allowed = {fld.name for fld in fields(CircuitParams)}
     clean = {k: d[k] for k in d if k in allowed}

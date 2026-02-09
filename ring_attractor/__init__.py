@@ -10,7 +10,7 @@ Architecture:
 - N nodes arranged in a circle (default: 64)
 - Each node: 4-population circuit with existing dynamics
 - Inter-node PYR→PYR: Local excitation with Gaussian profile
-- Inter-node PV: Global inhibition between nodes
+- Inter-node PYR→PV: Global excitation of PV (E→I→E inhibitory loop)
 - SOM, VIP: Local only (no inter-node connections)
 
 Usage:
@@ -59,7 +59,7 @@ from .connectivity import (
     angular_distance,
     gaussian_profile,
     build_pyr_pyr_weights,
-    build_pv_global_weights,
+    build_pv_pyr_weights,
     RingConnectivity,
 )
 
@@ -96,7 +96,9 @@ from .plotting import (
     plot_ring_snapshot,
     plot_bump_tracking,
     plot_node_activity,
+    plot_bump_metrics_over_time,
     plot_ring_dashboard,
+    plot_ring_connectome,
     print_simulation_summary,
 )
 
@@ -107,7 +109,7 @@ __all__ = [
     "angular_distance",
     "gaussian_profile",
     "build_pyr_pyr_weights",
-    "build_pv_global_weights",
+    "build_pv_pyr_weights",
     "RingConnectivity",
     # Stimulus
     "RingStimulus",
@@ -132,6 +134,8 @@ __all__ = [
     "plot_ring_snapshot",
     "plot_bump_tracking",
     "plot_node_activity",
+    "plot_bump_metrics_over_time",
     "plot_ring_dashboard",
+    "plot_ring_connectome",
     "print_simulation_summary",
 ]

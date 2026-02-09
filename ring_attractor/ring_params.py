@@ -24,16 +24,16 @@ class RingParams:
 
     Inter-node connectivity:
     - PYR→PYR: Local excitation with Gaussian profile (angular distance)
-    - PV: Global inhibition between nodes
+    - PV→PYR: Global inhibition of PYR (PV driven by local PYR, then inhibits PYR globally)
     - SOM, VIP: Local only (no inter-node connections)
 
     Attributes:
         n_nodes: Number of nodes on the ring (default: 64)
         w_pyr_pyr_inter: Peak strength of inter-node PYR→PYR excitation
         sigma_pyr_deg: Width of Gaussian connectivity profile (degrees)
-        w_pv_global: Strength of global PV inhibition between nodes
-        pv_global_type: Type of PV global inhibition ("uniform" or "gaussian")
-        sigma_pv_deg: Width of PV inhibition profile if gaussian (degrees)
+        w_pv_global: Strength of inter-node PV→PYR global inhibition
+        pv_global_type: Type of PV→PYR connectivity ("uniform" or "gaussian")
+        sigma_pv_deg: Width of PV→PYR profile if gaussian (degrees)
     """
 
     # === Network geometry ===
@@ -43,8 +43,8 @@ class RingParams:
     w_pyr_pyr_inter: float = 1.5  # Peak strength of inter-node PYR→PYR
     sigma_pyr_deg: float = 30.0  # Width of Gaussian (degrees), ~30-60 typical
 
-    # === Inter-node PV inhibition (global) ===
-    w_pv_global: float = 0.3  # Strength of global PV inhibition
+    # === Inter-node PV→PYR global inhibition ===
+    w_pv_global: float = 0.3  # Strength of global PV→PYR inhibition
     pv_global_type: Literal["uniform", "gaussian"] = "uniform"
     sigma_pv_deg: float = 180.0  # If gaussian, width (180 = almost uniform)
 

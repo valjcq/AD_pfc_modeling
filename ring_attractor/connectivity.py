@@ -71,9 +71,13 @@ def build_pyr_pyr_weights(ring_params: RingParams) -> np.ndarray:
     return W
 
 
-def build_pv_global_weights(ring_params: RingParams) -> np.ndarray:
+def build_pv_pyr_weights(ring_params: RingParams) -> np.ndarray:
     """
-    Build inter-node PV global inhibition weight matrix.
+    Build inter-node PV→PYR global inhibition weight matrix.
+
+    PV from all nodes inhibits PYR at each node. Combined with local
+    PYR→PV excitation (w_ep), this creates the E→I→E loop:
+    local PYR excites local PV, then PV globally inhibits PYR.
 
     Can be uniform (all-to-all equal) or Gaussian (distance-dependent).
 
@@ -81,7 +85,7 @@ def build_pv_global_weights(ring_params: RingParams) -> np.ndarray:
         ring_params: RingParams configuration
 
     Returns:
-        W: Shape (n_nodes, n_nodes), W[i,j] = weight from j to i
+        W: Shape (n_nodes, n_nodes), W[i,j] = weight from PV at j to PYR at i
     """
     n = ring_params.n_nodes
 
@@ -107,14 +111,14 @@ class RingConnectivity:
     """Pre-computed connectivity matrices for efficient simulation."""
 
     W_pyr_pyr: np.ndarray  # Inter-node PYR→PYR, shape (n_nodes, n_nodes)
-    W_pv_global: np.ndarray  # Inter-node PV inhibition, shape (n_nodes, n_nodes)
+    W_pv_pyr: np.ndarray  # Inter-node PV→PYR, shape (n_nodes, n_nodes)
 
     @classmethod
     def from_params(cls, ring_params: RingParams) -> "RingConnectivity":
         """Build connectivity from parameters."""
         return cls(
             W_pyr_pyr=build_pyr_pyr_weights(ring_params),
-            W_pv_global=build_pv_global_weights(ring_params),
+            W_pv_pyr=build_pv_pyr_weights(ring_params),
         )
 
     def compute_inter_node_inputs(
@@ -128,13 +132,13 @@ class RingConnectivity:
             r_pv: PV firing rates, shape (n_nodes,)
 
         Returns:
-            I_pyr_inter: Inter-node excitatory input to PYR, shape (n_nodes,)
-            I_pv_inter: Inter-node inhibitory input (from global PV), shape (n_nodes,)
+            I_pyr_inter: Inter-node excitatory input to PYR (from PYR→PYR), shape (n_nodes,)
+            I_pv_pyr_inter: Inter-node inhibitory input to PYR (from global PV), shape (n_nodes,)
         """
-        # PYR receives excitation from neighboring PYR
-        I_pyr_inter = self.W_pyr_pyr @ r_pyr  # Matrix-vector multiply
+        # PYR receives local excitation from neighboring PYR
+        I_pyr_inter = self.W_pyr_pyr @ r_pyr
 
-        # All nodes receive global PV inhibition
-        I_pv_inter = self.W_pv_global @ r_pv
+        # PYR receives global inhibition from PV at all nodes
+        I_pv_pyr_inter = self.W_pv_pyr @ r_pv
 
-        return I_pyr_inter, I_pv_inter
+        return I_pyr_inter, I_pv_pyr_inter
