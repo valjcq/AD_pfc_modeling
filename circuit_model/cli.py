@@ -189,7 +189,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/runs", args.params_json)
-        save_path = os.path.join(out_dir, "circuit_simulation.png")
+        save_path = os.path.join(out_dir, f"circuit_simulation_{args.noise_type}.png")
 
     plot_simulation_dashboard(
         result,
@@ -250,7 +250,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/boxplot", args.params_json)
-        save_path = os.path.join(out_dir, "study_boxplots.png")
+        save_path = os.path.join(out_dir, f"study_boxplots_{cfg.noise_type}.png")
 
     # Generate box plot
     print("\nGenerating box plot...")
