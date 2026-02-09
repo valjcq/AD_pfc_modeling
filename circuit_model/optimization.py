@@ -22,11 +22,12 @@ import os
 
 import nevergrad as ng
 import numpy as np
+from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
 from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr
-from .io import log_best_result
+from .io import log_best_result, save_params_json
 
 
 @dataclass
@@ -236,6 +237,7 @@ def nevergrad_optimize(
     log_file: Optional[str] = None,
     log_interval: int = 50,
     n_workers: Optional[int] = None,
+    save_best_json: Optional[str] = None,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -295,8 +297,9 @@ def nevergrad_optimize(
 
         last_step = 0
         stopped_early = False
+        pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
 
-        for step in range(1, n_samples + 1):
+        for step in pbar:
             last_step = step
             x = optimizer.ask()
             params = params_from_ng_dict(x.value, base)
@@ -306,19 +309,7 @@ def nevergrad_optimize(
 
             cand = Candidate(loss=L, means=means, ko_means=ko_means, params=params)
 
-            ko_str = ""
-            if ko_means.alpha7_ko is not None:
-                ko_str += f" a7KO_pyr={ko_means.alpha7_ko[0]:.4g}"
-            if ko_means.alpha5_ko is not None:
-                ko_str += f" a5KO_pyr={ko_means.alpha5_ko[0]:.4g}"
-            if ko_means.beta2_ko is not None:
-                ko_str += f" b2KO_pyr={ko_means.beta2_ko[0]:.4g}"
-
-            print(
-                f"[{step}/{n_samples}] loss={L:.6g} "
-                f"means=[pyr={means[0]:.4g}, som={means[1]:.4g}, pv={means[2]:.4g}, vip={means[3]:.4g}]"
-                f"{ko_str}"
-            )
+            prev_best_loss = best[0].loss if best else float("inf")
 
             if len(best) < top_k:
                 best.append(cand)
@@ -326,6 +317,11 @@ def nevergrad_optimize(
             elif L < best[-1].loss:
                 best[-1] = cand
                 best.sort(key=lambda c: c.loss)
+
+            pbar.set_postfix(loss=f"{L:.4g}", best=f"{best[0].loss:.4g}")
+
+            if save_best_json and best[0].loss < prev_best_loss:
+                save_params_json(save_best_json, best[0].params)
 
             if log_file and step % log_interval == 0 and best:
                 _log_candidate(log_file, step, best[0], target)
@@ -335,6 +331,8 @@ def nevergrad_optimize(
                     _log_candidate(log_file, step, best[0], target)
                 stopped_early = True
                 break
+
+        pbar.close()
 
         if log_file and best and (not stopped_early) and last_step % log_interval != 0:
             _log_candidate(log_file, last_step, best[0], target)
