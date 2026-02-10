@@ -16,3 +16,4 @@
 
 ### TODO
 - Try to fit the model with membrane time constant set at 20ms.
+- Check if there's the value of KO condition for fitting the model.
