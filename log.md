@@ -30,3 +30,4 @@ I understood that the model in itslef (wilson cowen based equation) is suited to
 ### TODO
 - Try to fit the model with membrane time constant set at 20ms.
 - Check the 2 state model to see why this one give time-depending frequency and switch between multiple state.
+- Check if there's the value of KO condition for fitting the model.
