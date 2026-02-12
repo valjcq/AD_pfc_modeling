@@ -44,6 +44,18 @@ POPULATION_COLORS = {
     "VIP": "#CC79A7",  # Reddish purple
 }
 
+# Condition colors for multi-condition comparison plots (Okabe-Ito palette)
+CONDITION_COLORS: dict[str, str] = {
+    "WT":         "#000000",  # Black
+    "WT_APP":     "#E69F00",  # Orange
+    "a7_KO":      "#56B4E9",  # Sky blue
+    "a7_KO_APP":  "#009E73",  # Bluish green
+    "b2_KO":      "#F0E442",  # Yellow
+    "b2_KO_APP":  "#0072B2",  # Blue
+    "a5_KO":      "#D55E00",  # Vermillion
+    "a5_KO_APP":  "#CC79A7",  # Reddish purple
+}
+
 
 def plot_ring_activity_heatmap(
     result: "RingSimulationResult",
@@ -54,6 +66,7 @@ def plot_ring_activity_heatmap(
     time_range: Optional[tuple[float, float]] = None,
     show_stimulus: bool = True,
     show_decoded: bool = True,
+    t_offset: float = 0.0,
 ):
     """
     Plot activity as heatmap (time x position).
@@ -90,8 +103,11 @@ def plot_ring_activity_heatmap(
         activity = activity[mask]
         t = t[mask]
 
+    # Apply display offset
+    t_display = t - t_offset
+
     # Create heatmap
-    extent = [0, 360, t[-1], t[0]]
+    extent = [0, 360, t_display[-1], t_display[0]]
     im = ax.imshow(
         activity,
         aspect="auto",
@@ -106,8 +122,8 @@ def plot_ring_activity_heatmap(
 
     # Mark stimulus
     if show_stimulus and result.stim_window[1] > result.stim_window[0]:
-        ax.axhline(result.stim_window[0], color="white", linestyle="--", linewidth=1)
-        ax.axhline(result.stim_window[1], color="white", linestyle="--", linewidth=1)
+        ax.axhline(result.stim_window[0] - t_offset, color="white", linestyle="--", linewidth=1)
+        ax.axhline(result.stim_window[1] - t_offset, color="white", linestyle="--", linewidth=1)
         ax.axvline(result.stim_angle_deg, color="white", linestyle=":", linewidth=1)
 
     # Overlay decoded position
@@ -118,9 +134,9 @@ def plot_ring_activity_heatmap(
         if time_range:
             mask_full = (result.t_ms >= time_range[0]) & (result.t_ms <= time_range[1])
             center_deg = center_deg[mask_full]
-            t_plot = result.t_ms[mask_full]
+            t_plot = result.t_ms[mask_full] - t_offset
         else:
-            t_plot = result.t_ms
+            t_plot = result.t_ms - t_offset
 
         # Only plot where amplitude is reasonable
         valid = amplitude > 0.2 if not time_range else amplitude[mask_full] > 0.2
@@ -148,6 +164,7 @@ def plot_ring_snapshot(
     ax=None,
     polar: bool = True,
     show_all_populations: bool = False,
+    t_offset: float = 0.0,
 ):
     """
     Plot activity pattern at a single time point.
@@ -201,7 +218,7 @@ def plot_ring_snapshot(
             ax.plot(angles, r_pyr, color=color, linewidth=2)
             ax.fill_between(angles, 0, r_pyr, color=color, alpha=0.3)
 
-    ax.set_title(f"t = {actual_t:.1f} ms")
+    ax.set_title(f"t = {actual_t - t_offset:.1f} ms")
 
     if not polar:
         ax.set_xlabel("Position (degrees)")
@@ -216,6 +233,7 @@ def plot_bump_tracking(
     population: int = 0,
     ax=None,
     show_cue: bool = True,
+    t_offset: float = 0.0,
 ):
     """
     Plot decoded bump position over time.
@@ -240,7 +258,7 @@ def plot_bump_tracking(
 
     # Color by decoding confidence
     scatter = ax.scatter(
-        result.t_ms, center_deg, c=amplitude, cmap="viridis", s=1, alpha=0.5
+        result.t_ms - t_offset, center_deg, c=amplitude, cmap="viridis", s=1, alpha=0.5
     )
     plt.colorbar(scatter, ax=ax, label="Decoding Confidence")
 
@@ -253,7 +271,7 @@ def plot_bump_tracking(
             label=f"Cue: {result.stim_angle_deg:.0f}°",
         )
         ax.axvspan(
-            result.stim_window[0], result.stim_window[1], alpha=0.2, color="red"
+            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset, alpha=0.2, color="red"
         )
         ax.legend(loc="upper right")
 
@@ -270,6 +288,7 @@ def plot_node_activity(
     nodes: Optional[list[int]] = None,
     population: int = 0,
     ax=None,
+    t_offset: float = 0.0,
 ):
     """
     Plot activity at specific nodes over time.
@@ -298,7 +317,7 @@ def plot_node_activity(
     for node, color in zip(nodes, colors):
         angle = result.ring_params.node_angles_deg[node]
         ax.plot(
-            result.t_ms,
+            result.t_ms - t_offset,
             result.r[:, node, population],
             color=color,
             label=f"Node {node} ({angle:.0f}°)",
@@ -308,7 +327,7 @@ def plot_node_activity(
     # Mark stimulus window
     if result.stim_window[1] > result.stim_window[0]:
         ax.axvspan(
-            result.stim_window[0], result.stim_window[1], alpha=0.2, color="gray"
+            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset, alpha=0.2, color="gray"
         )
 
     ax.set_xlabel("Time (ms)")
@@ -324,6 +343,7 @@ def plot_bump_metrics_over_time(
     population: int = 0,
     ax=None,
     time_range: Optional[tuple[float, float]] = None,
+    t_offset: float = 0.0,
 ):
     """
     Plot decoded bump center, amplitude, and width over time.
@@ -367,11 +387,15 @@ def plot_bump_metrics_over_time(
         for j, i in enumerate(sample_idx)
     ])
 
+    # Apply display offset
+    t_display = t - t_offset
+    t_width_display = t_width - t_offset
+
     if ax is None:
         fig, ax = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
 
     # --- Center position ---
-    ax[0].scatter(t, center_deg, c=amplitude, cmap="viridis", s=1, alpha=0.5)
+    ax[0].scatter(t_display, center_deg, c=amplitude, cmap="viridis", s=1, alpha=0.5)
     if result.stim_angle_deg > 0:
         ax[0].axhline(result.stim_angle_deg, color="red", ls="--", lw=1,
                        label=f"Cue: {result.stim_angle_deg:.0f}°")
@@ -381,19 +405,19 @@ def plot_bump_metrics_over_time(
     ax[0].set_title("Bump Metrics Over Time")
 
     # --- Amplitude ---
-    ax[1].plot(t, amplitude, color="#009E73", lw=1)
+    ax[1].plot(t_display, amplitude, color="#009E73", lw=1)
     ax[1].set_ylabel("Amplitude")
     ax[1].set_ylim(0, max(1, amplitude.max() * 1.1))
 
     # --- Width ---
-    ax[2].plot(t_width, widths, color="#CC79A7", lw=1)
+    ax[2].plot(t_width_display, widths, color="#CC79A7", lw=1)
     ax[2].set_ylabel("Width (°)")
     ax[2].set_xlabel("Time (ms)")
 
     # Mark stimulus window on all axes
     if result.stim_window[1] > result.stim_window[0]:
         for a in ax:
-            a.axvspan(result.stim_window[0], result.stim_window[1],
+            a.axvspan(result.stim_window[0] - t_offset, result.stim_window[1] - t_offset,
                       alpha=0.15, color="red")
 
     return ax
@@ -404,6 +428,7 @@ def plot_ring_dashboard(
     figsize: tuple = (14, 10),
     save_path: Optional[str] = None,
     time_range: Optional[tuple[float, float]] = None,
+    t_offset: float = 0.0,
 ):
     """
     Comprehensive visualization dashboard for ring attractor simulation.
@@ -424,24 +449,24 @@ def plot_ring_dashboard(
 
     # Top row: Activity heatmap (spans 2 columns)
     ax_heat = fig.add_subplot(gs[0, :2])
-    plot_ring_activity_heatmap(result, ax=ax_heat, time_range=time_range)
+    plot_ring_activity_heatmap(result, ax=ax_heat, time_range=time_range, t_offset=t_offset)
 
     # Top right: Snapshot at end of delay
     ax_snap = fig.add_subplot(gs[0, 2], projection="polar")
     t_snap = min(result.stim_window[1] + 500, result.t_ms[-1])
-    plot_ring_snapshot(result, t_snap, ax=ax_snap)
+    plot_ring_snapshot(result, t_snap, ax=ax_snap, t_offset=t_offset)
 
     # Middle row: Bump tracking
     ax_track = fig.add_subplot(gs[1, :])
-    plot_bump_tracking(result, ax=ax_track)
+    plot_bump_tracking(result, ax=ax_track, t_offset=t_offset)
     if time_range:
-        ax_track.set_xlim(time_range)
+        ax_track.set_xlim((time_range[0] - t_offset, time_range[1] - t_offset))
 
     # Bottom left: Activity at specific nodes
     ax_nodes = fig.add_subplot(gs[2, :2])
-    plot_node_activity(result, ax=ax_nodes)
+    plot_node_activity(result, ax=ax_nodes, t_offset=t_offset)
     if time_range:
-        ax_nodes.set_xlim(time_range)
+        ax_nodes.set_xlim((time_range[0] - t_offset, time_range[1] - t_offset))
 
     # Bottom right: Metrics text
     ax_metrics = fig.add_subplot(gs[2, 2])
@@ -620,6 +645,184 @@ def plot_ring_connectome(
         ax.figure.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return ax
+
+
+def plot_bump_metrics_comparison(
+    results: dict[str, "RingSimulationResult"],
+    population: int = 0,
+    time_range: Optional[tuple[float, float]] = None,
+    t_offset: float = 0.0,
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (12, 8),
+    save_path: Optional[str] = None,
+):
+    """
+    Overlay bump metrics (center, amplitude, width) over time for multiple conditions.
+
+    Creates a 3-panel figure with one line per condition.
+
+    Parameters:
+        results: dict mapping condition_key -> RingSimulationResult
+        population: Which population to decode (0=PYR)
+        time_range: (start_ms, end_ms) in absolute time for filtering
+        t_offset: Subtracted from display time (e.g. burn_in_ms)
+        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
+        figsize: Figure size
+        save_path: If provided, save figure
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+    from .analysis import decode_bump_center, estimate_bump_width
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
+
+    for cond_key, result in results.items():
+        color = condition_colors.get(cond_key, None)
+        center_deg, amplitude = decode_bump_center(result, population)
+        t = result.t_ms
+
+        # Time range filtering
+        if time_range:
+            mask = (t >= time_range[0]) & (t <= time_range[1])
+            t = t[mask]
+            center_deg = center_deg[mask]
+            amplitude = amplitude[mask]
+            activity = result.r[mask, :, population]
+        else:
+            activity = result.r[:, :, population]
+
+        t_display = t - t_offset
+
+        # Subsample width
+        n_samples = min(200, len(t))
+        sample_idx = np.linspace(0, len(t) - 1, n_samples, dtype=int)
+        t_w_display = t_display[sample_idx]
+        widths = np.array([
+            estimate_bump_width(
+                activity[i],
+                result.ring_params.node_angles_rad,
+                center_deg[sample_idx[j]] * np.pi / 180,
+            )
+            for j, i in enumerate(sample_idx)
+        ])
+
+        # Use condition name from study if available
+        from circuit_model.study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        axes[0].plot(t_display, center_deg, color=color, lw=1, alpha=0.7, label=label)
+        axes[1].plot(t_display, amplitude, color=color, lw=1, alpha=0.7, label=label)
+        axes[2].plot(t_w_display, widths, color=color, lw=1, alpha=0.7, label=label)
+
+    # Mark stimulus window (from first result)
+    first_result = next(iter(results.values()))
+    if first_result.stim_window[1] > first_result.stim_window[0]:
+        for ax in axes:
+            ax.axvspan(
+                first_result.stim_window[0] - t_offset,
+                first_result.stim_window[1] - t_offset,
+                alpha=0.15, color="red",
+            )
+
+    # Cue location
+    if first_result.stim_angle_deg > 0:
+        axes[0].axhline(first_result.stim_angle_deg, color="red", ls="--", lw=1)
+
+    axes[0].set_ylabel("Center (°)")
+    axes[0].set_ylim(0, 360)
+    axes[0].set_title("Bump Metrics Comparison")
+    axes[0].legend(loc="upper right", fontsize=8)
+    axes[1].set_ylabel("Amplitude")
+    axes[2].set_ylabel("Width (°)")
+    axes[2].set_xlabel("Time (ms)")
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+# Mapping from metric dict keys to human-readable labels
+_METRIC_DISPLAY_NAMES: dict[str, str] = {
+    "amplitude_mean": "Amplitude",
+    "width_mean_deg": "Width (°)",
+    "error_from_cue_deg": "Error from Cue (°)",
+    "center_std_deg": "Center Std (°)",
+    "diffusion_deg2_per_s": "Diffusion (°²/s)",
+    "drift_rate_deg_per_s": "Drift (°/s)",
+}
+
+
+def plot_metrics_vs_delay(
+    metrics_over_delay: dict[str, list[dict]],
+    delay_labels: list[str],
+    metrics_to_plot: tuple[str, ...] = ("amplitude_mean", "width_mean_deg", "error_from_cue_deg"),
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (14, 5),
+    save_path: Optional[str] = None,
+):
+    """
+    Plot bump metrics at multiple delay timepoints, comparing conditions.
+
+    Creates one subplot per metric with lines for each condition.
+
+    Parameters:
+        metrics_over_delay: dict mapping condition_key -> list of metric dicts
+            (output of compute_metrics_at_delay_times)
+        delay_labels: Human-readable labels for each timepoint (e.g. ["1s", "2s", "3s"])
+        metrics_to_plot: Which metric keys to plot (one panel per metric)
+        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
+        figsize: Figure size
+        save_path: If provided, save figure
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    n_metrics = len(metrics_to_plot)
+    fig, axes = plt.subplots(1, n_metrics, figsize=figsize)
+    if n_metrics == 1:
+        axes = [axes]
+
+    x_pos = np.arange(len(delay_labels))
+
+    for cond_key, metric_list in metrics_over_delay.items():
+        color = condition_colors.get(cond_key, None)
+
+        from circuit_model.study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        for ax, metric_key in zip(axes, metrics_to_plot):
+            values = [m[metric_key] for m in metric_list]
+            ax.plot(x_pos, values, marker="o", color=color, label=label, lw=2, markersize=6)
+
+    for ax, metric_key in zip(axes, metrics_to_plot):
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(delay_labels)
+        ax.set_xlabel("Delay time")
+        ax.set_ylabel(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
+        ax.set_title(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle("Bump Metrics During Delay Period", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
 
 
 def print_simulation_summary(result: "RingSimulationResult") -> None:

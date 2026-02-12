@@ -89,7 +89,7 @@ def simulate_ring(
     r0: Optional[np.ndarray] = None,
     I_adapt0: Optional[np.ndarray] = None,
     seed: Optional[int] = None,
-    noise_type: NoiseType = "none",
+    noise_type: NoiseType = "white",
     tau_noise_ms: float = 5.0,
     connectivity: Optional[RingConnectivity] = None,
 ) -> RingSimulationResult:

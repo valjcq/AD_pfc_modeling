@@ -85,6 +85,7 @@ from .analysis import (
     estimate_bump_width,
     angular_distance_deg,
     compute_bump_metrics,
+    compute_metrics_at_delay_times,
     compute_working_memory_accuracy,
 )
 
@@ -92,6 +93,7 @@ from .analysis import (
 from .plotting import (
     POPULATION_NAMES,
     POPULATION_COLORS,
+    CONDITION_COLORS,
     plot_ring_activity_heatmap,
     plot_ring_snapshot,
     plot_bump_tracking,
@@ -99,6 +101,8 @@ from .plotting import (
     plot_bump_metrics_over_time,
     plot_ring_dashboard,
     plot_ring_connectome,
+    plot_bump_metrics_comparison,
+    plot_metrics_vs_delay,
     print_simulation_summary,
 )
 
@@ -126,10 +130,12 @@ __all__ = [
     "estimate_bump_width",
     "angular_distance_deg",
     "compute_bump_metrics",
+    "compute_metrics_at_delay_times",
     "compute_working_memory_accuracy",
     # Plotting
     "POPULATION_NAMES",
     "POPULATION_COLORS",
+    "CONDITION_COLORS",
     "plot_ring_activity_heatmap",
     "plot_ring_snapshot",
     "plot_bump_tracking",
@@ -137,5 +143,7 @@ __all__ = [
     "plot_bump_metrics_over_time",
     "plot_ring_dashboard",
     "plot_ring_connectome",
+    "plot_bump_metrics_comparison",
+    "plot_metrics_vs_delay",
     "print_simulation_summary",
 ]
