@@ -257,6 +257,37 @@ def compute_bump_metrics(
     }
 
 
+def compute_metrics_at_delay_times(
+    result: RingSimulationResult,
+    delay_times_ms: list[float],
+    window_ms: float = 200.0,
+    population: int = 0,
+) -> list[dict]:
+    """
+    Compute bump metrics at multiple timepoints during the delay.
+
+    Parameters:
+        result: RingSimulationResult
+        delay_times_ms: Absolute time points (ms) at which to evaluate metrics.
+            Each defines the center of a window of width window_ms.
+        window_ms: Averaging window around each timepoint (ms)
+        population: Which population to analyze (0=PYR)
+
+    Returns:
+        List of metric dicts (same format as compute_bump_metrics), one per
+        timepoint.  Each dict also includes 'eval_time_ms'.
+    """
+    metrics_list = []
+    half_w = window_ms / 2
+    for t in delay_times_ms:
+        t_start = max(t - half_w, result.t_ms[0])
+        t_end = min(t + half_w, result.t_ms[-1])
+        m = compute_bump_metrics(result, time_window=(t_start, t_end), population=population)
+        m["eval_time_ms"] = t
+        metrics_list.append(m)
+    return metrics_list
+
+
 def compute_working_memory_accuracy(
     result: RingSimulationResult,
     delay_end_ms: Optional[float] = None,
