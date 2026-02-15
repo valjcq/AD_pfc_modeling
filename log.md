@@ -14,6 +14,11 @@
 - Started to explore the litterature about bump attractor and the parameter fit.
 - Thought about the implications of fitting a model on change of state (transients/min) instead of firing rate in the context of working memory.
 
+### 12.02 
+- Explored the Comte article about working memory and bump attractor with interneurons. The model is based on a firing rate model, and not a rate model. There's no distinction of the different type of interneurons, but this work is interessant to base the working memory task on, and to check their connections value.
+- Did some simulation of the ring with multiples values of the stimuli and accross differents conditions.
+The model do exactly what we expect, with a bump of activity that is more or less strong depending on the value of the stimulus. On top of that, the bump metrics are different across conditions, with a stronger bump for the WT condition and a weaker bump for the APP condition. The KO condition also alter the stabilit of the bump, which is consistent with our hypothesis that the nAChR dysfunction would alter the stability of the bump attractor and therefore the working memory performance.
+
 ### Discovery
 - The OU noise type doesn't give the difference accross condition observed in the article. However, it gives the variance of the firing rate across trials. We can do the opposite observations with the white noise.
 - The code params are in better range than the supp_info one, but they are weaker value than the ones in the article.

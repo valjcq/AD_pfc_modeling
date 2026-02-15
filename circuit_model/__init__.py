@@ -12,17 +12,23 @@ The model uses the Wong-Wang transfer function and supports:
 - Nevergrad-based parameter optimization
 - Nicotinic receptor knockout simulations (alpha7, alpha5, beta2)
 - Multiple noise types (white, Ornstein-Uhlenbeck)
+- Ring attractor network for working memory (see circuit_model.ring)
 
 Usage:
-    # As a library
+    # Single-node circuit
     from circuit_model import CircuitParams, simulate_circuit, mean_rates
 
     params = CircuitParams()
     result = simulate_circuit(params, T_ms=1000)
     rates = mean_rates(result, burn_in_ms=500, window_ms=500)
 
+    # Ring attractor network
+    from circuit_model.ring import RingParams, simulate_ring, RingStimulus
+
     # From command line
-    python -m circuit_model --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8
+    python -m circuit_model run                    # single-node simulation
+    python -m circuit_model ring-run               # ring attractor simulation
+    python -m circuit_model ring-study             # ring attractor study
 """
 
 from .params import CircuitParams, ParamBound, default_bounds

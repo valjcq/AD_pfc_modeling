@@ -1,6 +1,10 @@
-# PFC Circuit Model: 4-Population Rate Model with Parameter Optimization
+# PFC Circuit Model: 4-Population Rate Model with Ring Attractor
 
-A computational model of the prefrontal cortex (PFC) microcircuit implementing a 4-population rate model with Nevergrad-based parameter optimization.
+A computational model of the prefrontal cortex (PFC) microcircuit implementing a 4-population rate model with Nevergrad-based parameter optimization and a ring attractor network for spatial working memory.
+
+**Documentation:**
+- [CLI Reference](docs/CLI.md) -- All commands and parameters
+- [Ring Attractor Model](docs/ring_attractor.md) -- Mathematical formulation of the ring network
 
 ---
 
@@ -11,10 +15,10 @@ A computational model of the prefrontal cortex (PFC) microcircuit implementing a
 3. [Mathematical Formulation](#mathematical-formulation)
 4. [Nicotinic Receptor Modulation](#nicotinic-receptor-modulation)
 5. [Code Structure](#code-structure)
-6. [Parameter Reference](#parameter-reference)
-7. [Usage](#usage)
+6. [Quick Start](#quick-start)
+7. [Parameter Reference](#parameter-reference)
 8. [Data Structures](#data-structures)
-9. [Package Structure](#package-structure)
+9. [References](#references)
 
 ---
 
@@ -233,116 +237,51 @@ The model includes modulation by three nicotinic acetylcholine receptor (nAChR) 
 
 ## Code Structure
 
-### Architecture Diagram
+The code is organized as a unified Python package:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        circuit_model.py                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────────┐    ┌─────────────────────┐                │
-│  │   TRANSFER FUNCTION │    │    DATA CLASSES     │                │
-│  │   ─────────────────│    │   ───────────────── │                │
-│  │   phi_wong_wang()   │    │   CircuitParams     │                │
-│  └─────────────────────┘    │   SimulationResult  │                │
-│                             │   TargetRates       │                │
-│                             │   FitConfig         │                │
-│  ┌─────────────────────┐    │   ParamBound        │                │
-│  │     SIMULATION      │    │   KOMeans           │                │
-│  │   ─────────────────│    │   Candidate         │                │
-│  │   simulate_circuit()│    └─────────────────────┘                │
-│  │   mean_rates()      │                                           │
-│  └─────────────────────┘    ┌─────────────────────┐                │
-│                             │   LOSS FUNCTIONS    │                │
-│  ┌─────────────────────┐    │   ───────────────── │                │
-│  │    OPTIMIZATION     │    │   loss_from_means() │                │
-│  │   ─────────────────│    │   loss_from_ko_pyr()│                │
-│  │   default_bounds()  │    └─────────────────────┘                │
-│  │   build_nevergrad   │                                           │
-│  │   _parametrization()│    ┌─────────────────────┐                │
-│  │   run_trials()      │    │      I/O            │                │
-│  │   evaluate_params() │    │   ───────────────── │                │
-│  │   nevergrad_        │    │   load_params_json()│                │
-│  │   optimize()        │    │   save_params_json()│                │
-│  └─────────────────────┘    │   log_best_result() │                │
-│                             └─────────────────────┘                │
-│  ┌─────────────────────┐                                           │
-│  │        CLI          │                                           │
-│  │   ─────────────────│                                           │
-│  │   main()            │                                           │
-│  │   parse_freeze_list│                                           │
-│  └─────────────────────┘                                           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+circuit_model/
+├── __init__.py          # Public API exports
+├── __main__.py          # Entry point: python -m circuit_model
+├── params.py            # CircuitParams, ParamBound, default_bounds()
+├── transfer.py          # phi_wong_wang() transfer function
+├── simulation.py        # simulate_circuit(), mean_rates()
+├── loss.py              # TargetRates, FitConfig, loss functions
+├── optimization.py      # nevergrad_optimize(), evaluate_params()
+├── study.py             # Batch study across 8 experimental conditions
+├── plotting.py          # Visualization (dashboard, box plots)
+├── io.py                # JSON I/O, output_dir()
+├── cli.py               # Unified CLI (run, optimize, study, ring-run, ring-study)
+│
+└── ring/                # Ring attractor subpackage
+    ├── __init__.py      # Ring API exports
+    ├── params.py        # RingParams (network geometry)
+    ├── connectivity.py  # Weight matrices (PYR-PYR, PV-PYR)
+    ├── stimulus.py      # RingStimulus, WorkingMemoryProtocol
+    ├── simulation.py    # simulate_ring(), RingSimulationResult
+    ├── analysis.py      # Bump decoding, drift, diffusion metrics
+    ├── plotting.py      # Ring-specific visualization
+    └── cli.py           # Ring CLI logic (cmd_run, cmd_study)
+
+docs/
+├── CLI.md               # Full CLI reference with parameter tables
+└── ring_attractor.md    # Mathematical formulation of the ring model
+
+tests/
+└── test_ring.py         # Ring attractor tests
 ```
 
-### Data Flow
+### CLI Commands
 
-```
-┌──────────────────┐
-│  Command Line    │
-│  Arguments       │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐     ┌──────────────────┐
-│  TargetRates     │     │  CircuitParams   │
-│  (target means)  │     │  (initial guess) │
-└────────┬─────────┘     └────────┬─────────┘
-         │                        │
-         └───────────┬────────────┘
-                     │
-                     ▼
-         ┌──────────────────────┐
-         │  nevergrad_optimize  │
-         │  ─────────────────── │
-         │  TwoPointsDE         │
-         │  optimizer           │
-         └──────────┬───────────┘
-                    │
-                    ▼ (loop)
-         ┌──────────────────────┐
-         │  evaluate_params     │
-         │  ─────────────────── │
-         │  Runs base + KO      │
-         │  conditions          │
-         └──────────┬───────────┘
-                    │
-         ┌──────────┴───────────┐
-         ▼                      ▼
-┌─────────────────┐    ┌─────────────────┐
-│  run_trials     │    │  run_trials     │
-│  (base params)  │    │  (KO params)    │
-└────────┬────────┘    └────────┬────────┘
-         │                      │
-         ▼                      ▼
-┌─────────────────┐    ┌─────────────────┐
-│simulate_circuit │    │simulate_circuit │
-│  → mean_rates   │    │  → mean_rates   │
-└────────┬────────┘    └────────┬────────┘
-         │                      │
-         └───────────┬──────────┘
-                     │
-                     ▼
-         ┌──────────────────────┐
-         │  loss_from_means     │
-         │  loss_from_ko_pyr    │
-         │  ─────────────────── │
-         │  Compute total loss  │
-         └──────────┬───────────┘
-                    │
-                    ▼
-         ┌──────────────────────┐
-         │  Update optimizer    │
-         │  Track best results  │
-         └──────────┬───────────┘
-                    │
-                    ▼
-         ┌──────────────────────┐
-         │  Output: Candidate   │
-         │  list (top_k best)   │
-         └──────────────────────┘
-```
+| Command | Description |
+|---------|-------------|
+| `python -m circuit_model run` | Single circuit simulation with plotting |
+| `python -m circuit_model optimize` | Nevergrad parameter optimization |
+| `python -m circuit_model study` | Batch study across 8 conditions |
+| `python -m circuit_model ring-run` | Ring attractor single-condition simulation |
+| `python -m circuit_model ring-study` | Ring attractor multi-condition comparison |
+
+See [docs/CLI.md](docs/CLI.md) for full parameter documentation.
 
 ---
 
@@ -448,101 +387,62 @@ Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7`
 
 ---
 
-## Usage
+## Quick Start
 
-### Basic Optimization
+### Run a simulation
 
 ```bash
-python circuit_model.py \
-    --target_pyr 5.0 \
-    --target_som 10.0 \
-    --target_pv 15.0 \
-    --target_vip 8.0 \
-    --n_samples 5000 \
-    --seed 42
+python -m circuit_model run
+python -m circuit_model run --params_json my_params.json --noise_type ou
 ```
 
-### With Knockout Targets
+### Optimize parameters
 
 ```bash
-python circuit_model.py \
-    --target_pyr 5.0 \
-    --target_som 10.0 \
-    --target_pv 15.0 \
-    --target_vip 8.0 \
-    --target_alpha7_ko_pyr 7.0 \
-    --target_beta2_ko_pyr 6.0 \
-    --n_samples 10000 \
-    --save_best_json best_params.json
-```
-
-### With Noise
-
-```bash
-python circuit_model.py \
-    --target_pyr 5.0 \
-    --target_som 10.0 \
-    --target_pv 15.0 \
-    --target_vip 8.0 \
-    --noise_type ou \
-    --tau_noise_ms 10.0 \
+python -m circuit_model optimize \
+    --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 \
     --n_samples 5000
 ```
 
-### Starting from Previous Parameters
+### Batch study across conditions
 
 ```bash
-python circuit_model.py \
-    --base_params_json previous_best.json \
-    --target_pyr 5.0 \
-    --target_som 10.0 \
-    --target_pv 15.0 \
-    --target_vip 8.0 \
-    --n_samples 2000
+python -m circuit_model study --n_runs 50 --noise_type white
 ```
 
-### Freezing Parameters
+### Ring attractor simulation
 
 ```bash
-python circuit_model.py \
-    --target_pyr 5.0 \
-    --target_som 10.0 \
-    --target_pv 15.0 \
-    --target_vip 8.0 \
-    --freeze "tau_s,g_gaba_base,w_ee" \
-    --n_samples 5000
+# Single condition
+python -m circuit_model ring-run --condition WT --amplitude 150
+
+# Multi-condition comparison
+python -m circuit_model ring-study --conditions WT WT_APP a7_KO --n_trials 10
 ```
 
-### All Command-Line Options
+### Use as a library
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--target_pyr` | float | required | Target mean rate for PYR |
-| `--target_som` | float | required | Target mean rate for SOM |
-| `--target_pv` | float | required | Target mean rate for PV |
-| `--target_vip` | float | required | Target mean rate for VIP |
-| `--target_alpha7_ko_pyr` | float | None | Target PYR rate under α7 KO |
-| `--target_alpha5_ko_pyr` | float | None | Target PYR rate under α5 KO |
-| `--target_beta2_ko_pyr` | float | None | Target PYR rate under β2 KO |
-| `--n_samples` | int | 5000 | Number of optimization samples |
-| `--top_k` | int | 10 | Keep top K candidates |
-| `--seed` | int | 0 | Random seed |
-| `--early_stop_loss` | float | 1e-4 | Stop if loss falls below |
-| `--T_ms` | float | 2500.0 | Simulation duration (ms) |
-| `--dt_ms` | float | 0.1 | Integration time step (ms) |
-| `--burn_in_ms` | float | 1800.0 | Burn-in period (ms) |
-| `--window_ms` | float | 500.0 | Averaging window (ms) |
-| `--n_trials` | int | 8 | Trials per parameter set |
-| `--init_rate_scale` | float | 0.2 | Initial rate scaling |
-| `--max_rate` | float | 200.0 | Maximum allowed rate |
-| `--noise_type` | str | "none" | "none", "white", or "ou" |
-| `--tau_noise_ms` | float | 5.0 | OU noise time constant |
-| `--base_params_json` | str | "" | Load initial params from JSON |
-| `--freeze` | str | "" | Comma-separated params to freeze |
-| `--save_best_json` | str | "" | Save best params to JSON |
-| `--log_file` | str | "" | Log results to JSONL file |
-| `--log_interval` | int | 50 | Log every N steps |
-| `--n_workers` | int | None | Parallel workers (auto if None) |
+```python
+from circuit_model import CircuitParams, simulate_circuit, mean_rates
+
+params = CircuitParams()
+result = simulate_circuit(params, T_ms=1000, dt_ms=0.1)
+rates = mean_rates(result, burn_in_ms=500, window_ms=500)
+print(f"PYR: {rates[0]:.2f}, SOM: {rates[1]:.2f}, PV: {rates[2]:.2f}, VIP: {rates[3]:.2f}")
+```
+
+```python
+from circuit_model import CircuitParams
+from circuit_model.ring import RingParams, RingStimulus, simulate_ring, decode_bump_center
+
+result = simulate_ring(
+    CircuitParams(), RingParams(n_nodes=128),
+    T_ms=5000, stimuli=[RingStimulus(center_deg=180, amplitude=150, onset_ms=500, duration_ms=250)],
+)
+center_deg, amplitude = decode_bump_center(result)
+```
+
+For full CLI documentation, see [docs/CLI.md](docs/CLI.md).
 
 ---
 
@@ -602,66 +502,6 @@ Each line is a JSON object:
   "params": {...}
 }
 ```
-
----
-
-## Package Structure
-
-The code is organized as a Python package with clear separation of concerns:
-
-```
-code/
-├── circuit_model/
-│   ├── __init__.py          # Public API exports
-│   ├── __main__.py          # Enables: python -m circuit_model
-│   ├── params.py            # CircuitParams, ParamBound, default_bounds()
-│   ├── transfer.py          # phi_wong_wang()
-│   ├── simulation.py        # simulate_circuit(), mean_rates(), SimulationResult
-│   ├── loss.py              # TargetRates, FitConfig, loss_from_means(), loss_from_ko_pyr()
-│   ├── optimization.py      # nevergrad_optimize(), evaluate_params(), run_trials()
-│   ├── io.py                # load_params_json(), save_params_json(), log_best_result()
-│   └── cli.py               # main(), argument parsing
-├── circuit_model.py         # Backward-compatible wrapper (re-exports from package)
-└── README.md
-```
-
-### Module Descriptions
-
-| Module | Contents | Purpose |
-|--------|----------|---------|
-| `params.py` | `CircuitParams`, `ParamBound`, `default_bounds()` | All circuit parameters and optimization bounds |
-| `transfer.py` | `phi_wong_wang()` | Wong-Wang transfer function |
-| `simulation.py` | `simulate_circuit()`, `mean_rates()`, `SimulationResult` | Core simulation logic |
-| `loss.py` | `TargetRates`, `FitConfig`, loss functions | Optimization targets and loss computation |
-| `optimization.py` | `nevergrad_optimize()`, `evaluate_params()` | Parameter optimization with Nevergrad |
-| `io.py` | JSON load/save, logging | File I/O utilities |
-| `cli.py` | `main()` | Command-line interface |
-
-### Usage as a Library
-
-```python
-# Import from package
-from circuit_model import CircuitParams, simulate_circuit, mean_rates
-
-# Create parameters (uses defaults)
-params = CircuitParams()
-
-# Run simulation
-result = simulate_circuit(params, T_ms=1000, dt_ms=0.1)
-
-# Get mean firing rates after burn-in
-rates = mean_rates(result, burn_in_ms=500, window_ms=500)
-print(f"PYR: {rates[0]:.2f}, SOM: {rates[1]:.2f}, PV: {rates[2]:.2f}, VIP: {rates[3]:.2f}")
-```
-
-### Benefits
-
-1. **Separation of concerns**: Each module has a single responsibility
-2. **Testability**: Individual components can be unit tested
-3. **Reusability**: Import only what you need (e.g., just simulation without optimization)
-4. **Maintainability**: Changes are localized
-5. **Readability**: Smaller files are easier to navigate
-6. **Backward compatible**: `circuit_model.py` still works for existing scripts
 
 ---
 
