@@ -20,20 +20,9 @@ from pathlib import Path
 
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
-from .io import load_params_json, format_params_as_code
+from .io import load_params_json, format_params_as_code, output_dir as _output_dir
 from .optimization import nevergrad_optimize
 from .simulation import simulate_circuit
-
-
-def _output_dir(base_dir: str, params_json: str) -> str:
-    """Derive output directory from params file: base_dir/<stem>/ or base_dir/default/."""
-    if params_json:
-        stem = Path(params_json).stem
-    else:
-        stem = "default"
-    out = os.path.join(base_dir, stem)
-    os.makedirs(out, exist_ok=True)
-    return out
 
 
 def parse_freeze_list(s: str) -> set[str]:
@@ -114,7 +103,7 @@ def add_simulation_args(parser: argparse.ArgumentParser) -> None:
                         help="Noise type: none, white, or ou (Ornstein-Uhlenbeck)")
     parser.add_argument("--tau_noise_ms", type=float, default=5.0,
                         help="OU noise time constant (ms)")
-    parser.add_argument("--seed", type=int, default=None,
+    parser.add_argument("--seed", type=int, default=442,  # Chosen for reproducibility
                         help="Random seed for reproducibility")
     parser.add_argument("--params_json", type=str, default="",
                         help="Load parameters from JSON file")
@@ -405,6 +394,15 @@ Examples:
 
     # Run batch study across conditions
     python -m circuit_model study --n_runs 100 --noise_type white --tau_noise_ms 5
+
+    # Ring attractor: single condition
+    python -m circuit_model ring-run --condition WT --amplitude 150
+
+    # Ring attractor: compare conditions
+    python -m circuit_model ring-study --conditions WT WT_APP --n_trials 10
+
+    # Ring attractor: multi-amplitude study
+    python -m circuit_model ring-study --amplitudes 50 100 150 200 --conditions WT WT_APP
 """
     )
 
@@ -570,12 +568,70 @@ Examples:
                               choices=["transients/min", "Hz"],
                               help="Rate unit for display (default: transients/min)")
 
+    # =========================================================================
+    # RING-RUN subcommand
+    # =========================================================================
+    ring_run_parser = subparsers.add_parser(
+        "ring-run",
+        help="Run ring attractor simulation for a single condition",
+        description="Run ring attractor simulation with a single experimental "
+                    "condition and visualize results.",
+    )
+    from .ring.cli import add_common_args as _add_ring_common
+    _add_ring_common(ring_run_parser)
+    ring_run_parser.add_argument(
+        "--condition", type=str, default="WT",
+        help="Experimental condition (default: WT). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+
+    # =========================================================================
+    # RING-STUDY subcommand
+    # =========================================================================
+    ring_study_parser = subparsers.add_parser(
+        "ring-study",
+        help="Run ring attractor study across conditions",
+        description="Run ring attractor simulation across multiple experimental "
+                    "conditions and generate comparison plots.",
+    )
+    _add_ring_common(ring_study_parser)
+    ring_study_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: all 8). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_study_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Multiple stimulus amplitudes to compare (e.g. --amplitudes 50 100 150 200)",
+    )
+    ring_study_parser.add_argument(
+        "--n_trials", type=int, default=1,
+        help="Number of trials per condition x amplitude (default: 1)",
+    )
+    ring_study_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_study_parser.add_argument(
+        "--delay_step_ms", type=float, default=None,
+        help="Delay evaluation step size in ms (default: use [1s,2s,3s])",
+    )
+    ring_study_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing CSV cache and recompute all conditions",
+    )
+    ring_study_parser.add_argument(
+        "--amp_eval_step_ms", type=float, default=500.0,
+        help="Step for timed metrics-vs-amplitude plots (ms). "
+             "0 = disabled. (default: 500)",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
-        print("\nNo command specified. Use 'run', 'optimize', or 'study'.")
+        print("\nNo command specified. Use 'run', 'optimize', 'study', 'ring-run', or 'ring-study'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -583,6 +639,12 @@ Examples:
         cmd_optimize(args)
     elif args.command == "study":
         cmd_study(args)
+    elif args.command == "ring-run":
+        from .ring.cli import cmd_run as cmd_ring_run
+        cmd_ring_run(args)
+    elif args.command == "ring-study":
+        from .ring.cli import cmd_study as cmd_ring_study
+        cmd_ring_study(args)
     else:
         parser.print_help()
         sys.exit(1)

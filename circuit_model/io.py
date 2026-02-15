@@ -10,14 +10,27 @@ This module contains:
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, fields
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 import json
 
 if TYPE_CHECKING:
     from .params import CircuitParams
     from .loss import TargetRates
+
+
+def output_dir(base_dir: str, params_json: str) -> str:
+    """Derive output directory from params file: base_dir/<stem>/ or base_dir/default/."""
+    if params_json:
+        stem = Path(params_json).stem
+    else:
+        stem = "default"
+    out = os.path.join(base_dir, stem)
+    os.makedirs(out, exist_ok=True)
+    return out
 
 
 def load_params_json(path: str) -> "CircuitParams":
