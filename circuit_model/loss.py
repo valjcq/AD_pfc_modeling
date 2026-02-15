@@ -11,12 +11,11 @@ This module contains:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 
-
-NoiseType = Literal["none", "white", "ou"]
+from .simulation import NoiseType
 
 
 @dataclass(frozen=True)

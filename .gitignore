@@ -1,5 +1,6 @@
 .venv*
-.claude
+.claude/
+.pytest_cache/
 
 *.pyc
 */*.pyc
