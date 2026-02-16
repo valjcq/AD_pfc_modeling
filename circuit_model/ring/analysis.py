@@ -336,7 +336,7 @@ def compute_working_memory_accuracy(
 def aggregate_metrics_across_trials(
     all_trial_metrics: list[list[dict]],
 ) -> list[dict]:
-    """Aggregate per-timepoint metrics from multiple trials into mean +/- SEM.
+    """Aggregate per-timepoint metrics from multiple trials into mean +/- SD.
 
     Parameters:
         all_trial_metrics: list of length n_trials, each element is a list
@@ -345,7 +345,7 @@ def aggregate_metrics_across_trials(
 
     Returns:
         List of dicts (one per timepoint), each containing eval_time_ms
-        plus {key}_mean and {key}_sem for each metric key.
+        plus {key}_mean and {key}_sd for each metric key.
     """
     n_timepoints = len(all_trial_metrics[0])
     metric_keys = [k for k in all_trial_metrics[0][0] if k != "eval_time_ms"]
@@ -359,8 +359,8 @@ def aggregate_metrics_across_trials(
             )
             valid = values[~np.isnan(values)]
             entry[f"{key}_mean"] = float(np.mean(valid)) if len(valid) > 0 else np.nan
-            entry[f"{key}_sem"] = (
-                float(np.std(valid, ddof=1) / np.sqrt(len(valid)))
+            entry[f"{key}_sd"] = (
+                float(np.std(valid, ddof=1))
                 if len(valid) > 1
                 else 0.0
             )
@@ -369,14 +369,14 @@ def aggregate_metrics_across_trials(
 
 
 def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
-    """Aggregate single-timepoint metric dicts (one per trial) into mean +/- SEM.
+    """Aggregate single-timepoint metric dicts (one per trial) into mean +/- SD.
 
     Parameters:
         all_metrics: list of metric dicts (e.g. from compute_bump_metrics),
             one per trial.
 
     Returns:
-        dict with {key}_mean and {key}_sem for each numeric metric key.
+        dict with {key}_mean and {key}_sd for each numeric metric key.
     """
     metric_keys = list(all_metrics[0].keys())
     result = {}
@@ -384,8 +384,8 @@ def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
         values = np.array([m[key] for m in all_metrics], dtype=float)
         valid = values[~np.isnan(values)]
         result[f"{key}_mean"] = float(np.mean(valid)) if len(valid) > 0 else np.nan
-        result[f"{key}_sem"] = (
-            float(np.std(valid, ddof=1) / np.sqrt(len(valid)))
+        result[f"{key}_sd"] = (
+            float(np.std(valid, ddof=1))
             if len(valid) > 1
             else 0.0
         )

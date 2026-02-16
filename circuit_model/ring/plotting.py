@@ -898,13 +898,13 @@ def plot_metrics_vs_delay(
         x = x_seconds[:n_pts]
 
         for ax, metric_key in zip(axes, metrics_to_plot):
-            # Detect aggregated format (mean/sem from multi-trial)
+            # Detect aggregated format (mean/sd from multi-trial)
             if f"{metric_key}_mean" in metric_list[0]:
                 means = np.array([m[f"{metric_key}_mean"] for m in metric_list[:n_pts]])
-                sems = np.array([m[f"{metric_key}_sem"] for m in metric_list[:n_pts]])
+                sds = np.array([m[f"{metric_key}_sd"] for m in metric_list[:n_pts]])
                 ax.plot(x, means, marker="o", color=color, label=label, lw=2, markersize=4)
-                if np.any(sems > 0):
-                    ax.fill_between(x, means - sems, means + sems,
+                if np.any(sds > 0):
+                    ax.fill_between(x, means - sds, means + sds,
                                     color=color, alpha=0.2)
             else:
                 values = [m[metric_key] for m in metric_list[:n_pts]]
@@ -979,27 +979,27 @@ def plot_metrics_vs_amplitude(
 
         for ax, metric_key in zip(axes, metrics_to_plot):
             means = []
-            sems = []
+            sds = []
             for amp in amplitude_values:
                 m = all_delay_metrics.get(amp, {}).get(cond_key, {})
                 # Detect aggregated format
                 if f"{metric_key}_mean" in m:
                     means.append(m.get(f"{metric_key}_mean", float("nan")))
-                    sems.append(m.get(f"{metric_key}_sem", 0.0))
+                    sds.append(m.get(f"{metric_key}_sd", 0.0))
                 else:
                     means.append(m.get(metric_key, float("nan")))
-                    sems.append(0.0)
+                    sds.append(0.0)
             means_arr = np.array(means)
-            sems_arr = np.array(sems)
+            sds_arr = np.array(sds)
             ax.plot(amplitude_values, means_arr, marker="o", color=color,
                     label=label, lw=2, markersize=6)
-            if np.any(sems_arr > 0):
+            if np.any(sds_arr > 0):
                 ax.fill_between(amplitude_values,
-                                means_arr - sems_arr, means_arr + sems_arr,
+                                means_arr - sds_arr, means_arr + sds_arr,
                                 color=color, alpha=0.2)
 
     for ax, metric_key in zip(axes, metrics_to_plot):
-        ax.set_xlabel("Stimulus Amplitude")
+        ax.set_xlabel("Stimulus Amplitude (× I_ext_pyr)")
         ax.set_ylabel(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
         ax.set_title(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
         ax.legend(fontsize=8)
