@@ -402,7 +402,7 @@ Examples:
     python -m circuit_model ring-study --conditions WT WT_APP --n_trials 10
 
     # Ring attractor: multi-amplitude study
-    python -m circuit_model ring-study --amplitudes 50 100 150 200 --conditions WT WT_APP
+    python -m circuit_model ring-study --amplitudes 8 10 15 20 --conditions WT WT_APP
 """
     )
 
@@ -602,7 +602,8 @@ Examples:
     )
     ring_study_parser.add_argument(
         "--amplitudes", type=float, nargs="+", default=None,
-        help="Multiple stimulus amplitudes to compare (e.g. --amplitudes 50 100 150 200)",
+        help="Stimulus amplitude factors (multiples of I_ext_pyr). "
+             "E.g. --amplitudes 8 10 15 20 means 8×, 10×, 15×, 20× baseline.",
     )
     ring_study_parser.add_argument(
         "--n_trials", type=int, default=1,
