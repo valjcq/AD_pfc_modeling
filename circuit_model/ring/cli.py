@@ -54,11 +54,15 @@ STIM_CENTER_DEG = 180.0
 STIM_SIGMA_DEG = 20.0
 
 
-def _build_common(args, amplitude: float | None = None):
+def _build_common(args, amp_factor: float | None = None):
     """Build base params, ring params, T_ms, and stimuli from parsed args.
 
+    The *amp_factor* (or ``args.amplitude``) is a **multiplier of
+    I_ext_pyr**.  The actual peak current injected into the stimulus is
+    ``amp_factor * base_params.I_ext_pyr()``.
+
     Returns:
-        (base_params, ring_params, T_ms, stimuli, amp)
+        (base_params, ring_params, T_ms, stimuli, amp_factor)
     """
     if args.params_json:
         base_params = load_params_json(args.params_json)
@@ -74,7 +78,8 @@ def _build_common(args, amplitude: float | None = None):
         J_plus=args.J_plus,
     )
 
-    amp = amplitude if amplitude is not None else args.amplitude
+    factor = amp_factor if amp_factor is not None else args.amplitude
+    actual_current = factor * base_params.I_ext_pyr()
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
     delay_end_ms = stim_offset_ms + args.delay_ms
@@ -97,13 +102,13 @@ def _build_common(args, amplitude: float | None = None):
 
     stimuli = [
         RingStimulus(
-            center_deg=STIM_CENTER_DEG, amplitude=amp,
+            center_deg=STIM_CENTER_DEG, amplitude=actual_current,
             sigma_deg=STIM_SIGMA_DEG,
             onset_ms=STIM_ONSET_MS, duration_ms=STIM_DURATION_MS,
         ),
     ]
 
-    return base_params, ring_params, T_ms, stimuli, amp
+    return base_params, ring_params, T_ms, stimuli, factor
 
 
 def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) -> CircuitParams:
@@ -121,12 +126,13 @@ def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) 
                    trans_factor=response_factor)
 
 
-def _print_config(args, amp: float, base_params: CircuitParams, T_ms: float,
+def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: float,
                   ring_params: RingParams | None = None):
     """Print configuration summary."""
     I_baseline = base_params.I_ext_pyr()
-    print(f"Stimulus: peak current = {amp:.1f} at center node "
-          f"(I_ext_pyr baseline = {I_baseline:.2f}, ratio = {amp / I_baseline:.1f}x)")
+    actual_current = amp_factor * I_baseline
+    print(f"Stimulus: {amp_factor:.1f}× I_ext_pyr  "
+          f"(= {actual_current:.2f}, baseline = {I_baseline:.2f})")
     print(f"          Gaussian sigma={STIM_SIGMA_DEG:.0f} deg, "
           f"duration={STIM_DURATION_MS:.0f} ms")
 
@@ -172,9 +178,9 @@ def _connectivity_label(rp: RingParams) -> str:
     return f"{exc}-{inh}"
 
 
-def _stim_label(amp: float) -> str:
-    """Short label for stimulus amplitude, used in plot titles."""
-    return f"amp={amp:.0f}"
+def _stim_label(amp_factor: float) -> str:
+    """Short label for stimulus amplitude factor, used in plot titles."""
+    return f"amp={amp_factor:.0f}×"
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -183,8 +189,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         help="Load local circuit parameters from JSON file")
     parser.add_argument("--n_nodes", type=int, default=128,
                         help="Number of nodes on the ring (default: 128)")
-    parser.add_argument("--amplitude", type=float, default=150.0,
-                        help="Stimulus peak current amplitude (default: 150)")
+    parser.add_argument("--amplitude", type=float, default=20.0,
+                        help="Stimulus amplitude as factor of I_ext_pyr baseline "
+                             "(default: 20, i.e. 20× baseline current)")
     parser.add_argument("--delay_ms", type=float, default=3000.0,
                         help="Delay period duration in ms (default: 3000)")
     parser.add_argument("--seed", type=int, default=42,
@@ -467,10 +474,13 @@ def _ring_run_single(job: tuple) -> dict:
 
     r0, I_adapt0 = cfg['burnin_states'][cond_key]
 
+    # amplitude is a factor of I_ext_pyr — convert to actual current
+    actual_current = amplitude * base_params.I_ext_pyr()
+
     T_ms_short = T_ms_full - BURN_IN_MS
     stimuli_short = [
         RingStimulus(
-            center_deg=STIM_CENTER_DEG, amplitude=amplitude,
+            center_deg=STIM_CENTER_DEG, amplitude=actual_current,
             sigma_deg=STIM_SIGMA_DEG,
             onset_ms=STIM_ONSET_MS - BURN_IN_MS,
             duration_ms=STIM_DURATION_MS,
@@ -621,14 +631,14 @@ def cmd_study(args: argparse.Namespace) -> None:
     csv_path = os.path.join(out_dir, "study_metrics.csv")
 
     # Compute T_ms using first amplitude (timing is same for all amplitudes)
-    _, _, T_ms_full, _, _ = _build_common(args, amplitude=amplitudes[0])
+    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=amplitudes[0])
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
 
     _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params)
 
     print(f"\nStudy configuration:")
     print(f"  Conditions: {', '.join(condition_keys)}")
-    print(f"  Amplitudes: {', '.join(f'{a:.0f}' for a in amplitudes)}")
+    print(f"  Amplitudes (× I_ext_pyr): {', '.join(f'{a:.0f}' for a in amplitudes)}")
     print(f"  Delay = {args.delay_ms:.0f} ms, trials = {n_trials}, workers = {n_workers}")
 
     # --- Pre-compute connectivity (once) ---
