@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {run,optimize,study,ring-run,ring-study} [options]
+python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-diffusion,ring-drift-field,ring-distractor-sweep,ring-calibrate} [options]
 ```
 
 ---
@@ -15,6 +15,10 @@ python -m circuit_model {run,optimize,study,ring-run,ring-study} [options]
 3. [study](#study) -- Batch study across 8 experimental conditions
 4. [ring-run](#ring-run) -- Ring attractor single-condition simulation
 5. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
+6. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
+7. [ring-drift-field](#ring-drift-field) -- Distractor drift field analysis (Seeholzer et al. 2019)
+8. [ring-distractor-sweep](#ring-distractor-sweep) -- 2D distractor sweep (Δφ × amplitude)
+9. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
 
 ---
 
@@ -238,7 +242,7 @@ python -m circuit_model ring-run [options]
 |-----------|------|---------|-------------|
 | `--n_nodes` | int | `128` | Number of nodes on the ring |
 | `--params_json` | str | `""` | Load local circuit parameters from JSON file |
-| `--amplitude` | float | `150.0` | Stimulus peak current amplitude |
+| `--amplitude` | float | `15.0` | Stimulus amplitude as factor of I_ext_pyr baseline (20 = 20× baseline current) |
 | `--delay_ms` | float | `3000.0` | Delay period duration (ms) |
 | `--seed` | int | `42` | Random seed for reproducibility |
 | `--no_show` | flag | `False` | Don't display plots |
@@ -251,8 +255,8 @@ python -m circuit_model ring-run [options]
 |-----------|------|---------|-------------|
 | `--pyr_profile` | str | `"gaussian"` | PYR→PYR connectivity profile: `gaussian` or `compte` |
 | `--J_plus` | float | `1.6` | Compte profile J+ parameter (local excitation). Only with `--pyr_profile compte` |
-| `--sigma_pyr_deg` | float | `10.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pyr_pyr_inter` | float | `3.96` | Total PYR→PYR coupling for Gaussian profile. Not used with Compte |
+| `--sigma_pyr_deg` | float | `30.0` | PYR→PYR connectivity width (degrees) |
+| `--w_pyr_pyr_inter` | float | `4.0` | Total PYR→PYR coupling for Gaussian profile. Not used with Compte |
 | `--w_pv_global` | float | `2.0` | Total PV→PYR global inhibition strength |
 
 **Gaussian profile** (default): Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.
@@ -276,7 +280,7 @@ Generates in `figs/ring/<n_nodes>/<params_stem>/<conn_label>/amp<N>/<condition>/
 - `connectome.png` -- PYR-PYR and PV-PYR connectivity matrices
 
 The `<conn_label>` encodes both excitatory and inhibitory connectivity:
-- Gaussian: `gauss_w<w>_s<sigma>-pv_unif_<w_pv>` (e.g. `gauss_w3.96_s10-pv_unif_2`)
+- Gaussian: `gauss_w<w>_s<sigma>-pv_unif_<w_pv>` (e.g. `gauss_w4_s30-pv_unif_2`)
 - Compte: `compte_J<J+>_s<sigma>-pv_unif_<w_pv>` (e.g. `compte_J1.6_s30-pv_unif_2`)
 
 ### Examples
@@ -288,8 +292,8 @@ python -m circuit_model ring-run --condition WT
 # Smaller network
 python -m circuit_model ring-run --condition WT --n_nodes 64
 
-# Alpha7 KO with higher amplitude
-python -m circuit_model ring-run --condition a7_KO --amplitude 200 --delay_ms 5000
+# Alpha7 KO with higher amplitude (30× baseline)
+python -m circuit_model ring-run --condition a7_KO --amplitude 30 --delay_ms 5000
 
 # With response transient
 python -m circuit_model ring-run --condition WT --response_onset_ms 500 --response_factor 0.3
@@ -310,8 +314,8 @@ python -m circuit_model ring-study [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
-| `--amplitudes` | float (list) | `[150]` | Multiple stimulus amplitudes to compare |
-| `--n_trials` | int | `1` | Number of trials per condition x amplitude |
+| `--amplitudes` | float (list) | `[15]` | Multiple stimulus amplitude factors (× I_ext_pyr) to compare |
+| `--n_trials` | int | `100` | Number of trials per condition x amplitude |
 | `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
 | `--delay_step_ms` | float | `200` | Delay evaluation step size (ms) |
 | `--no_cache` | flag | `False` | Ignore existing CSV cache and recompute |
@@ -345,7 +349,7 @@ python -m circuit_model ring-study --conditions WT WT_APP a7_KO
 
 # Multi-amplitude study with trials
 python -m circuit_model ring-study \
-    --amplitudes 50 100 150 200 \
+    --amplitudes 8 10 15 20 \
     --conditions WT WT_APP \
     --n_trials 10 --n_workers 4
 
@@ -354,6 +358,255 @@ python -m circuit_model ring-study --delay_step_ms 500 --delay_ms 5000
 
 # Force recompute (ignore cache)
 python -m circuit_model ring-study --no_cache
+```
+
+---
+
+## `ring-diffusion`
+
+Compute the mean squared displacement (MSD) of the bump center during delay periods across conditions, and extract the diffusion strength $\hat{B}$ (slope of MSD vs time, in $\text{rad}^2/\text{s}$). Based on the drift-diffusion framework of Seeholzer, Deger & Gerstner (2019).
+
+```bash
+python -m circuit_model ring-diffusion [options]
+```
+
+### Diffusion-Specific Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
+| `--n_trials` | int | `50` | Number of trials per condition |
+| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
+| `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
+
+Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
+
+### Method
+
+For each condition:
+1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
+2. Decode the bump center $\varphi(t)$ via population vector during the delay period
+3. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
+4. Fit a line to the linear regime of MSD vs $\tau$ to extract $\hat{B}$ (rad$^2$/s)
+
+### Outputs
+
+Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
+- `diffusion_msd_<band>.png` -- Two-panel figure: MSD vs lag time (left, with linear fit overlay) and $\hat{B}$ bar chart across conditions (right). `<band>` is `sem` or `sd`.
+- `diffusion_summary.csv` -- One row per condition: `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
+- `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
+
+### Examples
+
+```bash
+# All conditions, 50 trials each
+python -m circuit_model ring-diffusion --no_show
+
+# Compare WT vs alpha7 KO with 20 trials
+python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
+
+# Longer delay for better MSD estimation
+python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
+```
+
+---
+
+## `ring-drift-field`
+
+Sweep distractor angular offsets $\Delta\varphi \in [0°, 180°]$ and measure bump displacement to estimate the empirical drift field $\hat{A}(\Delta\varphi)$ (rad/s). Based on the distractor analysis of Seeholzer, Deger & Gerstner (2019, Fig. 7).
+
+```bash
+python -m circuit_model ring-drift-field [options]
+```
+
+### Drift-Field-Specific Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
+| `--n_trials` | int | `50` | Number of trials per condition per offset |
+| `--distractor_steps` | float | `10.0` | Angular step size for distractor sweep (degrees) |
+| `--distractor_amplitude` | float | `15.0` | Distractor stimulus amplitude as factor of I_ext_pyr baseline (15.0 = 15× baseline) |
+| `--distractor_duration_ms` | float | `200.0` | Distractor duration (ms) |
+| `--distractor_onset_ms` | float | `1500.0` | Distractor onset after stimulus offset (ms) |
+| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
+| `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
+
+Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
+
+### Method
+
+For each condition and each distractor offset $\Delta\varphi$:
+1. Run `n_trials` trials with the cue at 180° and a distractor at $180° + \Delta\varphi$
+2. Measure bump position before and after the distractor via population vector
+3. Compute signed displacement $\hat{\varphi}_{\text{post}} - \varphi_0$
+4. Normalize by distractor duration $T_D$ to estimate drift velocity: $\hat{A}(\Delta\varphi) = \langle\hat{\varphi}_{\text{post}} - \varphi_0\rangle / T_D$
+
+The resulting curve $\hat{A}(\Delta\varphi)$ is the **distractor susceptibility fingerprint** of the network.
+
+### Outputs
+
+Generates in `figs/drift_field/<n_nodes>/<params_stem>/<conn_label>/`:
+- `drift_field_<band>.png` -- $\hat{A}(\Delta\varphi)$ vs $\Delta\varphi$, one colored line per condition with error shading. `<band>` is `sem` or `sd`.
+- `drift_field_trials.csv` -- Per-trial raw data: `condition_key`, `offset_deg`, `trial_idx`, `seed`, `displacement_rad`, `pre_amp`, `post_amp`
+- `drift_field_summary.csv` -- Aggregated: `condition_key`, `offset_deg`, `A_hat_rad_per_s`, `A_hat_sem`, `A_hat_sd`, `n_trials`, `distractor_amplitude_factor`, `distractor_duration_ms`, `distractor_onset_ms`
+
+### Examples
+
+```bash
+# All conditions, 50 trials, 10° steps
+python -m circuit_model ring-drift-field --no_show
+
+# Quick test with coarser sweep
+python -m circuit_model ring-drift-field --conditions WT a7_KO --n_trials 10 --distractor_steps 30
+
+# Custom distractor parameters
+python -m circuit_model ring-drift-field \
+    --conditions WT WT_APP a7_KO b2_KO \
+    --distractor_amplitude 15.0 --distractor_duration_ms 250 --error_band sd \
+    --n_trials 50 --distractor_steps 10
+```
+
+---
+
+## `ring-distractor-sweep`
+
+Sweep a 2D grid of distractor angular offset $\Delta\varphi \times$ distractor amplitude (relative to cue), measuring bump drift and collapse probability for a single condition. Protocol: `cue (250 ms) → delay₁ (1000 ms) → distractor (250 ms) → delay₂ (1000 ms)`.
+
+```bash
+python -m circuit_model ring-distractor-sweep [options]
+```
+
+### Sweep-Specific Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--condition` | str | `"WT"` | Experimental condition to simulate |
+| `--offsets_deg` | float (list) | `0 5 10 15 20 30 40 60 80 100 130 150 180` | Distractor angular offsets from cue (degrees) |
+| `--amp_factors` | float (list) | `0.5 0.75 1.0 1.25 1.5` | Distractor amplitude factors relative to cue |
+| `--n_trials` | int | `10` | Number of trials per grid cell |
+| `--delay1_ms` | float | `1000.0` | Delay period before distractor (ms) |
+| `--delay2_ms` | float | `1000.0` | Delay period after distractor (ms) |
+| `--distractor_duration_ms` | float | `250.0` | Distractor duration (ms) |
+| `--collapse_threshold` | float | auto | Population-vector amplitude $\hat{A}$ below which the bump is declared collapsed. Auto-detected from `calibration_summary.csv` (run `ring-calibrate` first); falls back to 0.2 with a warning if not found |
+| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
+
+Plus all [common ring parameters](#common-ring-parameters) from `ring-run` (network size, amplitude, connectivity, etc.).
+
+### Method
+
+For each grid cell $(\Delta\varphi, \alpha)$ where $\alpha$ is the distractor amplitude factor:
+
+1. Run `n_trials` trials with the cue at 180° and the distractor at $180° + \Delta\varphi$ with amplitude $\alpha \times A_{\text{cue}}$
+2. Measure bump position $\hat{\theta}_{\text{before}}$ (50 ms before distractor onset) and $\hat{\theta}_{\text{after}}$ (100 ms after distractor offset) via population vector decoding
+3. Compute signed bump shift: $\Delta\hat{\theta} = \hat{\theta}_{\text{after}} - \hat{\theta}_{\text{before}}$ (wrapped to $[-\pi, \pi]$)
+4. Declare collapse if $\hat{A}_{\text{after}} < $ `collapse_threshold`
+
+Aggregate across trials: mean drift ± SEM and collapse probability per cell.
+
+For Figure 3 (timecourses), up to 6 representative cells are re-run with a single seed to record the full bump trajectory $\hat{\theta}(t)$.
+
+### Outputs
+
+Generates in `figs/distractor_sweep/<n_nodes>/<params_stem>/<conn_label>/`:
+
+**Figures:**
+- `distractor_sweep_drift.png` — 2D heatmap of mean bump shift (degrees). Axes: $\Delta\varphi$ (x) × distractor amplitude (y). Diverging colormap (`RdBu_r`) centred at 0
+- `distractor_sweep_collapse.png` — 2D heatmap of collapse probability [0–1]. Sequential colormap (`YlOrRd`). Cells annotated with percentage
+- `distractor_sweep_timecourses.png` — Multi-panel figure showing $\hat{\theta}(t)$ for 6 representative (Δφ, amplitude) conditions. Shaded regions mark the cue and distractor windows; dashed horizontal line marks the cue location
+
+**Data:**
+- `distractor_sweep_trials.csv` — Per-trial raw data: `offset_deg`, `amp_factor`, `trial_idx`, `displacement_deg`, `pre_amp`, `post_amp`
+- `distractor_sweep_summary.csv` — Aggregated per cell: `offset_deg`, `amp_factor`, `n_trials`, `drift_mean_deg`, `drift_sd_deg`, `drift_sem_deg`, `collapse_prob`, `pre_amp_mean`, `post_amp_mean`
+
+### Examples
+
+```bash
+# Full 5×5 grid, 50 trials, WT condition (default)
+python -m circuit_model ring-distractor-sweep --no_show
+
+# Quick smoke test (3×3 grid, 5 trials)
+python -m circuit_model ring-distractor-sweep \
+    --n_trials 5 --offsets_deg 0 90 180 --amp_factors 0.5 1.0 1.5 --no_show
+
+# Custom grid with parallel workers
+python -m circuit_model ring-distractor-sweep \
+    --condition WT \
+    --offsets_deg 0 30 60 90 120 150 180 \
+    --amp_factors 0.25 0.5 0.75 1.0 1.25 1.5 2.0 \
+    --n_trials 50 --n_workers 8 --no_show
+
+# Shorter delays (to speed things up for testing)
+python -m circuit_model ring-distractor-sweep \
+    --delay1_ms 500 --delay2_ms 500 --n_trials 10 --no_show
+```
+
+---
+
+## `ring-calibrate`
+
+Sweep a 2D grid of (stimulus_amplitude, w_pyr_pyr_inter) to find parameter combinations that produce a stable memory bump. Estimates a noise floor from no-stimulus baseline trials and outputs diagnostic figures plus a JSON summary with recommended parameters.
+
+```bash
+python -m circuit_model ring-calibrate [options]
+```
+
+### Calibrate-Specific Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--conditions` | str (list) | `WT` | Conditions to calibrate (default: WT only) |
+| `--amplitudes` | float (list) | `5 10 15 20 25 30` | Stimulus amplitude factors to sweep |
+| `--w_inter_values` | float (list) | `2.0 3.0 4 5.0 6.0` | w_pyr_pyr_inter values to sweep |
+| `--n_trials` | int | `50` | Number of trials per grid point |
+| `--n_baseline` | int | `100` | Number of no-stimulus baseline trials per w_inter |
+| `--noise_percentile` | float | `95` | Percentile of baseline A_hat for noise floor threshold |
+| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
+| `--error_band` | str | `"sem"` | Error band type for time course plots: `sem` or `sd` |
+
+Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
+
+### Method
+
+1. **Noise floor estimation**: For each w_inter value, run `n_baseline` trials without stimulus. Decode population vector amplitude (A_hat) and take the specified percentile as the noise floor threshold.
+2. **Grid exploration**: For each (amplitude, w_inter) combination, run `n_trials` with the standard WM protocol. Measure A_hat at end of delay, peak PYR rate, angular error.
+3. **Success criterion**: A trial is "successful" if A_hat at delay end exceeds the noise floor threshold for that w_inter.
+4. **Recommendation**: Select the (amplitude, w_inter) with highest success rate; ties broken by highest mean A_hat. Warning if peak PYR rate > 100 Hz.
+
+### Outputs
+
+Generates in `figs/calibration/<n_nodes>/<params_stem>/<base_conn_label>/`:
+
+**Figures:**
+- `noise_floor.png` -- Histogram of baseline A_hat per w_inter, with noise floor threshold
+- `heatmap_success_rate.png` -- 2D heatmap: success rate across the grid
+- `heatmap_A_hat.png` -- 2D heatmap: mean A_hat across the grid
+- `heatmap_peak_pyr.png` -- 2D heatmap: peak PYR firing rate
+- `timecourses_<band>.png` -- A_hat time courses for representative grid points
+- `scatter_summary.png` -- Mean A_hat vs success rate, colored by peak PYR rate
+
+**Data:**
+- `calibration_results.csv` -- Per-trial data: `condition_key`, `amplitude`, `w_inter`, `trial_idx`, `seed`, `A_hat_final`, `peak_pyr_rate`, `center_final_deg`, `error_from_cue_deg`
+- `calibration_summary.csv` -- Aggregated per grid point: `condition_key`, `amplitude`, `w_inter`, `success_rate`, `mean_A_hat`, `peak_pyr_rate`, `mean_error_deg`, `noise_threshold`, `n_trials`
+- `calibration_recommended.json` -- Best parameters with metadata
+
+### Examples
+
+```bash
+# Default calibration (WT, 6x5 grid, 50 trials/point, 100 baseline)
+python -m circuit_model ring-calibrate --no_show
+
+# Quick test with small grid
+python -m circuit_model ring-calibrate --amplitudes 10 20 --w_inter_values 3.0 4.0 --n_trials 5 --n_baseline 10
+
+# Custom grid with more resolution
+python -m circuit_model ring-calibrate \
+    --amplitudes 5 8 10 12 15 18 20 25 30 \
+    --w_inter_values 2.0 2.5 3.0 3.5 4.0 4.5 5.0 \
+    --n_trials 50 --n_baseline 100 --no_show
+
+# Calibrate multiple conditions
+python -m circuit_model ring-calibrate --conditions WT a7_KO --amplitudes 10 20 30 --n_trials 20
 ```
 
 ---

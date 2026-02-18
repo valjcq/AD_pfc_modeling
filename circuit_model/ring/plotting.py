@@ -850,20 +850,15 @@ def plot_metrics_vs_delay(
     figsize: tuple[float, float] = (14, 5),
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
+    error_band: str = "sem",
 ):
     """
     Plot bump metrics at multiple delay timepoints, comparing conditions.
 
-    Creates one subplot per metric with lines for each condition.
-
     Parameters:
         metrics_over_delay: dict mapping condition_key -> list of metric dicts
-            (output of compute_metrics_at_delay_times)
-        delay_labels: Human-readable labels for each timepoint (e.g. ["1s", "2s", "3s"])
-        metrics_to_plot: Which metric keys to plot (one panel per metric)
-        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
-        figsize: Figure size
-        save_path: If provided, save figure
+        delay_labels: Human-readable labels for each timepoint
+        error_band: ``"sem"`` (default) or ``"sd"`` — controls the shaded band.
 
     Returns:
         fig: Matplotlib Figure
@@ -873,6 +868,8 @@ def plot_metrics_vs_delay(
 
     if condition_colors is None:
         condition_colors = CONDITION_COLORS
+
+    band_suffix = "_sem" if error_band == "sem" else "_sd"
 
     n_metrics = len(metrics_to_plot)
     fig, axes = plt.subplots(1, n_metrics, figsize=figsize)
@@ -898,13 +895,15 @@ def plot_metrics_vs_delay(
         x = x_seconds[:n_pts]
 
         for ax, metric_key in zip(axes, metrics_to_plot):
-            # Detect aggregated format (mean/sd from multi-trial)
+            # Detect aggregated format (mean/sd/sem from multi-trial)
             if f"{metric_key}_mean" in metric_list[0]:
                 means = np.array([m[f"{metric_key}_mean"] for m in metric_list[:n_pts]])
-                sds = np.array([m[f"{metric_key}_sd"] for m in metric_list[:n_pts]])
+                errs = np.array([m.get(f"{metric_key}{band_suffix}",
+                                       m.get(f"{metric_key}_sd", 0.0))
+                                 for m in metric_list[:n_pts]])
                 ax.plot(x, means, marker="o", color=color, label=label, lw=2, markersize=4)
-                if np.any(sds > 0):
-                    ax.fill_between(x, means - sds, means + sds,
+                if np.any(errs > 0):
+                    ax.fill_between(x, means - errs, means + errs,
                                     color=color, alpha=0.2)
             else:
                 values = [m[metric_key] for m in metric_list[:n_pts]]
@@ -936,6 +935,7 @@ def plot_metrics_vs_amplitude(
     figsize: tuple[float, float] = (14, 5),
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
+    error_band: str = "sem",
 ):
     """
     Plot bump metrics as a function of stimulus amplitude, comparing conditions.
@@ -959,6 +959,8 @@ def plot_metrics_vs_amplitude(
     if condition_colors is None:
         condition_colors = CONDITION_COLORS
 
+    band_suffix = "_sem" if error_band == "sem" else "_sd"
+
     n_metrics = len(metrics_to_plot)
     fig, axes = plt.subplots(1, n_metrics, figsize=figsize)
     if n_metrics == 1:
@@ -979,23 +981,24 @@ def plot_metrics_vs_amplitude(
 
         for ax, metric_key in zip(axes, metrics_to_plot):
             means = []
-            sds = []
+            errs = []
             for amp in amplitude_values:
                 m = all_delay_metrics.get(amp, {}).get(cond_key, {})
                 # Detect aggregated format
                 if f"{metric_key}_mean" in m:
                     means.append(m.get(f"{metric_key}_mean", float("nan")))
-                    sds.append(m.get(f"{metric_key}_sd", 0.0))
+                    errs.append(m.get(f"{metric_key}{band_suffix}",
+                                      m.get(f"{metric_key}_sd", 0.0)))
                 else:
                     means.append(m.get(metric_key, float("nan")))
-                    sds.append(0.0)
+                    errs.append(0.0)
             means_arr = np.array(means)
-            sds_arr = np.array(sds)
+            errs_arr = np.array(errs)
             ax.plot(amplitude_values, means_arr, marker="o", color=color,
                     label=label, lw=2, markersize=6)
-            if np.any(sds_arr > 0):
+            if np.any(errs_arr > 0):
                 ax.fill_between(amplitude_values,
-                                means_arr - sds_arr, means_arr + sds_arr,
+                                means_arr - errs_arr, means_arr + errs_arr,
                                 color=color, alpha=0.2)
 
     for ax, metric_key in zip(axes, metrics_to_plot):
@@ -1009,6 +1012,702 @@ def plot_metrics_vs_amplitude(
                  fontsize=13, fontweight="bold")
     plt.tight_layout()
 
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_msd_curves(
+    msd_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (14, 5),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+    error_band: str = "sem",
+):
+    """Plot MSD vs time and B_hat bar chart across conditions.
+
+    Parameters:
+        msd_data: Dict mapping condition_key -> dict with keys:
+            'lag_times' (s), 'msd_mean' (rad²), 'msd_sem' (rad²),
+            'msd_sd' (rad²), 'fit_line' (rad²), 'B_hat' (rad²/s),
+            'r_squared'.
+        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
+        figsize: Figure size.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+        error_band: ``"sem"`` (default) or ``"sd"`` — controls the shaded band.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, (ax_msd, ax_bar) = plt.subplots(1, 2, figsize=figsize,
+                                          gridspec_kw={"width_ratios": [2, 1]})
+
+    # Left panel: MSD vs time
+    for cond_key, data in msd_data.items():
+        color = condition_colors.get(cond_key, None)
+        from ..study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        lag = data["lag_times"]
+        msd = data["msd_mean"]
+        band_key = "msd_sd" if error_band == "sd" else "msd_sem"
+        err = data.get(band_key, data["msd_sem"])
+
+        ax_msd.plot(lag, msd, color=color, lw=2, label=label)
+        if np.any(err > 0):
+            ax_msd.fill_between(lag, msd - err, msd + err, color=color, alpha=0.2)
+        # Overlay linear fit (dashed)
+        fit = data["fit_line"]
+        valid = ~np.isnan(fit)
+        ax_msd.plot(lag[valid], fit[valid], color=color, ls="--", lw=1, alpha=0.7)
+
+    ax_msd.set_xlabel("Lag (s)")
+    ax_msd.set_ylabel("MSD (rad²)")
+    ax_msd.set_title("Mean Squared Displacement")
+    ax_msd.legend(fontsize=8)
+    ax_msd.grid(True, alpha=0.3)
+
+    # Right panel: B_hat bar chart
+    cond_keys = list(msd_data.keys())
+    B_values = [msd_data[k]["B_hat"] for k in cond_keys]
+    colors = [condition_colors.get(k, "#666666") for k in cond_keys]
+    labels = []
+    for k in cond_keys:
+        from ..study import STUDY_CONDITIONS
+        labels.append(STUDY_CONDITIONS[k].name if k in STUDY_CONDITIONS else k)
+
+    x = np.arange(len(cond_keys))
+    ax_bar.bar(x, B_values, color=colors, edgecolor="black", linewidth=0.5)
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax_bar.set_ylabel("$\\hat{B}$ (rad²/s)")
+    ax_bar.set_title("Diffusion Strength")
+    ax_bar.grid(True, alpha=0.3, axis="y")
+
+    plt.suptitle(suptitle or "Diffusion Analysis (MSD)", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_drift_field(
+    drift_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (8, 5),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+    error_band: str = "sem",
+):
+    """Plot distractor-induced drift field A_hat(Δφ) across conditions.
+
+    Parameters:
+        drift_data: Dict mapping condition_key -> dict with keys:
+            'offsets_deg', 'A_hat' (rad/s), 'A_hat_sem' (rad/s),
+            'A_hat_sd' (rad/s).
+        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
+        figsize: Figure size.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+        error_band: ``"sem"`` (default) or ``"sd"`` — controls the shaded band.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for cond_key, data in drift_data.items():
+        color = condition_colors.get(cond_key, None)
+        from ..study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        offsets = data["offsets_deg"]
+        A = data["A_hat"]
+        band_key = "A_hat_sd" if error_band == "sd" else "A_hat_sem"
+        err = data.get(band_key, data["A_hat_sem"])
+
+        ax.plot(offsets, A, color=color, lw=2, marker="o", markersize=4, label=label)
+        if np.any(err > 0):
+            ax.fill_between(offsets, A - err, A + err, color=color, alpha=0.2)
+
+    ax.axhline(0, color="gray", ls="--", lw=0.8)
+    ax.set_xlabel("Distractor Offset Δφ (deg)")
+    ax.set_ylabel("$\\hat{A}(\\Delta\\varphi)$ (rad/s)")
+    ax.set_title("Distractor Drift Field")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    plt.suptitle(suptitle or "Drift Field Analysis", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_noise_floor_histogram(
+    baseline_data: dict[float, np.ndarray],
+    thresholds: dict[float, float],
+    figsize: tuple[float, float] = (12, 4),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Plot histogram of Â_hat from no-stimulus baseline trials.
+
+    Parameters:
+        baseline_data: Dict mapping w_inter -> array of Â_hat values.
+        thresholds: Dict mapping w_inter -> noise floor threshold.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    w_values = sorted(baseline_data.keys())
+    n = len(w_values)
+    fig, axes = plt.subplots(1, n, figsize=(max(4 * n, figsize[0]), figsize[1]),
+                              squeeze=False)
+    axes = axes[0]
+
+    for ax, w in zip(axes, w_values):
+        vals = baseline_data[w]
+        thresh = thresholds[w]
+        ax.hist(vals.ravel(), bins=40, color="#56B4E9", edgecolor="black",
+                linewidth=0.5, alpha=0.8)
+        ax.axvline(thresh, color="red", ls="--", lw=2,
+                   label=f"threshold = {thresh:.3f}")
+        ax.set_xlabel("$\\hat{A}$ (pop. vector amplitude)")
+        ax.set_ylabel("Count")
+        ax.set_title(f"w_inter = {w:.2f}")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle(suptitle or "Noise Floor: Â_hat Distribution (No Stimulus)",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_calibration_heatmap(
+    grid_data: dict,
+    metric: str,
+    amplitude_values: list[float],
+    w_inter_values: list[float],
+    cmap: str = "viridis",
+    figsize: tuple[float, float] = (8, 6),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+):
+    """Plot a 2D heatmap of a calibration metric.
+
+    Parameters:
+        grid_data: Dict mapping (amplitude, w_inter) -> dict of aggregated metrics.
+        metric: Key to extract from each grid point dict (e.g. 'success_rate').
+        amplitude_values: List of amplitude factors (x-axis).
+        w_inter_values: List of w_pyr_pyr_inter values (y-axis).
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    n_amp = len(amplitude_values)
+    n_w = len(w_inter_values)
+    mat = np.full((n_w, n_amp), np.nan)
+
+    for i, w in enumerate(w_inter_values):
+        for j, amp in enumerate(amplitude_values):
+            d = grid_data.get((amp, w), {})
+            mat[i, j] = d.get(metric, np.nan)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.imshow(mat, aspect="auto", cmap=cmap, origin="lower",
+                   vmin=vmin, vmax=vmax)
+    plt.colorbar(im, ax=ax)
+
+    # Labels
+    ax.set_xticks(range(n_amp))
+    ax.set_xticklabels([f"{a:.0f}" for a in amplitude_values])
+    ax.set_yticks(range(n_w))
+    ax.set_yticklabels([f"{w:.2f}" for w in w_inter_values])
+    ax.set_xlabel("Stimulus Amplitude (× I_ext_pyr)")
+    ax.set_ylabel("w_pyr_pyr_inter")
+
+    # Annotate cells
+    for i in range(n_w):
+        for j in range(n_amp):
+            val = mat[i, j]
+            if not np.isnan(val):
+                txt = f"{val:.2f}" if val < 100 else f"{val:.0f}"
+                text_color = "white" if val < (np.nanmax(mat) + np.nanmin(mat)) / 2 else "black"
+                ax.text(j, i, txt, ha="center", va="center",
+                        fontsize=8, color=text_color)
+
+    metric_labels = {
+        "success_rate": "Success Rate",
+        "mean_A_hat": "Mean $\\hat{A}$",
+        "peak_pyr_rate": "Peak PYR Rate (Hz)",
+    }
+    ax.set_title(metric_labels.get(metric, metric))
+
+    plt.suptitle(suptitle or "Parameter Calibration", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_calibration_timecourses(
+    timecourse_data: dict[tuple[float, float], dict],
+    eval_times_s: np.ndarray,
+    figsize: tuple[float, float] = (10, 6),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+    error_band: str = "sem",
+):
+    """Plot Â_hat time courses for selected grid points.
+
+    Parameters:
+        timecourse_data: Dict mapping (amplitude, w_inter) -> dict with keys
+            'A_hat_mean' (array), 'A_hat_sem' (array), 'A_hat_sd' (array).
+        eval_times_s: Time points in seconds.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+        error_band: 'sem' or 'sd'.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+    cmap = plt.cm.viridis
+    keys = sorted(timecourse_data.keys())
+    n = len(keys)
+
+    for idx, (amp, w) in enumerate(keys):
+        d = timecourse_data[(amp, w)]
+        color = cmap(idx / max(n - 1, 1))
+        label = f"amp={amp:.0f}, w={w:.2f}"
+        means = d["A_hat_mean"]
+        err_key = "A_hat_sd" if error_band == "sd" else "A_hat_sem"
+        errs = d.get(err_key, d.get("A_hat_sem", np.zeros_like(means)))
+
+        ax.plot(eval_times_s, means, color=color, lw=2, marker="o",
+                markersize=3, label=label)
+        if np.any(errs > 0):
+            ax.fill_between(eval_times_s, means - errs, means + errs,
+                            color=color, alpha=0.15)
+
+    ax.set_xlabel("Delay Time (s)")
+    ax.set_ylabel("$\\hat{A}$ (pop. vector amplitude)")
+    ax.set_title("Bump Amplitude During Delay")
+    ax.legend(fontsize=7, loc="best", ncol=2)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+
+    plt.suptitle(suptitle or "Â_hat Time Courses", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_calibration_scatter(
+    grid_data: dict,
+    figsize: tuple[float, float] = (8, 6),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Scatter plot: mean Â_hat vs success rate, colored by peak PYR rate.
+
+    Parameters:
+        grid_data: Dict mapping (amplitude, w_inter) -> dict of aggregated metrics.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+
+    Returns:
+        fig: Matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    x_vals, y_vals, c_vals, labels = [], [], [], []
+    for (amp, w), d in sorted(grid_data.items()):
+        x_vals.append(d.get("mean_A_hat", 0.0))
+        y_vals.append(d.get("success_rate", 0.0))
+        c_vals.append(d.get("peak_pyr_rate", 0.0))
+        labels.append(f"({amp:.0f}, {w:.1f})")
+
+    sc = ax.scatter(x_vals, y_vals, c=c_vals, cmap="RdYlGn_r", s=80,
+                    edgecolors="black", linewidth=0.5)
+    plt.colorbar(sc, ax=ax, label="Peak PYR Rate (Hz)")
+
+    # Annotate points
+    for i, lbl in enumerate(labels):
+        ax.annotate(lbl, (x_vals[i], y_vals[i]), fontsize=6,
+                    textcoords="offset points", xytext=(5, 5))
+
+    ax.set_xlabel("Mean $\\hat{A}$ (pop. vector amplitude)")
+    ax.set_ylabel("Success Rate")
+    ax.set_xlim(left=0)
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=0.3)
+
+    plt.suptitle(suptitle or "Calibration Summary", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+# ============================================================================
+# DISTRACTOR SWEEP FIGURES
+# ============================================================================
+
+def plot_distractor_sweep_heatmaps(
+    grid_summary: dict,
+    offsets_deg: list[float],
+    amp_factors: list[float],
+    collapse_threshold: float = 0.3,
+    figsize: tuple[float, float] = (7, 5),
+    save_dir: Optional[str] = None,
+    suptitle_prefix: str = "",
+):
+    """Plot drift and collapse-probability heatmaps for the 2-D distractor sweep.
+
+    Parameters:
+        grid_summary: Dict mapping ``(offset_deg, amp_factor)`` to a dict with
+            keys ``'drift_mean_deg'``, ``'drift_sem_deg'``, ``'collapse_prob'``.
+        offsets_deg: Sorted list of distractor angular offsets (degrees).
+        amp_factors: Sorted list of distractor amplitude factors (relative to cue).
+        collapse_threshold: Â threshold used to declare bump collapse.
+        figsize: Per-figure size.
+        save_dir: If given, save both figures there.
+        suptitle_prefix: Prepended to each figure title.
+
+    Returns:
+        (fig_drift, fig_collapse): Two Matplotlib Figure objects.
+    """
+    import matplotlib.pyplot as plt
+
+    n_off = len(offsets_deg)
+    n_amp = len(amp_factors)
+
+    drift_mat = np.full((n_amp, n_off), np.nan)
+    collapse_mat = np.full((n_amp, n_off), np.nan)
+
+    for i_amp, amp in enumerate(amp_factors):
+        for j_off, off in enumerate(offsets_deg):
+            d = grid_summary.get((off, amp), {})
+            drift_mat[i_amp, j_off] = d.get('drift_mean_deg', np.nan)
+            collapse_mat[i_amp, j_off] = d.get('collapse_prob', np.nan)
+
+    x_labels = [f"{off:.0f}°" for off in offsets_deg]
+    y_labels = [f"{amp:.2g}×" for amp in amp_factors]
+
+    def _annotate(ax, mat):
+        for i in range(n_amp):
+            for j in range(n_off):
+                val = mat[i, j]
+                if not np.isnan(val):
+                    txt = f"{val:.1f}"
+                    mid = (np.nanmax(mat) + np.nanmin(mat)) / 2
+                    color = "white" if val < mid else "black"
+                    ax.text(j, i, txt, ha="center", va="center",
+                            fontsize=8, color=color)
+
+    # --- Figure 1: Drift heatmap ---
+    fig1, ax1 = plt.subplots(figsize=figsize)
+    vmax = np.nanmax(np.abs(drift_mat))
+    if vmax == 0 or np.isnan(vmax):
+        vmax = 1.0
+    im1 = ax1.imshow(drift_mat, aspect="auto", cmap="RdBu_r", origin="lower",
+                     vmin=-vmax, vmax=vmax)
+    cb1 = plt.colorbar(im1, ax=ax1)
+    cb1.set_label("Mean bump shift (deg)")
+    ax1.set_xticks(range(n_off))
+    ax1.set_xticklabels(x_labels)
+    ax1.set_yticks(range(n_amp))
+    ax1.set_yticklabels(y_labels)
+    ax1.set_xlabel("Distractor angular offset Δφ")
+    ax1.set_ylabel("Distractor amplitude (relative to cue)")
+    ax1.set_title("Bump Drift")
+    _annotate(ax1, drift_mat)
+    plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Drift Field",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    if save_dir:
+        fig1.savefig(os.path.join(save_dir, "drift.png"),
+                     dpi=150, bbox_inches="tight")
+
+    # --- Figure 2: Collapse heatmap ---
+    fig2, ax2 = plt.subplots(figsize=figsize)
+    im2 = ax2.imshow(collapse_mat, aspect="auto", cmap="YlOrRd", origin="lower",
+                     vmin=0.0, vmax=1.0)
+    cb2 = plt.colorbar(im2, ax=ax2)
+    cb2.set_label(f"Collapse probability (Â < {collapse_threshold:.2g})")
+    ax2.set_xticks(range(n_off))
+    ax2.set_xticklabels(x_labels)
+    ax2.set_yticks(range(n_amp))
+    ax2.set_yticklabels(y_labels)
+    ax2.set_xlabel("Distractor angular offset Δφ")
+    ax2.set_ylabel("Distractor amplitude (relative to cue)")
+    ax2.set_title("Bump Collapse Probability")
+    # Annotate with percentage
+    for i in range(n_amp):
+        for j in range(n_off):
+            val = collapse_mat[i, j]
+            if not np.isnan(val):
+                ax2.text(j, i, f"{val:.0%}", ha="center", va="center",
+                         fontsize=8,
+                         color="black" if val < 0.5 else "white")
+    plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Collapse Probability",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    if save_dir:
+        fig2.savefig(os.path.join(save_dir, "collapse.png"),
+                     dpi=150, bbox_inches="tight")
+
+    return fig1, fig2
+
+
+def plot_distractor_sweep_activity_grid(
+    tc_data: list[dict],
+    cue_onset_ms: float,
+    cue_offset_ms: float,
+    dist_onset_ms: float,
+    dist_offset_ms: float,
+    burn_in_ms: float = 10000.0,
+    figsize_per_panel: tuple[float, float] = (4.0, 4.5),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Grid of PYR activity heatmaps (time × position) for representative distractor-sweep cells.
+
+    Parameters:
+        tc_data: List of dicts, each with keys:
+            ``'offset_deg'``, ``'amp_factor'``, ``'full_result'`` (RingSimulationResult).
+        cue_onset_ms, cue_offset_ms: Cue window (absolute ms).
+        dist_onset_ms, dist_offset_ms: Distractor window (absolute ms).
+        burn_in_ms: Burn-in duration; subtracted to align displayed time to experiment start.
+        figsize_per_panel: Width × height per subplot.
+        save_path: If given, save figure there.
+        suptitle: Optional figure super-title.
+
+    Returns:
+        fig: Matplotlib Figure.
+    """
+    import matplotlib.pyplot as plt
+    from .analysis import decode_bump_center
+
+    n = len(tc_data)
+    # Single row for ≤4 panels; wrap at 3 columns for larger grids
+    ncols = n if n <= 4 else 3
+    nrows = int(np.ceil(n / ncols))
+    pw, ph = figsize_per_panel
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(pw * ncols, ph * nrows),
+        squeeze=False,
+        layout="constrained",
+    )
+
+    # Times relative to experiment start (0 = burn-in end)
+    cue_on_rel = cue_onset_ms - burn_in_ms
+    cue_off_rel = cue_offset_ms - burn_in_ms
+    dist_on_rel = dist_onset_ms - burn_in_ms
+    dist_off_rel = dist_offset_ms - burn_in_ms
+
+    # Global vmax across all panels for a shared colour scale
+    vmax = max(
+        np.nanmax(entry['full_result'].r[:, :, 0])
+        for entry in tc_data
+    )
+
+    ims = []
+    for idx, entry in enumerate(tc_data):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+
+        result = entry['full_result']
+        off = entry['offset_deg']
+        amp = entry['amp_factor']
+
+        # Crop to post-burn-in window
+        t_abs = result.t_ms  # already shifted by BURN_IN_MS in cmd_distractor_sweep
+        t_rel = t_abs - burn_in_ms
+        mask = t_rel >= 0
+        activity = result.r[mask, :, 0]  # PYR only
+        t_plot = t_rel[mask]
+
+        # Angles
+        angles_deg = result.ring_params.node_angles_deg  # shape (n_nodes,)
+
+        # Heatmap: time on y-axis (top=early, bottom=late), position on x-axis
+        extent = [angles_deg[0], angles_deg[-1], t_plot[-1], t_plot[0]]
+        im = ax.imshow(
+            activity,
+            aspect="auto",
+            cmap="hot",
+            origin="upper",
+            extent=extent,
+            vmin=0,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        ims.append(im)
+
+        # Cue window — white dashed lines
+        ax.axhline(cue_on_rel, color="white", ls="--", lw=1.2, alpha=0.9)
+        ax.axhline(cue_off_rel, color="white", ls="--", lw=1.2, alpha=0.9)
+        # Cue position — white dotted vertical line
+        ax.axvline(180.0, color="white", ls=":", lw=1.0, alpha=0.7)
+
+        # Distractor window — orange lines
+        ax.axhline(dist_on_rel, color="#E69F00", ls="--", lw=1.2, alpha=0.9)
+        ax.axhline(dist_off_rel, color="#E69F00", ls="--", lw=1.2, alpha=0.9)
+        # Distractor angular position
+        dist_angle = (180.0 + off) % 360.0
+        ax.axvline(dist_angle, color="#E69F00", ls=":", lw=1.0, alpha=0.7)
+
+        # Decoded bump trajectory (cyan dots)
+        center_deg, amplitude = decode_bump_center(result, population=0)
+        t_full_rel = result.t_ms - burn_in_ms
+        valid = (t_full_rel >= 0) & (amplitude > 0.2)
+        ax.scatter(
+            center_deg[valid], t_full_rel[valid],
+            c="cyan", s=1, alpha=0.5,
+        )
+
+        ax.set_title(f"Δφ={off:.0f}°,  {amp:.2g}× cue", fontsize=9)
+        ax.set_xlabel("Position (deg)", fontsize=8)
+        ax.set_ylabel("Time (ms)", fontsize=8)
+        ax.set_xlim(angles_deg[0], angles_deg[-1])
+        ax.tick_params(labelsize=7)
+
+    # Hide unused panels
+    for idx in range(n, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].set_visible(False)
+
+    # Shared colorbar on the right
+    cbar = fig.colorbar(ims[-1], ax=axes, label="PYR firing rate (Hz)",
+                         fraction=0.02, pad=0.04)
+    cbar.ax.tick_params(labelsize=7)
+
+    fig.suptitle(suptitle or "Distractor Sweep — PYR Activity",
+                 fontsize=12, fontweight="bold")
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_distractor_sweep_timecourses(
+    tc_data: list[dict],
+    cue_onset_ms: float,
+    cue_offset_ms: float,
+    dist_onset_ms: float,
+    dist_offset_ms: float,
+    figsize_per_panel: tuple[float, float] = (4.5, 3.0),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Plot bump position θ(t) for representative distractor-sweep conditions.
+
+    Parameters:
+        tc_data: List of dicts, each with keys:
+            ``'offset_deg'``, ``'amp_factor'``, ``'t_ms'`` (array),
+            ``'center_deg'`` (array), ``'amplitude'`` (array).
+        cue_onset_ms, cue_offset_ms: Cue window (absolute ms).
+        dist_onset_ms, dist_offset_ms: Distractor window (absolute ms).
+        figsize_per_panel: Width × height for each subplot panel.
+        save_path: If given, save figure there.
+        suptitle: Optional figure super-title.
+
+    Returns:
+        fig: Matplotlib Figure.
+    """
+    import matplotlib.pyplot as plt
+
+    n = len(tc_data)
+    ncols = min(3, n)
+    nrows = int(np.ceil(n / ncols))
+    pw, ph = figsize_per_panel
+    fig, axes = plt.subplots(nrows, ncols, figsize=(pw * ncols, ph * nrows),
+                              squeeze=False)
+
+    cue_location_deg = 180.0  # canonical cue position
+
+    for idx, entry in enumerate(tc_data):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+
+        t_s = entry['t_ms'] / 1000.0
+        center = entry['center_deg']
+
+        # Shaded regions
+        ax.axvspan(cue_onset_ms / 1000, cue_offset_ms / 1000,
+                   color="#b0b0b0", alpha=0.35, label="Cue")
+        ax.axvspan(dist_onset_ms / 1000, dist_offset_ms / 1000,
+                   color="#E69F00", alpha=0.40, label="Distractor")
+
+        ax.plot(t_s, center, color="#333333", lw=1.2)
+        ax.axhline(cue_location_deg, color="#56B4E9", ls="--", lw=1.0,
+                   label=f"Cue pos ({cue_location_deg:.0f}°)")
+
+        off = entry['offset_deg']
+        amp = entry['amp_factor']
+        ax.set_title(f"Δφ={off:.0f}°,  {amp:.2g}× cue", fontsize=9)
+        ax.set_xlabel("Time (s)", fontsize=8)
+        ax.set_ylabel("Bump position (deg)", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.25)
+        if idx == 0:
+            ax.legend(fontsize=7, loc="upper left")
+
+    # Hide unused panels
+    for idx in range(n, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].set_visible(False)
+
+    plt.suptitle(suptitle or "Distractor Sweep — Bump Trajectories",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
