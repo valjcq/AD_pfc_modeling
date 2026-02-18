@@ -368,15 +368,13 @@ def run_study(
 def plot_study_boxplots(
     results: StudyResults,
     title: str = "Firing Rate Distribution by Condition",
-    figsize: tuple[float, float] = (14, 10),
+    figsize: tuple[float, float] = (14, 6),
     save_path: Optional[str] = None,
     show: bool = True,
     unit: str = "transients/min",
 ):
     """
-    Create box plots showing firing rate distributions, one per population.
-
-    Layout: PYR (main population) on top (larger), then SOM, PV, VIP below.
+    Create box plots showing firing rate distributions for the PYR population.
 
     Parameters:
         results: StudyResults from run_study
@@ -394,68 +392,48 @@ def plot_study_boxplots(
 
     n_conditions = len(results.conditions)
 
-    # Create figure with PYR larger on top, others below
-    fig = plt.figure(figsize=figsize, constrained_layout=True)
-    gs = fig.add_gridspec(2, 3, height_ratios=[1.5, 1])
+    fig, ax_pyr = plt.subplots(figsize=figsize, constrained_layout=True)
 
-    # PYR (main) - spans full width on top
-    ax_pyr = fig.add_subplot(gs[0, :])
-
-    # Other populations below
-    ax_som = fig.add_subplot(gs[1, 0])
-    ax_pv = fig.add_subplot(gs[1, 1])
-    ax_vip = fig.add_subplot(gs[1, 2])
-
-    axes = [ax_pyr, ax_som, ax_pv, ax_vip]
-    pop_indices = {"PYR": 0, "SOM": 1, "PV": 2, "VIP": 3}
+    pop_idx = 0  # PYR
+    color = POPULATION_COLORS["PYR"]
 
     # Condition labels
     condition_labels = [STUDY_CONDITIONS[k].name for k in results.conditions]
 
-    for ax, pop_name in zip(axes, results.population_names):
-        pop_idx = pop_indices[pop_name]
-        color = POPULATION_COLORS[pop_name]
+    # Collect data for PYR across all conditions
+    data = [results.data[cond_key][:, pop_idx] for cond_key in results.conditions]
 
-        # Collect data for this population across all conditions
-        data = [results.data[cond_key][:, pop_idx] for cond_key in results.conditions]
+    # Create box plot
+    bp = ax_pyr.boxplot(
+        data,
+        patch_artist=True,
+        medianprops=dict(color='black', linewidth=1.5),
+        whiskerprops=dict(color='gray'),
+        capprops=dict(color='gray'),
+        flierprops=dict(marker='o', markersize=3, alpha=0.5),
+    )
 
-        # Create box plot
-        bp = ax.boxplot(
-            data,
-            patch_artist=True,
-            medianprops=dict(color='black', linewidth=1.5),
-            whiskerprops=dict(color='gray'),
-            capprops=dict(color='gray'),
-            flierprops=dict(marker='o', markersize=3, alpha=0.5),
-        )
+    # Color all boxes with the population color
+    for patch in bp['boxes']:
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+        patch.set_edgecolor('black')
 
-        # Color all boxes with the population color
-        for patch in bp['boxes']:
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
-            patch.set_edgecolor('black')
+    # X-axis
+    ax_pyr.set_xticks(range(1, n_conditions + 1))
+    ax_pyr.set_xticklabels(condition_labels, rotation=45, ha='right', fontsize=9)
 
-        # X-axis
-        ax.set_xticks(range(1, n_conditions + 1))
-        ax.set_xticklabels(condition_labels, rotation=45, ha='right', fontsize=9 if pop_name == "PYR" else 8)
+    # Y-axis
+    ax_pyr.set_ylabel(f"Rate ({unit})", fontsize=10)
+    ax_pyr.set_ylim(bottom=0)
 
-        # Y-axis
-        ax.set_ylabel(f"Rate ({unit})", fontsize=10 if pop_name == "PYR" else 9)
-        ax.set_ylim(bottom=0)
+    # Title
+    ax_pyr.set_title("PYR", fontsize=13, fontweight='bold', color=color)
 
-        # Title
-        is_main = pop_name == "PYR"
-        ax.set_title(
-            pop_name,
-            fontsize=13 if is_main else 11,
-            fontweight='bold',
-            color=color
-        )
-
-        # Style
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.grid(axis='y', alpha=0.3)
+    # Style
+    ax_pyr.spines['top'].set_visible(False)
+    ax_pyr.spines['right'].set_visible(False)
+    ax_pyr.grid(axis='y', alpha=0.3)
 
     # Main title
     fig.suptitle(title, fontsize=14, fontweight='bold')
