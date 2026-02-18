@@ -336,7 +336,7 @@ def compute_working_memory_accuracy(
 def aggregate_metrics_across_trials(
     all_trial_metrics: list[list[dict]],
 ) -> list[dict]:
-    """Aggregate per-timepoint metrics from multiple trials into mean +/- SD.
+    """Aggregate per-timepoint metrics from multiple trials into mean ± SD/SEM.
 
     Parameters:
         all_trial_metrics: list of length n_trials, each element is a list
@@ -345,7 +345,7 @@ def aggregate_metrics_across_trials(
 
     Returns:
         List of dicts (one per timepoint), each containing eval_time_ms
-        plus {key}_mean and {key}_sd for each metric key.
+        plus {key}_mean, {key}_sd, and {key}_sem for each metric key.
     """
     n_timepoints = len(all_trial_metrics[0])
     metric_keys = [k for k in all_trial_metrics[0][0] if k != "eval_time_ms"]
@@ -358,35 +358,180 @@ def aggregate_metrics_across_trials(
                 [trial[tp_idx][key] for trial in all_trial_metrics], dtype=float
             )
             valid = values[~np.isnan(values)]
-            entry[f"{key}_mean"] = float(np.mean(valid)) if len(valid) > 0 else np.nan
-            entry[f"{key}_sd"] = (
-                float(np.std(valid, ddof=1))
-                if len(valid) > 1
-                else 0.0
-            )
+            n = len(valid)
+            entry[f"{key}_mean"] = float(np.mean(valid)) if n > 0 else np.nan
+            sd = float(np.std(valid, ddof=1)) if n > 1 else 0.0
+            entry[f"{key}_sd"] = sd
+            entry[f"{key}_sem"] = sd / np.sqrt(n) if n > 1 else 0.0
         aggregated.append(entry)
     return aggregated
 
 
+def compute_msd_curve(
+    centers_rad_trials: list[np.ndarray],
+    t_s: np.ndarray,
+    max_lag_frac: float = 0.75,
+    n_lags: int = 200,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute mean squared displacement (MSD) of bump center over time.
+
+    For each lag τ, computes ⟨[φ(t+τ) - φ(0)]²⟩ averaged across trials.
+    Trajectories should be *unwrapped* (no 2π jumps) and referenced to
+    their initial position (i.e. displacement from t=0).
+
+    Parameters:
+        centers_rad_trials: List of per-trial unwrapped bump center
+            trajectories in radians, each shape (n_steps,).  Each
+            trajectory is shifted so that φ(0) = 0 internally.
+        t_s: Time vector in seconds, shape (n_steps,).
+        max_lag_frac: Maximum lag as fraction of total duration.
+        n_lags: Number of lag points to evaluate.
+
+    Returns:
+        lag_times: Lag values in seconds, shape (n_lags,)
+        msd_mean: Mean MSD in rad², shape (n_lags,)
+        msd_sem: SEM of MSD across trials, shape (n_lags,)
+        msd_sd: SD of MSD across trials, shape (n_lags,)
+    """
+    T = t_s[-1] - t_s[0]
+    max_lag = max_lag_frac * T
+    lag_times = np.linspace(0, max_lag, n_lags)
+    dt = t_s[1] - t_s[0]
+
+    n_trials = len(centers_rad_trials)
+    msd_per_trial = np.zeros((n_trials, n_lags))
+
+    for trial_idx, traj in enumerate(centers_rad_trials):
+        # Reference to initial position
+        disp = traj - traj[0]
+        for i, lag in enumerate(lag_times):
+            lag_steps = int(round(lag / dt))
+            if lag_steps == 0:
+                msd_per_trial[trial_idx, i] = 0.0
+            elif lag_steps < len(disp):
+                # MSD at this lag: average over all starting points
+                squared_displacements = (disp[lag_steps:] - disp[:-lag_steps]) ** 2
+                msd_per_trial[trial_idx, i] = np.mean(squared_displacements)
+            else:
+                msd_per_trial[trial_idx, i] = np.nan
+
+    msd_mean = np.nanmean(msd_per_trial, axis=0)
+    msd_sd = np.nanstd(msd_per_trial, axis=0, ddof=1) if n_trials > 1 else np.zeros(n_lags)
+    msd_sem = msd_sd / np.sqrt(n_trials) if n_trials > 1 else np.zeros(n_lags)
+
+    return lag_times, msd_mean, msd_sem, msd_sd
+
+
+def fit_diffusion_coefficient(
+    lag_times: np.ndarray,
+    msd: np.ndarray,
+    fit_range: tuple[float, float] = (0.1, 1.0),
+) -> tuple[float, np.ndarray, float]:
+    """Fit a line to the linear regime of the MSD to extract B_hat.
+
+    Parameters:
+        lag_times: Lag values in seconds.
+        msd: MSD values in rad².
+        fit_range: (t_min, t_max) in seconds for the linear fit region.
+
+    Returns:
+        B_hat: Diffusion strength (slope of MSD vs t, in rad²/s).
+        fit_line: Fitted MSD values at all lag_times, for plotting.
+        r_squared: Coefficient of determination of the fit.
+    """
+    mask = (lag_times >= fit_range[0]) & (lag_times <= fit_range[1])
+    mask &= ~np.isnan(msd)
+    if np.sum(mask) < 2:
+        return 0.0, np.full_like(lag_times, np.nan), 0.0
+
+    t_fit = lag_times[mask]
+    msd_fit = msd[mask]
+
+    # Linear fit: MSD = B * t + intercept
+    coeffs = np.polyfit(t_fit, msd_fit, 1)
+    B_hat = coeffs[0]  # slope = diffusion strength
+    intercept = coeffs[1]
+
+    fit_line = B_hat * lag_times + intercept
+
+    # R²
+    ss_res = np.sum((msd_fit - (B_hat * t_fit + intercept)) ** 2)
+    ss_tot = np.sum((msd_fit - np.mean(msd_fit)) ** 2)
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return B_hat, fit_line, r_squared
+
+
+def compute_drift_field(
+    displacement_per_offset: dict[float, list[float]],
+    distractor_duration_s: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute empirical drift field A_hat(Δφ) from distractor trials.
+
+    Parameters:
+        displacement_per_offset: Dict mapping distractor offset (degrees)
+            to list of signed bump displacements (radians) across trials.
+        distractor_duration_s: Distractor duration in seconds (T_D).
+
+    Returns:
+        offsets_deg: Distractor offsets in degrees, shape (n_offsets,)
+        A_hat: Estimated drift velocity in rad/s, shape (n_offsets,)
+        A_hat_sem: SEM of drift velocity, shape (n_offsets,)
+        A_hat_sd: SD of drift velocity, shape (n_offsets,)
+    """
+    offsets_deg = np.array(sorted(displacement_per_offset.keys()))
+    A_hat = np.zeros(len(offsets_deg))
+    A_hat_sem = np.zeros(len(offsets_deg))
+    A_hat_sd = np.zeros(len(offsets_deg))
+
+    for i, offset in enumerate(offsets_deg):
+        displacements = np.array(displacement_per_offset[offset])
+        n = len(displacements)
+        mean_disp = np.mean(displacements)
+        A_hat[i] = mean_disp / distractor_duration_s
+        if n > 1:
+            sd = np.std(displacements, ddof=1)
+            A_hat_sd[i] = sd / distractor_duration_s
+            A_hat_sem[i] = (sd / np.sqrt(n)) / distractor_duration_s
+
+    return offsets_deg, A_hat, A_hat_sem, A_hat_sd
+
+
+def compute_noise_floor(A_hat_values: np.ndarray, percentile: float = 95.0) -> float:
+    """Compute noise floor threshold from no-stimulus Â_hat values.
+
+    Parameters:
+        A_hat_values: Array of population-vector amplitudes from baseline
+            (no-stimulus) trials, any shape.
+        percentile: Percentile to use as threshold (default: 95th).
+
+    Returns:
+        Noise floor threshold (scalar float).
+    """
+    valid = A_hat_values[~np.isnan(A_hat_values.ravel())]
+    if len(valid) == 0:
+        return 0.0
+    return float(np.percentile(valid, percentile))
+
+
 def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
-    """Aggregate single-timepoint metric dicts (one per trial) into mean +/- SD.
+    """Aggregate single-timepoint metric dicts (one per trial) into mean ± SD/SEM.
 
     Parameters:
         all_metrics: list of metric dicts (e.g. from compute_bump_metrics),
             one per trial.
 
     Returns:
-        dict with {key}_mean and {key}_sd for each numeric metric key.
+        dict with {key}_mean, {key}_sd, and {key}_sem for each numeric key.
     """
     metric_keys = list(all_metrics[0].keys())
     result = {}
     for key in metric_keys:
         values = np.array([m[key] for m in all_metrics], dtype=float)
         valid = values[~np.isnan(values)]
-        result[f"{key}_mean"] = float(np.mean(valid)) if len(valid) > 0 else np.nan
-        result[f"{key}_sd"] = (
-            float(np.std(valid, ddof=1))
-            if len(valid) > 1
-            else 0.0
-        )
+        n = len(valid)
+        result[f"{key}_mean"] = float(np.mean(valid)) if n > 0 else np.nan
+        sd = float(np.std(valid, ddof=1)) if n > 1 else 0.0
+        result[f"{key}_sd"] = sd
+        result[f"{key}_sem"] = sd / np.sqrt(n) if n > 1 else 0.0
     return result

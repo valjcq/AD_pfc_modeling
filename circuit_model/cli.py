@@ -207,6 +207,12 @@ def cmd_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
+    # Override noise amplitude if provided
+    if args.sigma_noise is not None:
+        from dataclasses import replace
+        base_params = replace(base_params, sigma_s=args.sigma_noise)
+        print(f"Noise amplitude overridden: sigma_s = {args.sigma_noise}")
+
     # Build config
     cfg = StudyConfig(
         n_runs=args.n_runs,
@@ -225,7 +231,13 @@ def cmd_study(args: argparse.Namespace) -> None:
     print(f"  Conditions: {len(STUDY_CONDITIONS)}")
     print(f"  Runs per condition: {cfg.n_runs}")
     print(f"  Total simulations: {len(STUDY_CONDITIONS) * cfg.n_runs}")
-    print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={cfg.noise_type}, tau_noise={cfg.tau_noise_ms}ms")
+    if cfg.noise_type == "none":
+        noise_detail = "none"
+    elif cfg.noise_type == "white":
+        noise_detail = f"white, sigma_s={base_params.sigma_s:.4f}"
+    else:  # ou
+        noise_detail = f"ou, sigma_s={base_params.sigma_s:.4f}, tau_noise={cfg.tau_noise_ms}ms"
+    print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={noise_detail}")
     print(f"  Receptor activation: {'fixed mean values' if cfg.fixed_receptor_values else 'sampled from distributions'}")
     print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
     print()
@@ -396,7 +408,7 @@ Examples:
     python -m circuit_model study --n_runs 100 --noise_type white --tau_noise_ms 5
 
     # Ring attractor: single condition
-    python -m circuit_model ring-run --condition WT --amplitude 150
+    python -m circuit_model ring-run --condition WT --amplitude 3
 
     # Ring attractor: compare conditions
     python -m circuit_model ring-study --conditions WT WT_APP --n_trials 10
@@ -541,6 +553,8 @@ Examples:
                               help="Integration time step (ms)")
     study_parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="white",
                               help="Noise type (default: white)")
+    study_parser.add_argument("--sigma_noise", type=float, default=None,
+                              help="Noise amplitude sigma_s (overrides params_json value)")
     study_parser.add_argument("--tau_noise_ms", type=float, default=5.0,
                               help="OU noise time constant (ms)")
     study_parser.add_argument("--seed", type=int, default=None,
@@ -606,8 +620,8 @@ Examples:
              "E.g. --amplitudes 8 10 15 20 means 8×, 10×, 15×, 20× baseline.",
     )
     ring_study_parser.add_argument(
-        "--n_trials", type=int, default=1,
-        help="Number of trials per condition x amplitude (default: 1)",
+        "--n_trials", type=int, default=100,
+        help="Number of trials per condition x amplitude (default: 100)",
     )
     ring_study_parser.add_argument(
         "--n_workers", type=int, default=None,
@@ -626,13 +640,192 @@ Examples:
         help="Step for timed metrics-vs-amplitude plots (ms). "
              "0 = disabled. (default: 500)",
     )
+    ring_study_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
+
+    # =========================================================================
+    # RING-DIFFUSION subcommand
+    # =========================================================================
+    ring_diff_parser = subparsers.add_parser(
+        "ring-diffusion",
+        help="Run MSD diffusion analysis on the ring attractor",
+        description="Compute mean squared displacement (MSD) of bump center "
+                    "during delay periods across conditions, and extract the "
+                    "diffusion strength B_hat (Seeholzer et al. 2019).",
+    )
+    _add_ring_common(ring_diff_parser)
+    ring_diff_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: all 8).",
+    )
+    ring_diff_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per condition (default: 50)",
+    )
+    ring_diff_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_diff_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
+
+    # =========================================================================
+    # RING-DRIFT-FIELD subcommand
+    # =========================================================================
+    ring_drift_parser = subparsers.add_parser(
+        "ring-drift-field",
+        help="Run distractor drift field analysis on the ring attractor",
+        description="Sweep distractor angular offsets and measure bump "
+                    "displacement to estimate the drift field A_hat(Δφ) "
+                    "(Seeholzer et al. 2019).",
+    )
+    _add_ring_common(ring_drift_parser)
+    ring_drift_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: all 8).",
+    )
+    ring_drift_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per condition per offset (default: 50)",
+    )
+    ring_drift_parser.add_argument(
+        "--distractor_steps", type=float, default=10.0,
+        help="Angular step size for distractor sweep in degrees (default: 10)",
+    )
+    ring_drift_parser.add_argument(
+        "--distractor_amplitude", type=float, default=15.0,
+        help="Distractor stimulus amplitude as factor of I_ext_pyr baseline "
+             "(default: 15.0, i.e. 15× baseline current)",
+    )
+    ring_drift_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=200.0,
+        help="Distractor duration in ms (default: 200)",
+    )
+    ring_drift_parser.add_argument(
+        "--distractor_onset_ms", type=float, default=1500.0,
+        help="Distractor onset after stimulus offset in ms (default: 1500)",
+    )
+    ring_drift_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_drift_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
+
+    # =========================================================================
+    # RING-DISTRACTOR-SWEEP subcommand
+    # =========================================================================
+    ring_ds_parser = subparsers.add_parser(
+        "ring-distractor-sweep",
+        help="2-D distractor sweep (Δφ × amplitude) on the ring attractor",
+        description="Sweep a 2-D grid of distractor angular offset × distractor "
+                    "amplitude, measuring bump drift and collapse probability. "
+                    "Protocol: cue → delay1 → distractor → delay2.",
+    )
+    _add_ring_common(ring_ds_parser)
+    ring_ds_parser.add_argument(
+        "--condition", type=str, default="WT",
+        help="Experimental condition (default: WT).",
+    )
+    ring_ds_parser.add_argument(
+        "--offsets_deg", type=float, nargs="+",
+        default=[0, 5, 10, 15, 20, 30, 40, 60, 80, 100, 130, 150, 180],
+        help="Distractor angular offsets from cue in degrees (default: 0 5 10 15 20 30 40 60 80 100 130 150 180)",
+    )
+    ring_ds_parser.add_argument(
+        "--amp_factors", type=float, nargs="+",
+        default=[0.5, 0.75, 1.0, 1.25, 1.5],
+        help="Distractor amplitude factors relative to cue (default: 0.5 0.75 1.0 1.25 1.5)",
+    )
+    ring_ds_parser.add_argument(
+        "--n_trials", type=int, default=10,
+        help="Number of trials per grid cell (default: 10)",
+    )
+    ring_ds_parser.add_argument(
+        "--delay1_ms", type=float, default=1000.0,
+        help="Delay period before distractor in ms (default: 1000)",
+    )
+    ring_ds_parser.add_argument(
+        "--delay2_ms", type=float, default=1000.0,
+        help="Delay period after distractor in ms (default: 1000)",
+    )
+    ring_ds_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=250.0,
+        help="Distractor duration in ms (default: 250)",
+    )
+    ring_ds_parser.add_argument(
+        "--collapse_threshold", type=float, default=None,
+        help="Pop-vector amplitude Â below which bump is declared collapsed. "
+             "Auto-detected from calibration_summary.csv when not specified "
+             "(run ring-calibrate first). Falls back to 0.2 with a warning if "
+             "no calibration data is found.",
+    )
+    ring_ds_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+
+    # =========================================================================
+    # RING-CALIBRATE subcommand
+    # =========================================================================
+    ring_cal_parser = subparsers.add_parser(
+        "ring-calibrate",
+        help="Run 2D parameter calibration (amplitude x w_inter) for the ring attractor",
+        description="Sweep a 2D grid of (stimulus_amplitude, w_pyr_pyr_inter) to find "
+                    "parameter combinations that produce a stable memory bump. Estimates "
+                    "a noise floor from no-stimulus baseline trials and outputs diagnostic "
+                    "figures and a JSON summary with recommended parameters.",
+    )
+    _add_ring_common(ring_cal_parser)
+    ring_cal_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to calibrate (default: WT only).",
+    )
+    ring_cal_parser.add_argument(
+        "--amplitudes", type=float, nargs="+",
+        default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
+        help="Stimulus amplitude factors to sweep (default: 5 10 15 20 25 30)",
+    )
+    ring_cal_parser.add_argument(
+        "--w_inter_values", type=float, nargs="+",
+        default=[2.0, 3.0, 4, 5.0, 6.0],
+        help="w_pyr_pyr_inter values to sweep (default: 2.0 3.0 4 5.0 6.0)",
+    )
+    ring_cal_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per grid point (default: 50)",
+    )
+    ring_cal_parser.add_argument(
+        "--n_baseline", type=int, default=100,
+        help="Number of no-stimulus baseline trials per w_inter for noise floor (default: 100)",
+    )
+    ring_cal_parser.add_argument(
+        "--noise_percentile", type=float, default=95.0,
+        help="Percentile of baseline A_hat used as noise floor threshold (default: 95)",
+    )
+    ring_cal_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_cal_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
 
     # Parse arguments
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
-        print("\nNo command specified. Use 'run', 'optimize', 'study', 'ring-run', or 'ring-study'.")
+        print("\nNo command specified. Use 'run', 'optimize', 'study', "
+              "'ring-run', 'ring-study', 'ring-diffusion', 'ring-drift-field', "
+              "'ring-distractor-sweep', or 'ring-calibrate'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -646,6 +839,18 @@ Examples:
     elif args.command == "ring-study":
         from .ring.cli import cmd_study as cmd_ring_study
         cmd_ring_study(args)
+    elif args.command == "ring-diffusion":
+        from .ring.cli import cmd_diffusion as cmd_ring_diffusion
+        cmd_ring_diffusion(args)
+    elif args.command == "ring-drift-field":
+        from .ring.cli import cmd_drift_field as cmd_ring_drift_field
+        cmd_ring_drift_field(args)
+    elif args.command == "ring-distractor-sweep":
+        from .ring.cli import cmd_distractor_sweep as cmd_ring_distractor_sweep
+        cmd_ring_distractor_sweep(args)
+    elif args.command == "ring-calibrate":
+        from .ring.cli import cmd_calibrate as cmd_ring_calibrate
+        cmd_ring_calibrate(args)
     else:
         parser.print_help()
         sys.exit(1)

@@ -16,6 +16,10 @@ This document describes the mathematical formulation and implementation of the r
 8. [Noise](#8-noise)
 9. [Experimental Conditions](#9-experimental-conditions)
 10. [Analysis Methods](#10-analysis-methods)
+    - [10.1 Population Vector Decoding](#101-population-vector-decoding)
+    - [10.2 Distractor-Induced Drift Field Analysis](#102-distractor-induced-drift-field-analysis)
+    - [10.2b 2D Distractor Sweep](#102b-2d-distractor-sweep)
+    - [10.3–10.8 Other metrics](#103-bump-width-estimation)
 11. [References](#11-references)
 
 ---
@@ -123,7 +127,7 @@ $$I_{\text{inter},i}^{\text{PV}\to\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{P
 | `w_pyr_pyr_inter` | $w_{\text{pyr}}^{\text{inter}}$ | 18.55 | Total row-sum of PYR→PYR weights (Gaussian profile only) |
 | `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 30.0 deg | Gaussian width of PYR→PYR profile |
 | `J_plus` | $J_+$ | 1.6 | Local excitation peak (Compte profile only) |
-| `w_pv_global` | $w_{\text{PV}}^{\text{global}}$ | 0.3 | Strength of PV→PYR global inhibition |
+| `w_pv_global` | $w_{\text{PV}}^{\text{global}}$ | 2.0 | Strength of PV→PYR global inhibition |
 | `pv_global_type` | -- | `"uniform"` | `"uniform"` or `"gaussian"` |
 | `sigma_pv_deg` | $\sigma_{\text{PV}}$ | 180.0 deg | Width of PV profile (if Gaussian) |
 
@@ -315,6 +319,29 @@ Multiple stimuli are summed: $I_{\text{stim},i}(t) = \sum_k I_{\text{stim},i}^{(
 | `distractor_onset_ms` | 1500.0 | Distractor onset (absolute time, ms) |
 | `distractor_duration_ms` | 200.0 | Distractor duration (ms) |
 
+### 7.1 Standard Distractor Protocol (ring-distractor-sweep)
+
+The `ring-distractor-sweep` command uses a two-delay protocol that cleanly separates bump formation, distractor presentation, and post-distractor recovery:
+
+| Phase | Duration | Description |
+|-------|----------|-------------|
+| Burn-in | 10,000 ms | Network settles to baseline |
+| Pre-cue baseline | 500 ms | Continued baseline |
+| Cue | 250 ms | Spatial stimulus at $180°$, amplitude $A_{\text{cue}}$ |
+| Delay₁ | 1,000 ms (default) | Memory consolidation; bump forms and stabilizes |
+| Distractor | 250 ms (default) | Competing stimulus at $180° + \Delta\varphi$, amplitude $\alpha \cdot A_{\text{cue}}$ |
+| Delay₂ | 1,000 ms (default) | Post-distractor recovery; measure final bump state |
+
+The two swept dimensions are:
+- $\Delta\varphi \in \{0°, 45°, 90°, 135°, 180°\}$ — angular offset of distractor from cue
+- $\alpha \in \{0.5\times, 0.75\times, 1.0\times, 1.25\times, 1.5\times\}$ — distractor amplitude relative to cue
+
+For each cell $(\Delta\varphi, \alpha)$, bump position is measured 50 ms before distractor onset ($\hat{\theta}_{\text{before}}$) and 100 ms after distractor offset ($\hat{\theta}_{\text{after}}$). The signed bump shift is:
+
+$$\Delta\hat{\theta} = (\hat{\theta}_{\text{after}} - \hat{\theta}_{\text{before}} + \pi) \bmod 2\pi - \pi$$
+
+positive values indicate drift toward the distractor. Bump collapse is declared when $\hat{A}_{\text{after}} < \tau$, where $\tau$ is the **noise floor** read from the nearest matching row of `calibration_summary.csv` (keyed on condition, cue amplitude, and `w_inter`). This makes the threshold parameter-dependent: a tighter bump produced by a high-amplitude cue has a higher noise floor than a weaker one, so the criterion scales appropriately. If no calibration file is found, $\tau = 0.2$ is used with a warning.
+
 ---
 
 ## 8. Noise
@@ -334,6 +361,33 @@ $$\xi_i^X(t + \Delta t) = \xi_i^X(t) - \frac{\xi_i^X(t)}{\tau_{\text{noise}}} \D
 $$\xi_i^X(t) = 0$$
 
 ---
+
+### Relation to Seeholzer et al. (2019)
+
+The Langevin equation (their Eq. 4) contains a single white noise term $\sqrt{B}\,\eta(t)$ with 
+$\langle\eta(t)\,\eta(t')\rangle = \delta(t - t')$. This is **not** a noise injected into the network 
+directly; it is the *emergent* effective noise on the bump center $\varphi(t)$, obtained by projecting 
+the full $N$-dimensional spiking variability onto the 1D attractor manifold via the left eigenvector 
+$e_l$ (their §"Diffusion", p. 24).
+
+The underlying noise source in the paper is **independent white Gaussian noise per neuron** — 
+a diffusion approximation to Poisson spike emission:
+
+$$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad 
+\langle\eta_i(t)\,\eta_j(t')\rangle = \delta(t-t')\,\delta_{ij}$$
+
+(their p. 24, lines immediately before Eq. 20). This is exactly our **white noise** mode (up to 
+the $\sqrt{\phi_{0,i}}$ amplitude scaling, which in our rate model is absorbed into $\sigma_{\text{noise}}$).
+
+**OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside 
+the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion 
+coefficient $B$ in Eq. (5) to hold. OU noise is instead motivated as a model of slowly fluctuating 
+background input from other cortical areas, independent of the bump attractor theory.
+
+**In practice:** white noise is the appropriate mode for comparing empirical diffusion coefficients 
+$\hat{B}$ to the theoretical prediction of Eq. (5). OU noise produces trial-to-trial variability 
+with a characteristic timescale but will not match the $\langle[\varphi(t)-\varphi(0)]^2\rangle = B \cdot t$ 
+scaling predicted by the theory.
 
 ## 9. Experimental Conditions
 
@@ -360,12 +414,13 @@ APP desensitization distributions are clipped to biologically plausible ranges:
 ## 10. Analysis Methods
 
 ### 10.1 Population Vector Decoding
+(Quite common in the literature, e.g. Wimmer et al. 2014)
 
 The bump center is estimated using the **circular mean** (population vector) method. For activity $r_i$ at nodes with angles $\theta_i$:
 
-$$\bar{z} = \frac{\sum_{i=0}^{N-1} r_i \, e^{j\theta_i}}{\sum_{i=0}^{N-1} r_i}$$
+$$\bar{z} = \frac{\sum_{i=0}^{N-1} r_i \, e^{i\theta_i}}{\sum_{i=0}^{N-1} r_i}$$
 
-where $j = \sqrt{-1}$. The decoded center and amplitude are:
+where $i = \sqrt{-1}$. The decoded center and amplitude are:
 
 $$\hat{\theta} = \arg(\bar{z}) \mod 2\pi$$
 
@@ -373,7 +428,175 @@ $$\hat{A} = |\bar{z}| \in [0, 1]$$
 
 $\hat{A}$ is a confidence measure: $\hat{A} = 1$ for a perfect delta-function bump, $\hat{A} \approx 0$ for uniform activity.
 
-### 10.2 Bump Width Estimation
+**Note:** 
+- $\arg(\bar{z})$ is the **angle (phase)** of the complex mean vector, not an argmax over $\theta$.
+- If there's two bump peaks of equal height on opposite sides of the ring, $\hat{A}$ will be low and $\hat{\theta}$ will be the circular mean between them.
+
+### 10.2 Distractor-Induced Drift Field Analysis
+
+> **Primary reference**: Seeholzer, Deger & Gerstner (2019), "Stability of working memory in continuous attractor networks under the control of short-term plasticity", *PLOS Computational Biology*, https://doi.org/10.1371/journal.pcbi.1006928.
+> All equations below follow their notation directly. Deviations are noted explicitly.
+
+---
+
+#### Motivation and choice of method
+
+The population vector (Section 10.1) is the natural readout during clean delay periods, but it conflates two qualitatively different distractor outcomes: (i) the bump shifted toward the distractor and settled at a new position, and (ii) two competing bumps coexist and the population vector returns their spurious circular mean. The maximum likelihood estimator of Compte et al. (2000) fits the post-distractor profile to a shifted pre-distractor template and identifies the dominant peak, but it is purely descriptive: it tells you *where* the bump ended up, not *why*, and it does not generalize across conditions with different bump shapes.
+
+We instead adopt the **drift field framework of Seeholzer et al. (2019, §"Linking theory to experiments: Distractors and network size", p. 17–18)**, which reframes the distractor problem mechanistically. Rather than asking "where is the bump after the distractor?", we ask: "what force did the distractor exert on the bump, as a function of their angular separation?". This yields a quantity, the drift field $A(\varphi)$, that is directly predictable from the bump profile shape and connectable to theory, making it the appropriate analysis for comparing nAChR conditions.
+
+---
+
+#### Theoretical background
+
+The key move, formalized in Seeholzer et al. (2019, §"Analysis of drift and diffusion with STP", p. 24–27), is to reduce the full $N$-dimensional network state to a single slow variable: the angular position $\varphi(t)$ of the bump center on the ring. This is valid because all states on the attractor manifold are related by translation (the network has a continuous symmetry), so any state can be written as a shifted copy of the canonical bump profile $\tilde{\phi}_0$.
+
+Under this reduction, Seeholzer et al. (their **Eq. 4**) show that the bump center evolves according to a **one-dimensional Langevin equation**:
+
+$$\dot{\varphi} = \sqrt{B}\, \eta(t) + A(\varphi)$$
+
+where:
+- $\eta(t)$ is white Gaussian noise with $\langle \eta(t) \rangle = 0$ and $\langle \eta(t)\,\eta(t') \rangle = \delta(t - t')$
+- $B$ is the **diffusion strength** (their **Eq. 5**), set by the bump profile shape and the short-term plasticity parameters $C_i/S$ (see below)
+- $A(\varphi)$ is the **drift field** (their **Eq. 7**), describing deterministic displacement of the bump due to any symmetry-breaking input — including distractors
+
+> **Notation note:** Seeholzer et al. write the Langevin equation using $\dot{\varphi}$ (continuous time). In our discrete-time simulations we use the Euler-Maruyama form $\Delta\varphi = A(\varphi)\Delta t + \sqrt{B\,\Delta t}\,\xi$, where $\xi \sim \mathcal{N}(0,1)$. The diffusion convention follows their footnote 1: $D_{\text{Einstein}} = B/2$.
+
+---
+
+#### Drift field from a distractor input
+
+In the absence of any heterogeneity, $A(\varphi) = 0$ everywhere, and the bump diffuses symmetrically. A distractor breaks this symmetry. Seeholzer et al. (2019, p. 17–18) treat the distractor as an **additional heterogeneity**: they assume it causes neurons $i$ centered around position $\varphi_D$ to fire at elevated rates $\phi_{0,i} + \Delta\phi_i$ above their steady-state bump value. (Here we follow Seeholzer et al.'s own notation: $\phi_{0,i}$ denotes the steady-state firing rate of neuron $i$ in the canonical bump, and $\Delta\phi_i$ the distractor-induced rate perturbation.)
+
+This elevated activity "will introduce a drift field according to Eq. (7)" (Seeholzer et al., p. 18), which in the distractor context reads:
+
+$$A(\varphi) = \sum_{i=0}^{N-1} \frac{C_i}{S} \cdot \frac{dJ_{0,i}}{d\varphi} \cdot \Delta\phi_i(\varphi_D) \tag{Eq. 7, Seeholzer et al.}$$
+
+where:
+- $\frac{dJ_{0,i}}{d\varphi}$ is the spatial derivative of the steady-state input to neuron $i$ under a shift of the bump center — an antisymmetric function that acts as a **sensitivity kernel** identifying which neurons' activity changes push the bump left vs. right (their Fig. 1C–E)
+- $\Delta\phi_i(\varphi_D)$ is the firing rate increase at neuron $i$ caused by a distractor centered at $\varphi_D$
+- $C_i/S$ are weighting factors from short-term plasticity (their **Eq. 6** for $C_i$ and **Eq. 18–19** for $S$; see below)
+
+The angular separation $\Delta\varphi = \varphi_D - \varphi$ fully determines the drift magnitude, so we write $A(\Delta\varphi)$ as the **distractor-induced drift field** — a scalar function of the bump–distractor angular offset.
+
+> **Notation note:** In our implementation, we follow the paper's notation and call this function $A(\Delta\varphi)$. Some other works (e.g., Wimmer et al. 2014) use $v_D$ for drift velocity; these are equivalent.
+
+---
+
+#### The normalization constant $S$ and the weighting factors $C_i$
+
+The factor $S$ in the denominator of Eq. (7) is the **proportionality constant of the left eigenvector** $e_l$ of the linearized network Jacobian (Seeholzer et al., **Eq. 18–19**, p. 25–26). It has a clear geometric interpretation: it is the squared norm of the translational mode of the bump,
+
+$$S = \sum_{i} \frac{\left(\frac{dJ_{0,i}}{d\varphi}\right)^2 \cdot [\ldots C_i\text{-terms}\ldots]}{[\ldots]}$$
+
+(see their full Eq. 19 for the STP-dependent expression). In the static case (no short-term plasticity, $U = 1$, $\tau_u = \tau_x \to 0$), the expression simplifies to $S_{\text{static}} = \tau_s \sum_i (d\phi_{0,i}/d\varphi)^2$ (their p. 13). 
+
+Geometrically, $S$ measures **how sharp the bump's flanks are**: a narrow, peaked bump has steep flanks and a large $S$, which means the $C_i/S$ prefactors are small and the drift field amplitude is reduced (the bump resists displacement). A broad, flat bump has a small $S$ and is more susceptible to drift.
+
+The factors $C_i$ capture the **STP-dependent modulation** of each neuron's contribution (their **Eq. 6**):
+
+$$C_i = \frac{U(1 + 2\tau_u\phi_{0,i} + U\tau_u^2\phi_{0,i}^2)}{(1 + U\phi_{0,i}(\tau_u + \tau_x) + U\tau_u\tau_x\phi_{0,i}^2)^2}$$
+
+For our rate model without STP, all $C_i = 1$ and $S$ reduces to the static expression above.
+
+> **Notation note:** In our model we do not implement short-term plasticity. We therefore use the simplified static forms: $C_i = 1$ for all $i$, and $S = \tau_s \sum_i (d\phi_{0,i}/d\varphi)^2$ (where $\tau_s$ is the dominant synaptic time constant). This means Eq. (7) reduces to the simpler projection formula used below.
+
+---
+
+#### Shape of the drift field
+
+For a symmetric Mexican-hat network, the curve $A(\Delta\varphi)$ (Seeholzer et al. Fig. 7A, purple dashed line) has a characteristic profile consistent with their predictions:
+
+- $A(0) = 0$: a distractor directly on top of the bump is symmetric; no net drift
+- $A(\Delta\varphi) > 0$ for small $\Delta\varphi > 0$: the bump is attracted toward the distractor
+- $A$ peaks near $\Delta\varphi \approx \sigma_{\text{bump}}$ (one bump half-width away)
+- $A \to 0$ as $\Delta\varphi \to \pi$: a diametrically opposite distractor has negligible spatial overlap with the bump flanks
+- The function is antisymmetric: $A(-\Delta\varphi) = -A(\Delta\varphi)$
+
+The **amplitude** of this curve is the key quantity that differs across nAChR conditions:
+- **α7-KO**: reduced PV drive → broader, lower-amplitude bump → smaller $S$ → larger $A(\Delta\varphi)$ amplitude → increased distractor susceptibility. This is directly analogous to Seeholzer et al. Fig. 7D, which shows that broader bumps ($\sigma_g = 0.8$ rad) have a larger radial reach than narrow ones ($\sigma_g = 0.5$ rad).
+- **APP**: network hyperactivity → different bump shape and amplitude → shifted drift field (whether this stays within the linear perturbation regime is an open question; see *Assumptions* below).
+
+---
+
+#### Empirical measurement of $A(\Delta\varphi)$ in simulations
+
+Seeholzer et al. (2019, §"Distractor analysis", p. 40) describe the following procedure, which we adapt directly. For each distractor angular distance $\Delta\varphi \in [0°, 180°]$:
+
+1. Run $n_{\text{trials}}$ trials with the bump initialized at $\varphi_0$ and a distractor at $\varphi_0 + \Delta\varphi$, presented for duration $T_D$
+2. Measure the bump displacement $\Delta\varphi_{\text{bump}} = \hat{\varphi}_{\text{post}} - \varphi_0$ using the population vector
+3. The mean displacement normalized by distractor duration estimates the drift velocity:
+
+$$\hat{A}(\Delta\varphi) \approx \frac{\langle \hat{\varphi}_{\text{post}} - \varphi_0 \rangle}{T_D}$$
+
+This is equivalent to their procedure of generating 1000 trajectories starting from $\varphi_0 = 0$ by integrating Eq. (4) for 250 ms and measuring the mean final position $\varphi_1$ (their Fig. 7B).
+
+The full curve $\hat{A}(\Delta\varphi)$ over $\Delta\varphi \in [0°, 180°]$ is the **distractor susceptibility fingerprint** of the network. Comparing this curve across the four biological conditions (WT, α7-KO, β2-KO, APP) is the primary distractor analysis.
+
+---
+
+#### Analytical shortcut: estimating $S$ from a clean delay trial
+
+Before running any distractor simulations, $S$ (in the static, no-STP limit) can be estimated directly from the firing rate profile of a clean delay trial:
+
+$$S \approx \tau_s \sum_{i=0}^{N-1} \left( \frac{\phi_{0,i+1} - \phi_{0,i-1}}{2\Delta\theta} \right)^2 \cdot \Delta\theta$$
+
+where $\Delta\theta = 2\pi/N$ is the angular spacing between neurons. A lower $S$ predicts a larger $A(\Delta\varphi)$ amplitude, providing a fast diagnostic of distractor susceptibility without running distractor trials.
+
+---
+
+#### Assumptions and validity
+
+Following Seeholzer et al. (2019, p. 22–23), the drift field formula Eq. (7) relies on a **linear perturbation assumption**: the distractor is treated as weak, meaning the bump shape is approximately unchanged during distractor presentation and only the center position shifts. The paper states explicitly: *"we assume the system to remain at approximately steady-state, i.e. that the bump shape is unaffected by the additional external input, except for a shift of the center position"* (p. 23).
+
+This assumption may be violated in the **APP condition**, where network hyperactivity already distorts the baseline bump shape. In that case, Eq. (7) provides an approximation, and the empirical $\hat{A}(\Delta\varphi)$ from simulations should be the primary quantity reported.
+
+---
+
+#### Summary: what to compute and when
+
+| Quantity | Seeholzer et al. ref. | When to compute | What it reveals |
+|---|---|---|---|
+| $\hat{\varphi}$, $\hat{A}$ (pop. vector) | — | All timepoints | Bump position and integrity |
+| $S$ (normalization constant) | Eqs. 18–19 (static: Eq. 19 simplified) | Once per condition, clean delay | Analytical predictor of distractor susceptibility |
+| $A(\Delta\varphi)$ curve (theoretical) | Eq. 7 | From bump profile, no simulation | Predicted drift field per condition |
+| $\hat{A}(\Delta\varphi)$ curve (empirical) | Fig. 7B; §"Distractor analysis" p. 40 | Distractor trials, vary $\Delta\varphi$ | Measured susceptibility fingerprint |
+| Bump collapse probability | — | Distractor trials | Fraction of trials where $\hat{A}$ drops below threshold |
+
+### 10.2b 2D Distractor Sweep
+
+While Section 10.2 estimates the drift field $\hat{A}(\Delta\varphi)$ at a **fixed** distractor amplitude across conditions, the `ring-distractor-sweep` command provides a complementary analysis: it holds the condition fixed (typically WT) and jointly varies both $\Delta\varphi$ and distractor amplitude $\alpha$ to map out a full **2D susceptibility landscape**.
+
+#### Measured quantities
+
+For each $(\Delta\varphi, \alpha)$ cell and $K$ trials:
+
+| Quantity | Definition | Output column |
+|----------|-----------|---------------|
+| Mean bump shift | $\langle \Delta\hat{\theta} \rangle$ (degrees) | `drift_mean_deg` |
+| Shift SEM | $\text{SEM}(\Delta\hat{\theta})$ | `drift_sem_deg` |
+| Collapse probability | $P(\hat{A}_{\text{after}} < \tau)$ | `collapse_prob` |
+| Pre-distractor $\hat{A}$ | Mean pop-vector amplitude before | `pre_amp_mean` |
+| Post-distractor $\hat{A}$ | Mean pop-vector amplitude after | `post_amp_mean` |
+
+Collapse threshold $\tau$ is auto-detected from `calibration_summary.csv` (matching on condition, cue amplitude, `w_inter`). Falls back to 0.2 with a warning if no calibration data is found. Can be overridden with `--collapse_threshold`.
+
+#### Output figures
+
+**Drift heatmap** (`distractor_sweep_drift.png`)
+— Mean $\Delta\hat{\theta}$ on a diverging (RdBu_r) colormap symmetric about 0. Positive = bump pulled toward distractor; negative = repelled. Reveals the angular range and amplitude window where the distractor exerts significant attractive force.
+
+**Collapse probability heatmap** (`distractor_sweep_collapse.png`)
+— Fraction of trials with $\hat{A}_{\text{after}} < \tau$ on a sequential (YlOrRd) colormap. Separates the regime where the distractor merely shifts the bump (drift without collapse) from the regime where it destroys working memory entirely.
+
+**Bump trajectories** (`distractor_sweep_timecourses.png`)
+— Full $\hat{\theta}(t)$ decoded at every timestep for 6 representative $(\Delta\varphi, \alpha)$ cells. Shaded grey region = cue window; shaded orange = distractor window. Useful to distinguish: (i) gradual drift during distractor, (ii) snap to new location, (iii) collapse and recovery.
+
+#### Relationship to drift-field analysis
+
+The $\Delta\varphi$-sweep at a fixed $\alpha$ in `ring-distractor-sweep` is equivalent to one row of the `ring-drift-field` output, except that `ring-drift-field` normalises by distractor duration $T_D$ to yield $\hat{A}$ in rad/s, while `ring-distractor-sweep` reports the raw displacement in degrees. The heatmap view adds the amplitude dimension and collapse probability, making it more informative for hypothesis generation about which distractor regime the network operates in.
+
+### 10.3 Bump Width Estimation
 
 The bump width is estimated using the **circular standard deviation**. Given the decoded center $\hat{\theta}$:
 
@@ -386,7 +609,7 @@ $$\sigma_{\text{bump}} = \sqrt{-2 \ln(R)}$$
 
 $R = 1$ corresponds to a perfectly peaked distribution; $R = 0$ to uniform.
 
-### 10.3 Drift Rate
+### 10.4 Drift Rate
 
 Systematic drift during the delay is estimated by fitting a linear trend to the unwrapped bump center trajectory:
 
@@ -394,7 +617,7 @@ $$v_{\text{drift}} = \frac{\hat{\theta}(t_{\text{end}}) - \hat{\theta}(t_{\text{
 
 expressed in degrees/second.
 
-### 10.4 Diffusion Coefficient
+### 10.5 Diffusion Coefficient
 
 The diffusion coefficient quantifies stochastic wandering of the bump, computed from the mean squared displacement (MSD):
 
@@ -402,7 +625,7 @@ $$D = \frac{\langle [\hat{\theta}(t + \tau) - \hat{\theta}(t)]^2 \rangle}{2\tau}
 
 where $\tau = 100$ ms and the average is over all time pairs in the analysis window. Expressed in degrees$^2$/second.
 
-### 10.5 Working Memory Error
+### 10.6 Working Memory Error
 
 The angular error between the decoded bump position at the end of the delay and the original cue location:
 
@@ -410,7 +633,7 @@ $$\varepsilon = d(\hat{\theta}_{\text{final}}, \theta_{\text{stim}})$$
 
 A bump is considered **maintained** if $\hat{A} > 0.3$ at the evaluation time.
 
-### 10.6 Metrics Summary
+### 10.7 Metrics Summary
 
 | Metric | Key | Unit | Description |
 |--------|-----|------|-------------|
@@ -422,7 +645,7 @@ A bump is considered **maintained** if $\hat{A} > 0.3$ at the evaluation time.
 | Diffusion | `diffusion_deg2_per_s` | deg$^2$/s | Stochastic diffusion coefficient |
 | Error from cue | `error_from_cue_deg` | degrees | Angular distance to cue location |
 
-### 10.7 Multi-Trial Aggregation
+### 10.8 Multi-Trial Aggregation
 
 When running multiple trials, metrics are aggregated across trials as mean $\pm$ SEM (standard error of the mean):
 
