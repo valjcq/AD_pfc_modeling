@@ -497,6 +497,166 @@ def compute_drift_field(
     return offsets_deg, A_hat, A_hat_sem, A_hat_sd
 
 
+def compute_oscillation_spectrum(
+    amplitude_trials: np.ndarray,
+    t_s: np.ndarray,
+    min_freq_hz: float = 1.0,
+    max_freq_hz: float = 50.0,
+) -> dict:
+    """Compute power spectrum of bump amplitude and detect dominant oscillation.
+
+    Each trial's amplitude is linearly detrended to remove slow drift before
+    computing the FFT.  The dominant oscillation frequency is identified as the
+    highest-power peak in ``[min_freq_hz, max_freq_hz]`` that exceeds 3× the
+    median power in that band (i.e. stands clearly above the noise floor).
+
+    Parameters:
+        amplitude_trials: Per-trial amplitude timecourses, shape (n_trials, n_steps).
+        t_s: Time vector in seconds, shape (n_steps,).
+        min_freq_hz: Low edge of the frequency band to search (default: 1 Hz).
+        max_freq_hz: High edge of the frequency band to search (default: 50 Hz).
+
+    Returns:
+        dict with keys:
+            ``freqs``             – frequency array in Hz, shape (n_freqs,)
+            ``power_mean``        – mean PSD across trials, shape (n_freqs,)
+            ``power_sem``         – SEM of PSD across trials, shape (n_freqs,)
+            ``dominant_freq_hz``  – detected dominant frequency (float or None)
+            ``dominant_period_s`` – corresponding period in s (float or None)
+    """
+    n_trials, n_steps = amplitude_trials.shape
+    dt = float(t_s[1] - t_s[0]) if len(t_s) > 1 else 1e-3
+    freqs = np.fft.rfftfreq(n_steps, d=dt)
+
+    psds = np.zeros((n_trials, len(freqs)))
+    for i, amp in enumerate(amplitude_trials):
+        # Linearly detrend to remove the slow post-stimulus rise
+        trend = np.polyval(np.polyfit(t_s, amp, 1), t_s)
+        detrended = amp - trend
+        fft_vals = np.fft.rfft(detrended)
+        psds[i] = (np.abs(fft_vals) ** 2) / n_steps
+
+    power_mean = np.mean(psds, axis=0)
+    power_sem = (
+        np.std(psds, axis=0, ddof=1) / np.sqrt(n_trials)
+        if n_trials > 1 else np.zeros_like(power_mean)
+    )
+
+    # Detect dominant peak in the target frequency band
+    band_mask = (freqs >= min_freq_hz) & (freqs <= max_freq_hz)
+    dominant_freq: Optional[float] = None
+    dominant_period: Optional[float] = None
+    if np.any(band_mask):
+        band_power = power_mean[band_mask]
+        noise_floor = float(np.median(band_power))
+        peak_rel_idx = int(np.argmax(band_power))
+        peak_power = float(band_power[peak_rel_idx])
+        if peak_power > 3.0 * noise_floor and noise_floor > 0:
+            dominant_freq = float(freqs[band_mask][peak_rel_idx])
+            dominant_period = 1.0 / dominant_freq
+
+    return {
+        'freqs': freqs,
+        'power_mean': power_mean,
+        'power_sem': power_sem,
+        'dominant_freq_hz': dominant_freq,
+        'dominant_period_s': dominant_period,
+    }
+
+
+def lowpass_filter_trajectory(
+    trajectory: np.ndarray,
+    t_s: np.ndarray,
+    cutoff_hz: float,
+) -> np.ndarray:
+    """Apply a zero-phase 4th-order Butterworth low-pass filter to a trajectory.
+
+    Uses ``scipy.signal.filtfilt`` so there is no phase shift.  If the cutoff
+    is at or above the Nyquist frequency the raw trajectory is returned
+    unchanged.
+
+    Parameters:
+        trajectory: 1-D array of bump center positions (radians, unwrapped).
+        t_s: Time vector in seconds (used to compute sampling frequency).
+        cutoff_hz: Low-pass cutoff frequency in Hz.
+
+    Returns:
+        Filtered trajectory, same shape as input.
+    """
+    from scipy.signal import butter, filtfilt
+
+    dt = float(t_s[1] - t_s[0]) if len(t_s) > 1 else 1e-3
+    fs = 1.0 / dt
+    nyq = fs / 2.0
+    normalized_cutoff = cutoff_hz / nyq
+    if normalized_cutoff >= 1.0:
+        return trajectory  # cutoff above Nyquist — nothing to filter
+    b, a = butter(4, normalized_cutoff, btype='low')
+    return filtfilt(b, a, trajectory)
+
+
+def fit_oscillation_corrected_diffusion(
+    lag_times: np.ndarray,
+    msd: np.ndarray,
+    fit_range: tuple[float, float] = (0.1, 1.0),
+    osc_period_s: Optional[float] = None,
+) -> tuple[float, np.ndarray, float]:
+    """Fit the MSD accounting for a known oscillation period.
+
+    When ``osc_period_s`` is provided the model
+
+        MSD(τ) = B·τ + C·(1 − cos(2π·τ / T)) + offset
+
+    is fitted, separating the genuine diffusion coefficient *B* from the
+    oscillatory contribution *C*.  The oscillation period *T* is treated as
+    fixed (determined externally by FFT).
+
+    When ``osc_period_s`` is None the function falls back to the standard
+    linear fit (same as ``fit_diffusion_coefficient``).
+
+    Parameters:
+        lag_times: Lag values in seconds.
+        msd: MSD values in rad².
+        fit_range: (t_min, t_max) in seconds for the fit region.
+        osc_period_s: Known oscillation period in seconds (or None).
+
+    Returns:
+        B_hat: Diffusion strength in rad²/s.
+        fit_line: Model-evaluated MSD at all lag_times, for plotting.
+        r_squared: Coefficient of determination of the fit.
+    """
+    if osc_period_s is None:
+        return fit_diffusion_coefficient(lag_times, msd, fit_range)
+
+    from scipy.optimize import curve_fit
+
+    mask = (lag_times >= fit_range[0]) & (lag_times <= fit_range[1]) & ~np.isnan(msd)
+    if np.sum(mask) < 4:
+        return fit_diffusion_coefficient(lag_times, msd, fit_range)
+
+    omega = 2.0 * np.pi / osc_period_s
+    t_fit = lag_times[mask]
+    msd_fit = msd[mask]
+
+    def model(t: np.ndarray, B: float, C: float, offset: float) -> np.ndarray:
+        return B * t + C * (1.0 - np.cos(omega * t)) + offset
+
+    # Initial guess: slope from endpoints, zero oscillation component
+    slope0 = float(np.mean(np.diff(msd_fit) / np.diff(t_fit))) if len(t_fit) > 1 else 0.0
+    p0 = [max(slope0, 0.0), 0.01, float(msd_fit[0])]
+
+    try:
+        popt, _ = curve_fit(model, t_fit, msd_fit, p0=p0, maxfev=10_000)
+        B_hat = float(popt[0])
+        fit_line = model(lag_times, *popt)
+        ss_res = float(np.sum((msd_fit - model(t_fit, *popt)) ** 2))
+        ss_tot = float(np.sum((msd_fit - np.mean(msd_fit)) ** 2))
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        return B_hat, fit_line, r_squared
+    except Exception:
+        return fit_diffusion_coefficient(lag_times, msd, fit_range)
+
+
 def compute_noise_floor(A_hat_values: np.ndarray, percentile: float = 95.0) -> float:
     """Compute noise floor threshold from no-stimulus Â_hat values.
 

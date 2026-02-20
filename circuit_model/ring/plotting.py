@@ -1030,8 +1030,8 @@ def plot_msd_curves(
 
     Parameters:
         msd_data: Dict mapping condition_key -> dict with keys:
-            'lag_times' (s), 'msd_mean' (rad²), 'msd_sem' (rad²),
-            'msd_sd' (rad²), 'fit_line' (rad²), 'B_hat' (rad²/s),
+            'lag_times' (s), 'msd_mean' (deg²), 'msd_sem' (deg²),
+            'msd_sd' (deg²), 'fit_line' (deg²), 'B_hat' (deg²/s),
             'r_squared'.
         condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
         figsize: Figure size.
@@ -1047,8 +1047,17 @@ def plot_msd_curves(
     if condition_colors is None:
         condition_colors = CONDITION_COLORS
 
-    fig, (ax_msd, ax_bar) = plt.subplots(1, 2, figsize=figsize,
-                                          gridspec_kw={"width_ratios": [2, 1]})
+    has_amp = any('amp_t_s' in data for data in msd_data.values())
+    if has_amp:
+        fig, (ax_msd, ax_bar, ax_amp) = plt.subplots(
+            1, 3,
+            figsize=(figsize[0] * 1.5, figsize[1]),
+            gridspec_kw={"width_ratios": [2, 1, 2]},
+        )
+    else:
+        fig, (ax_msd, ax_bar) = plt.subplots(1, 2, figsize=figsize,
+                                              gridspec_kw={"width_ratios": [2, 1]})
+        ax_amp = None
 
     # Left panel: MSD vs time
     for cond_key, data in msd_data.items():
@@ -1070,7 +1079,7 @@ def plot_msd_curves(
         ax_msd.plot(lag[valid], fit[valid], color=color, ls="--", lw=1, alpha=0.7)
 
     ax_msd.set_xlabel("Lag (s)")
-    ax_msd.set_ylabel("MSD (rad²)")
+    ax_msd.set_ylabel("MSD (deg²)")
     ax_msd.set_title("Mean Squared Displacement")
     ax_msd.legend(fontsize=8)
     ax_msd.grid(True, alpha=0.3)
@@ -1085,14 +1094,465 @@ def plot_msd_curves(
         labels.append(STUDY_CONDITIONS[k].name if k in STUDY_CONDITIONS else k)
 
     x = np.arange(len(cond_keys))
-    ax_bar.bar(x, B_values, color=colors, edgecolor="black", linewidth=0.5)
+    bar_vals = [v if not np.isnan(v) else 0.0 for v in B_values]
+    ax_bar.bar(x, bar_vals, color=colors, edgecolor="black", linewidth=0.5)
+    for xi, v in zip(x, B_values):
+        if np.isnan(v):
+            ax_bar.text(xi, 0, "N/A\n(all melted)", ha="center", va="bottom",
+                        fontsize=7, color="gray")
     ax_bar.set_xticks(x)
     ax_bar.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-    ax_bar.set_ylabel("$\\hat{B}$ (rad²/s)")
+    ax_bar.set_ylabel("$\\hat{B}$ (deg²/s)")
     ax_bar.set_title("Diffusion Strength")
     ax_bar.grid(True, alpha=0.3, axis="y")
 
+    # Right panel: amplitude evolution (only when amplitude data is available)
+    if ax_amp is not None:
+        noise_threshold_drawn = False
+        for cond_key, data in msd_data.items():
+            if 'amp_t_s' not in data:
+                continue
+            color = condition_colors.get(cond_key, None)
+            from ..study import STUDY_CONDITIONS
+            label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+            t = data['amp_t_s']
+            amp = data['amp_mean']
+            amp_err = data.get('amp_sem', np.zeros_like(amp))
+
+            ax_amp.plot(t, amp, color=color, lw=2, label=label)
+            if np.any(amp_err > 0):
+                ax_amp.fill_between(t, amp - amp_err, amp + amp_err,
+                                    color=color, alpha=0.2)
+
+            nt = data.get('noise_threshold')
+            if nt is not None and not noise_threshold_drawn:
+                ax_amp.axhline(nt, color='black', ls='--', lw=1.2,
+                               label='Noise floor')
+                noise_threshold_drawn = True
+            elif nt is not None:
+                ax_amp.axhline(nt, color='black', ls='--', lw=1.2)
+
+        ax_amp.set_xlabel("Time in delay (s)")
+        ax_amp.set_ylabel("Bump amplitude (pop. vector length)")
+        ax_amp.set_title("Bump Amplitude Over Time")
+        ax_amp.set_ylim(bottom=0)
+        ax_amp.legend(fontsize=8)
+        ax_amp.grid(True, alpha=0.3)
+
+    # Shade the oscillation-dominated region on the MSD panel
+    max_osc_period = 0.0
+    for data in msd_data.values():
+        osc = data.get('osc_spectrum', {})
+        p = osc.get('dominant_period_s')
+        if p is not None and p > max_osc_period:
+            max_osc_period = p
+    if max_osc_period > 0:
+        ax_msd.axvspan(0, max_osc_period, color='gray', alpha=0.12,
+                       label=f'Osc. regime (<{max_osc_period * 1000:.0f} ms)')
+        ax_msd.legend(fontsize=8)
+
     plt.suptitle(suptitle or "Diffusion Analysis (MSD)", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_oscillation_spectrum(
+    osc_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (12, 5),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Plot bump amplitude oscillation power spectrum across conditions.
+
+    Two-panel figure:
+    - Left: PSD (power spectral density) vs frequency (Hz), per condition.
+      A vertical dashed line marks the detected dominant frequency for each
+      condition.
+    - Right: Bar chart of detected oscillation period (ms) per condition.
+      Conditions with no detected oscillation show an empty bar.
+
+    Parameters:
+        osc_data: Dict mapping condition_key -> result of
+            ``compute_oscillation_spectrum``.
+        condition_colors: Optional color mapping. Defaults to CONDITION_COLORS.
+        figsize: Figure size.
+        save_path: If provided, save figure.
+        suptitle: Optional super-title.
+
+    Returns:
+        fig: Matplotlib Figure.
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, (ax_psd, ax_bar) = plt.subplots(1, 2, figsize=figsize,
+                                          gridspec_kw={"width_ratios": [2, 1]})
+
+    periods_ms: list[float] = []
+    labels: list[str] = []
+    colors: list[str] = []
+
+    # Compute a global power floor = 1% of the peak power across all conditions,
+    # so that near-zero FFT bins (e.g. 10^-27) don't compress the log-y scale.
+    all_peaks = []
+    for data in osc_data.values():
+        p = data['power_mean']
+        mask0 = data['freqs'] <= 30.0
+        if np.any(mask0) and np.any(p[mask0] > 0):
+            all_peaks.append(float(np.nanmax(p[mask0])))
+    global_floor = (min(all_peaks) * 1e-2) if all_peaks else 1e-10
+
+    for cond_key, data in osc_data.items():
+        color = condition_colors.get(cond_key, "#666666")
+        from ..study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        freqs = data['freqs']
+        power = data['power_mean']
+        power_err = data.get('power_sem', np.zeros_like(power))
+        dominant_freq = data.get('dominant_freq_hz')
+
+        # Only plot up to 30 Hz (physiologically relevant range); clip to floor
+        mask = freqs <= 30.0
+        p_clipped = np.clip(power[mask], global_floor, None)
+        ax_psd.semilogy(freqs[mask], p_clipped, color=color, lw=1.5, label=label)
+        if np.any(power_err[mask] > 0):
+            lo = np.clip(power[mask] - power_err[mask], global_floor, None)
+            hi = np.maximum(power[mask] + power_err[mask], global_floor)
+            ax_psd.fill_between(freqs[mask], lo, hi, color=color, alpha=0.15)
+
+        if dominant_freq is not None:
+            ax_psd.axvline(dominant_freq, color=color, ls='--', lw=1.2, alpha=0.8)
+            periods_ms.append(1000.0 / dominant_freq)
+        else:
+            periods_ms.append(0.0)
+
+        labels.append(label)
+        colors.append(color)
+
+    ax_psd.set_xlabel("Frequency (Hz)")
+    ax_psd.set_ylabel("Power (a.u., log scale)")
+    ax_psd.set_title("Amplitude Power Spectrum")
+    ax_psd.legend(fontsize=8)
+    ax_psd.grid(True, alpha=0.3, which='both')
+    ax_psd.set_xlim(0, 30)
+
+    # Bar chart: dominant period in ms
+    x = np.arange(len(labels))
+    bars = ax_bar.bar(x, periods_ms, color=colors, edgecolor="black", linewidth=0.5)
+    for xi, p in zip(x, periods_ms):
+        if p == 0.0:
+            ax_bar.text(xi, 0.5, "n.d.", ha="center", va="bottom",
+                        fontsize=8, color="gray")
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax_bar.set_ylabel("Dominant period (ms)")
+    ax_bar.set_title("Oscillation Period")
+    ax_bar.grid(True, alpha=0.3, axis="y")
+
+    plt.suptitle(suptitle or "Bump Amplitude Oscillation Spectrum",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_displacement_distribution(
+    disp_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: tuple[float, float] = (10, 5),
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+) -> "plt.Figure":
+    """Plot distribution of final bump displacement from cue position.
+
+    Two-panel figure:
+    - Left: Violin plot (or box+strip if few trials) of per-trial displacements
+      per condition.  Shows both the spread and the individual trials.
+    - Right: Bar chart of mean |displacement| per condition with ±1 SD error bar.
+
+    Parameters
+    ----------
+    disp_data : dict
+        Mapping condition_key → dict with keys ``displacements_deg``,
+        ``mean_deg``, ``std_deg``, ``abs_mean_deg``, ``n_valid``, ``n_total``.
+    condition_colors : optional color map
+    figsize : figure size
+    save_path : if given, save figure here
+    suptitle : figure super-title
+
+    Returns
+    -------
+    fig : matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, ax_viol = plt.subplots(1, 1, figsize=figsize)
+
+    cond_keys = list(disp_data.keys())
+    from ..study import STUDY_CONDITIONS
+    labels = [STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+              for ck in cond_keys]
+    colors = [condition_colors.get(ck, "#666666") for ck in cond_keys]
+    x = np.arange(len(cond_keys))
+
+    # --- Violin / strip plot ---
+    for xi, (ck, color) in enumerate(zip(cond_keys, colors)):
+        disps = disp_data[ck].get('displacements_deg', np.array([]))
+        n_valid = int(disp_data[ck].get('n_valid', len(disps)))
+        n_total = int(disp_data[ck].get('n_total', len(disps)))
+        if len(disps) == 0:
+            continue
+        # Violin
+        vp = ax_viol.violinplot([disps], positions=[xi], widths=0.6,
+                                showmeans=False, showmedians=True,
+                                showextrema=False)
+        for body in vp['bodies']:
+            body.set_facecolor(color)
+            body.set_alpha(0.5)
+        vp['cmedians'].set_color(color)
+        vp['cmedians'].set_linewidth(2)
+        # Individual points (jitter)
+        jitter = np.random.default_rng(42).uniform(-0.12, 0.12, len(disps))
+        ax_viol.scatter(xi + jitter, disps, color=color, s=6, alpha=0.35,
+                        zorder=3)
+        # Mean marker
+        mean_val = float(np.mean(disps))
+        ax_viol.scatter([xi], [mean_val], color=color, s=60,
+                        marker='D', zorder=5, edgecolors='black', linewidths=0.5)
+        # n annotation
+        ax_viol.text(xi, ax_viol.get_ylim()[0] if xi == 0 else 0,
+                     f"n={n_valid}/{n_total}", ha='center', va='top',
+                     fontsize=7, color='gray')
+
+    ax_viol.axhline(0, color='black', lw=0.8, ls='--', alpha=0.5)
+    ax_viol.set_xticks(x)
+    ax_viol.set_xticklabels(labels, rotation=20, ha="right", fontsize=9)
+    ax_viol.set_ylabel("Minimum displacement from cue (°)")
+    ax_viol.set_title("Displacement distribution (◆ = mean)")
+    ax_viol.grid(True, alpha=0.25, axis='y')
+
+    plt.suptitle(suptitle or "Final Bump Displacement from Cue",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_diffusion_ring_snapshot(
+    disp_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: Optional[tuple[float, float]] = None,
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+) -> "plt.Figure":
+    """Activity heatmap of the most extreme drift trial per condition.
+
+    For each condition with a full ``extreme_result`` (RingSimulationResult),
+    two stacked panels are shown:
+
+    * **Top (large)** — activity heatmap: angle on x-axis, time on y-axis,
+      PYR firing rate as colour, decoded bump centre overlaid as cyan dots.
+      Matches the dashboard top-left panel from ``ring-run``.
+    * **Bottom (small)** — decoded amplitude over the delay period, with the
+      noise threshold as a horizontal dashed line when available.
+
+    Falls back to a "no data" placeholder when ``extreme_result`` is absent
+    (e.g. when loading results from cache).
+
+    Parameters
+    ----------
+    disp_data : dict
+        Mapping condition_key → dict produced by ``cmd_diffusion``.
+        Expected keys: ``extreme_result`` (RingSimulationResult or None),
+        ``extreme_displacement_deg`` (float), ``delay_start_ms``,
+        ``delay_end_ms``, ``noise_threshold`` (float or None).
+    condition_colors : optional color map
+    figsize : figure size; auto-computed if None
+    save_path : if given, save figure here
+    suptitle : figure super-title
+
+    Returns
+    -------
+    fig : matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    from .analysis import decode_bump_center
+    from ..study import STUDY_CONDITIONS
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    valid_conds = [
+        ck for ck, d in disp_data.items()
+        if d.get('extreme_result') is not None
+    ]
+    n_cond = len(valid_conds)
+
+    if n_cond == 0:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5,
+                "No heatmap data available\n(run without --load_cache to regenerate)",
+                ha='center', va='center', transform=ax.transAxes, fontsize=10)
+        if save_path:
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        return fig
+
+    if figsize is None:
+        figsize = (7 * n_cond, 9)
+
+    fig = plt.figure(figsize=figsize)
+    outer = gridspec.GridSpec(1, n_cond, figure=fig, wspace=0.35)
+
+    for col, ck in enumerate(valid_conds):
+        d = disp_data[ck]
+        result = d['extreme_result']
+        delay_start = float(d.get('delay_start_ms', result.t_ms[0]))
+        delay_end = float(d.get('delay_end_ms', result.t_ms[-1]))
+        disp_deg = float(d.get('extreme_displacement_deg', 0.0))
+        noise_thr = d.get('noise_threshold', None)
+        label = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+
+        # Two rows: heatmap (75%) + amplitude (25%)
+        inner = gridspec.GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=outer[col],
+            height_ratios=[3, 1], hspace=0.08,
+        )
+        ax_heat = fig.add_subplot(inner[0])
+        # Amplitude panel has its own independent x-axis (time, not angle)
+        ax_amp = fig.add_subplot(inner[1])
+
+        # --- Heatmap panel ---
+        plot_ring_activity_heatmap(
+            result,
+            population=0,
+            ax=ax_heat,
+            title=f"{label} — most extreme trial ({disp_deg:+.1f}°)",
+            cmap="hot",
+            time_range=(delay_start, delay_end),
+            show_stimulus=False,
+            show_decoded=True,
+            t_offset=delay_start,
+        )
+        ax_heat.set_ylabel("Time from delay onset (ms)")
+        # Mark cue position with a vertical line
+        ax_heat.axvline(result.stim_angle_deg, color="white", ls="--", lw=1.2,
+                        alpha=0.8, label=f"Cue ({result.stim_angle_deg:.0f}°)")
+        ax_heat.legend(fontsize=7, loc="upper right", framealpha=0.4)
+
+        # --- Amplitude panel ---
+        _, amplitude = decode_bump_center(result, population=0)
+        t_ms = result.t_ms
+        mask = (t_ms >= delay_start) & (t_ms <= delay_end)
+        t_plot = t_ms[mask] - delay_start
+        amp_delay = amplitude[mask]
+
+        ax_amp.plot(t_plot, amp_delay, color=condition_colors.get(ck, "#444444"), lw=1.5)
+        if noise_thr is not None:
+            ax_amp.axhline(noise_thr, color='red', ls='--', lw=1.0,
+                           label=f'Noise thr. ({noise_thr:.3f})')
+            ax_amp.legend(fontsize=7, loc='upper right')
+        ax_amp.set_xlabel("Time from delay onset (ms)")
+        ax_amp.set_ylabel("Amplitude")
+        ax_amp.set_xlim(0, delay_end - delay_start)
+        ax_amp.grid(True, alpha=0.2)
+
+    plt.suptitle(
+        suptitle or "Most Extreme Drift Trial — Activity Heatmap",
+        fontsize=13, fontweight="bold", y=1.01,
+    )
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_extreme_drift_trials(
+    extreme_data: dict[str, dict],
+    condition_colors: Optional[dict[str, str]] = None,
+    figsize: Optional[tuple[float, float]] = None,
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+) -> "plt.Figure":
+    """Plot the most prominent drift trial per condition as a sanity check.
+
+    Each subplot shows the bump center position (in degrees, relative to start)
+    versus time for the trial that ended farthest from its starting position.
+    The raw (pre-low-pass-filter) trajectory is shown so oscillatory motion is
+    visible alongside any genuine drift.
+
+    Parameters
+    ----------
+    extreme_data : dict
+        Mapping condition_key → dict with keys ``t_s``, ``center_deg``,
+        ``displacement_deg``.  Built by ``cmd_diffusion``.
+    condition_colors : optional color map
+    figsize : figure size; auto-computed from n_conditions if not provided
+    save_path : if given, save figure here
+    suptitle : figure super-title
+
+    Returns
+    -------
+    fig : matplotlib Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    n_cond = len(extreme_data)
+    if figsize is None:
+        figsize = (max(5 * n_cond, 8), 4)
+
+    fig, axes = plt.subplots(1, n_cond, figsize=figsize, sharey=False)
+    if n_cond == 1:
+        axes = [axes]
+
+    for ax, (cond_key, data) in zip(axes, extreme_data.items()):
+        color = condition_colors.get(cond_key, "#666666")
+        from ..study import STUDY_CONDITIONS
+        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+
+        t_s = data.get('t_s')
+        center_deg = data.get('center_deg')
+        disp = data.get('displacement_deg', 0.0)
+
+        if t_s is not None and center_deg is not None and len(center_deg) >= 2:
+            t_ms = np.asarray(t_s) * 1000.0
+            shifted = np.asarray(center_deg) - center_deg[0]
+            ax.plot(t_ms, shifted, color=color, lw=1.2)
+            ax.axhline(0, color='black', lw=0.8, ls='--', alpha=0.4,
+                       label='Start position')
+            ax.set_xlabel("Time (ms)")
+            ax.set_ylabel("Position shift (°)")
+            ax.set_title(f"{label}\nMax final drift: {disp:.1f}°")
+            ax.grid(True, alpha=0.25)
+        else:
+            ax.text(0.5, 0.5, "No data", ha='center', va='center',
+                    transform=ax.transAxes, fontsize=10, color='gray')
+            ax.set_title(label)
+
+    plt.suptitle(suptitle or "Most Prominent Drift Trial per Condition",
+                 fontsize=12, fontweight="bold")
     plt.tight_layout()
 
     if save_path:

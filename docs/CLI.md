@@ -378,6 +378,7 @@ python -m circuit_model ring-diffusion [options]
 | `--n_trials` | int | `50` | Number of trials per condition |
 | `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
 | `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
+| `--filter_cutoff_hz` | float | auto | Low-pass cutoff (Hz) for bump center trajectory. Auto-detected from oscillation spectrum. Set to `0` to disable. |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 
@@ -386,20 +387,25 @@ Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 For each condition:
 1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
 2. Decode the bump center $\varphi(t)$ via population vector during the delay period
-3. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
-4. Fit a line to the linear regime of MSD vs $\tau$ to extract $\hat{B}$ (rad$^2$/s)
+3. **Detect oscillations**: compute the FFT of the per-trial bump amplitude; identify the dominant oscillation frequency (see [Bump Amplitude Oscillations](#bump-amplitude-oscillations-in-docs-ring_attractormd))
+4. **Filter**: apply a zero-phase low-pass Butterworth filter to each $\varphi(t)$ trajectory at 0.4 × $f_\text{osc}$ (auto-detected) or at the value given by `--filter_cutoff_hz`
+5. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
+6. **Oscillation-corrected fit**: if an oscillation frequency $f_\text{osc}$ was detected, fit the model $\text{MSD}(\tau) = B\tau + C(1-\cos(2\pi f_\text{osc}\tau)) + \text{offset}$ to extract $\hat{B}$; otherwise fall back to a standard linear fit
 
 ### Outputs
 
 Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
-- `diffusion_msd_<band>.png` -- Two-panel figure: MSD vs lag time (left, with linear fit overlay) and $\hat{B}$ bar chart across conditions (right). `<band>` is `sem` or `sd`.
-- `diffusion_summary.csv` -- One row per condition: `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
+- `diffusion_msd_<band>.png` -- Three-panel figure: MSD vs lag (left, oscillatory-regime shaded), $\hat{B}$ bar chart (centre), amplitude timecourse (right).
+- `diffusion_oscillation_spectrum.png` -- Power spectrum of bump amplitude per condition with detected frequency annotated, plus bar chart of dominant period (ms).
+- `diffusion_summary.csv` -- `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
 - `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
+- `diffusion_amplitude.csv` -- `condition_key`, `t_s`, `amp_mean`, `amp_sem`, `survival_frac`, `noise_threshold`
+- `diffusion_oscillation.csv` -- `condition_key`, `dominant_freq_hz`, `dominant_period_ms`, `filter_cutoff_hz`
 
 ### Examples
 
 ```bash
-# All conditions, 50 trials each
+# All conditions, 50 trials each (oscillation auto-detected and corrected)
 python -m circuit_model ring-diffusion --no_show
 
 # Compare WT vs alpha7 KO with 20 trials
@@ -407,6 +413,9 @@ python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
 
 # Longer delay for better MSD estimation
 python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
+
+# Disable oscillation filtering (raw MSD, for comparison)
+python -m circuit_model ring-diffusion --conditions WT --filter_cutoff_hz 0
 ```
 
 ---

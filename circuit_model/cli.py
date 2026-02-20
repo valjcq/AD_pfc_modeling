@@ -672,6 +672,13 @@ Examples:
         "--error_band", type=str, default="sem", choices=["sem", "sd"],
         help="Error band type for plots: 'sem' (default) or 'sd'.",
     )
+    ring_diff_parser.add_argument(
+        "--filter_cutoff_hz", type=float, default=None,
+        help="Low-pass filter cutoff (Hz) applied to bump center trajectory before MSD "
+             "computation. If not set, the cutoff is auto-detected from the bump amplitude "
+             "oscillation spectrum (0.4 × dominant oscillation frequency). "
+             "Set to 0 to disable filtering entirely.",
+    )
 
     # =========================================================================
     # RING-DRIFT-FIELD subcommand
