@@ -32,6 +32,10 @@ The model do exactly what we expect, with a bump of activity that is more or les
 - Verification of the connectivity matrice from Compte et Al. -> See the corresponding point below.
 - Investigate a lot of parameter set for stimuli and weights inter nodes. Also the value of the inhibition matrix.
 
+### 19.02
+- Seminar day with EI learning and Pasteur seminar.
+- I should have a look to the article from Wimmer et Al. 2014.
+
 #### Bump attractor behavior - debugging session
 
 Started from observation that the bump was decreasing in amplitude over delay rather than drifting, and that distractors created a double-bump instead of shifting the bump.
@@ -41,7 +45,7 @@ Train of thought:
 - Double bump with distractor → uniform inhibition too weak to enforce winner-take-all. Two bumps coexist because neither suppresses the other.
 - Bump not shifting even without distractor → in a true continuous attractor, the bump should drift spontaneously due to noise (random walk on the ring). No drift suggests either grid pinning or noise too weak.
 - Tested 128, 256, 512 nodes → no change, rules out discretization artifacts.
-- Tested with increased noise → still no drift, the bump is actually less stable with more noise. The bump seems to be pinned to the grid, which is surprising given the number of nodes. 
+- Tested with increased noise → still no drift, the bump is actually less stable with more noise. The bump seems to be pinned to the grid, which is surprising given the number of nodes.
 
 ### Discovery
 - The OU noise type doesn't give the difference accross condition observed in the article. However, it gives the variance of the firing rate across trials. We can do the opposite observations with the white noise.
@@ -66,8 +70,35 @@ I realize that their definition of the connectivity matrix makes so that PYR pop
 However, i changed the degree of spread of our gaussian to 30° instead of 10°. See in the bump attractor behavior and sensitivity to parameters section for why. (it's also the degree of spread used in the Compte article)
 
 
+### 19.02 — MSD analysis: what the curves are actually telling us
+
+Ran the full diffusion analysis (500 trials per condition) with the oscillation correction. Main findings:
+
+**Oscillation**: both conditions show a ~88-90 ms amplitude oscillation (FFT-detected), most likely from spike-frequency adaptation feedback. Applied auto low-pass at ~4.5 Hz before computing MSD.
+
+**Before correction**: B_hat was ~57 rad²/s (WT) and ~90 rad²/s (WT_APP). Completely wrong — the initial oscillatory transient in MSD was being fit as a giant slope. High R² (0.999) was misleading: the curve was linear but it was fitting the oscillation, not diffusion.
+
+**After correction**: WT → 0.024 rad²/s, WT_APP → 0.289 rad²/s (~12× difference). More physically reasonable.
+
+**But wait — looking at the MSD shape tells a more interesting story:**
+- WT: MSD rises to ~0.062 rad² at τ≈100ms, then *decreases* back to ~0.042 at τ≈200ms, then barely grows and plateaus around ~0.050. This is not diffusion. This is an oscillating attractor: the bump bounces around a fixed position. The position oscillation (same ~90ms period we see in amplitude) makes the MSD rise and fall. After the oscillation damps, the bump sits essentially in place — plateau = typical excursion ~√0.050 ≈ 13°.
+- WT_APP: MSD keeps growing roughly linearly after the initial transient — this looks like actual diffusion / drift. B_hat=0.289 is more interpretable here.
+
+So the WT condition actually shows *stable attractor behavior*, while WT_APP shows genuine drift. This is exactly what we'd expect from the hypothesis — nAChR dysfunction (APP) destabilizes the attractor.
+
+**Directionality problem**: raised the question of whether MSD misses back-and-forth oscillation. Short answer: MSD uses squared displacement, so it doesn't average out the contribution of right-left swings — a bump that goes right then left returns to MSD≈0, which is *correct* (no net drift). The real issue is different: if the bump is an oscillating attractor (not a random walk), the MSD plateaus rather than grows linearly. Fitting a diffusion coefficient to a plateauing MSD gives a number that means something slightly different — it's the slope of the initial rise, not the long-run diffusion rate.
+
+**Proposed ways to deal with this:**
+- A. Report the MSD plateau level instead of (or alongside) B_hat — directly measures how much the bump wanders from its resting position regardless of whether it diffuses or oscillates
+- B. Distribution of final positions at t=delay end — what matters for WM readout is where the bump is at the end, not how it got there. Histogram of |φ(T_delay) - φ(0)| across trials captures the WM precision directly
+- C. Cumulative path length — total angular distance traveled (sum of |Δφ| over time), measures restlessness regardless of direction. Can grow even if the bump returns home
+- D. Mean first exit time from a corridor — how long until the bump leaves a ±θ window around the initial position. Captures stability threshold
+- E. Keep MSD but restrict fit range to lags >> T_osc (i.e. only fit the plateau or the slope after ~500ms where oscillation has damped). For WT_APP this works; for WT the MSD is nearly flat so B_hat → 0 is also meaningful (stable)
+
+Best approach for a WM paper: B + A together. B captures behavioral precision at readout time; A tells you about instantaneous stability. Will implement B (final position distribution) next.
+
 ### TODO
-- Dig on how they do a real test in working memory (appart from testing the stability of the bump attractor) E.G by trying a readout of the bump attractor activity and see if it can be used to decode the stimulus value after a delay period.
-- Explore the litterature on bump attractor in the context of working memory, and see their metrics and how the fit their weights and stimuli amplitude.
-- Think about how to read each populations impact on the bump attractor stability and metrics. 
-- Try to put a distractor in the model and see how it impact the bump attractor stability and metrics/ readout capacity.
+- Explore the litterature on bump attractor in the context of working memory, and see their metrics and how the fit their weights and stimuli amplitude. -> Article from Wimmer et Al. 2014
+- Think about how to read each populations impact on the bump attractor stability and metrics.
+- Do a quick list on the characteristics of the network activity that would be characteristic of a bump attractor (e.g. self sustained activity, stability to noise, drift with and without distractor, etc) and see which parameter set can reproduce these characteristics (specially the shifting parts).
+- Implement final-position distribution as main WM precision metric (alongside MSD plateau).
