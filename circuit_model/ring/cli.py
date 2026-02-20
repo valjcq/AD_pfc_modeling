@@ -27,13 +27,11 @@ from .stimulus import RingStimulus
 from .simulation import simulate_ring
 from .connectivity import RingConnectivity
 from .analysis import (
-    compute_bump_metrics,
-    compute_metrics_at_delay_times,
+    compute_bump_metrics,  # noqa: F401 (used by ring-run)    compute_metrics_at_delay_times,
     aggregate_metrics_across_trials,
     aggregate_single_metrics,
     population_vector_decode,
-    compute_msd_curve,
-    fit_diffusion_coefficient,
+
     compute_drift_field,
     compute_noise_floor,
 )
@@ -45,7 +43,6 @@ from .plotting import (
     plot_bump_metrics_comparison,
     plot_metrics_vs_delay,
     plot_metrics_vs_amplitude,
-    plot_msd_curves,
     plot_drift_field,
     plot_noise_floor_histogram,
     plot_calibration_heatmap,
@@ -206,6 +203,25 @@ def _stim_label(amp_factor: float) -> str:
     return f"amp={_fmt(amp_factor)}×"
 
 
+def _parse_seed(value: str) -> int | None:
+    """Parse --seed argument: integer or 'rdm' for a truly random seed."""
+    if value == "rdm":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"seed must be an integer or 'rdm', got {value!r}"
+        )
+
+
+def _resolve_seed(args: argparse.Namespace) -> None:
+    """If --seed rdm was given, generate a random seed, store it, and print it."""
+    if args.seed is None:
+        args.seed = int(np.random.default_rng().integers(0, 2**31 - 1))
+        print(f"Using random seed: {args.seed}")
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add common arguments shared by ring-run and ring-study."""
     parser.add_argument("--params_json", type=str, default="",
@@ -217,8 +233,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                              "(default: 15, i.e. 15× baseline current)")
     parser.add_argument("--delay_ms", type=float, default=3000.0,
                         help="Delay period duration in ms (default: 3000)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility (default: 42)")
+    parser.add_argument("--seed", type=_parse_seed, default=42,
+                        help="Random seed for reproducibility (default: 42). "
+                             "Use 'rdm' for a truly random seed.")
     parser.add_argument("--no_show", action="store_true",
                         help="Don't display plots (useful for batch processing)")
     parser.add_argument("--response_onset_ms", type=float, default=0.0,
@@ -270,6 +287,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """Run a single condition and plot results."""
+    _resolve_seed(args)
     import matplotlib
     if args.no_show:
         matplotlib.use("Agg")
@@ -621,6 +639,7 @@ def _args_to_dict(args: argparse.Namespace) -> dict:
 
 def cmd_study(args: argparse.Namespace) -> None:
     """Run multiple conditions and generate comparison plots."""
+    _resolve_seed(args)
     from tqdm import tqdm
     import matplotlib
     if args.no_show:
@@ -650,12 +669,15 @@ def cmd_study(args: argparse.Namespace) -> None:
     if args.conditions is None:
         condition_keys = list(CONDITION_ORDER)
     else:
-        condition_keys = args.conditions
-        for k in condition_keys:
-            if k not in STUDY_CONDITIONS:
-                print(f"Error: unknown condition '{k}'.\n"
-                      f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
-                sys.exit(1)
+        if "all" in args.conditions:
+            condition_keys = list(CONDITION_ORDER)
+        else:
+            condition_keys = args.conditions
+            for k in condition_keys:
+                if k not in STUDY_CONDITIONS:
+                    print(f"Error: unknown condition '{k}'.\n"
+                        f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+                    sys.exit(1)
 
     amplitudes = args.amplitudes if args.amplitudes else [args.amplitude]
     n_trials = getattr(args, 'n_trials', 1)
@@ -1012,7 +1034,11 @@ def _diffusion_run_single(job: tuple) -> dict:
         'cond_key': cond_key,
         'trial_idx': trial_idx,
         'center_unwrapped_rad': center_unwrapped,
+        'amplitude': amplitude,
         't_delay_s': t_delay_s,
+        # Snapshots of PYR population activity at start and end of delay
+        'activity_start': activity_delay[0].copy(),   # shape (n_nodes,)
+        'activity_end': activity_delay[-1].copy(),    # shape (n_nodes,)
     }
 
 
@@ -1022,6 +1048,7 @@ def _diffusion_run_single(job: tuple) -> dict:
 
 def cmd_diffusion(args: argparse.Namespace) -> None:
     """Run diffusion (MSD) analysis across conditions."""
+    _resolve_seed(args)
     from tqdm import tqdm
     import matplotlib
     if args.no_show:
@@ -1048,14 +1075,17 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
     )
 
     if args.conditions is None:
-        condition_keys = list(CONDITION_ORDER)
+            condition_keys = list(CONDITION_ORDER)
     else:
-        condition_keys = args.conditions
-        for k in condition_keys:
-            if k not in STUDY_CONDITIONS:
-                print(f"Error: unknown condition '{k}'.\n"
-                      f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
-                sys.exit(1)
+        if "all" in args.conditions:
+            condition_keys = list(STUDY_CONDITIONS.keys())
+        else:
+            condition_keys = args.conditions
+            for k in condition_keys:
+                if k not in STUDY_CONDITIONS:
+                    print(f"Error: unknown condition '{k}'.\n"
+                        f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+                    sys.exit(1)
 
     n_trials = args.n_trials
     n_workers = getattr(args, 'n_workers', None)
@@ -1093,58 +1123,97 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
     trial_seeds = _generate_trial_seeds(args.seed, n_trials)
 
     # --- Output paths (defined early for cache check) ---
-    summary_csv = os.path.join(out_dir, "diffusion_summary.csv")
-    curve_csv = os.path.join(out_dir, "diffusion_msd_curves.csv")
+    summary_csv = os.path.join(out_dir, "diffusion_displacement_summary.csv")
+    trials_csv = os.path.join(out_dir, "diffusion_displacement_trials.csv")
+    amplitude_csv = os.path.join(out_dir, "diffusion_amplitude.csv")
 
-    # --- Check for cached MSD data (aggregate-level cache) ---
-    msd_data: dict[str, dict] = {}
+    # --- Check for cached displacement data ---
+    disp_data: dict[str, dict] = {}
     loaded_from_cache = False
 
-    if os.path.exists(summary_csv) and os.path.exists(curve_csv):
+    if os.path.exists(summary_csv) and os.path.exists(trials_csv):
         try:
             with open(summary_csv, newline='') as _f:
                 summary_rows = list(csv.DictReader(_f))
-
             cond_keys_set = set(condition_keys)
             cached_conds = {r['condition_key'] for r in summary_rows}
             params_ok = cond_keys_set <= cached_conds and all(
                 float(r['delay_ms']) == args.delay_ms
                 and float(r['amplitude_factor']) == amp_factor
                 and int(r['n_trials']) >= n_trials
-                for r in summary_rows
-                if r['condition_key'] in cond_keys_set
+                and int(r['seed']) == args.seed
+                for r in summary_rows if r['condition_key'] in cond_keys_set
             )
-
             if params_ok:
-                with open(curve_csv, newline='') as _f:
-                    curve_rows = list(csv.DictReader(_f))
-
-                curves_by_cond: dict[str, list] = {}
-                for row in curve_rows:
-                    curves_by_cond.setdefault(row['condition_key'], []).append(row)
-
-                if cond_keys_set <= set(curves_by_cond.keys()):
-                    print(f"\nLoading cached MSD data from {curve_csv}")
-                    summary_by_cond = {r['condition_key']: r for r in summary_rows}
+                with open(trials_csv, newline='') as _f:
+                    trial_rows = list(csv.DictReader(_f))
+                trials_by_cond: dict[str, list] = {}
+                for row in trial_rows:
+                    trials_by_cond.setdefault(row['condition_key'], []).append(row)
+                if cond_keys_set <= set(trials_by_cond.keys()):
+                    print(f"\nLoading cached displacement data from {trials_csv}")
+                    sr_by_cond = {r['condition_key']: r for r in summary_rows}
                     for ck in condition_keys:
-                        rows = curves_by_cond[ck]
-                        sr = summary_by_cond[ck]
-                        msd_data[ck] = {
-                            'lag_times': np.array([float(r['lag_s']) for r in rows]),
-                            'msd_mean':  np.array([float(r['msd_mean']) for r in rows]),
-                            'msd_sem':   np.array([float(r['msd_sem']) for r in rows]),
-                            'msd_sd':    np.array([float(r['msd_sd']) for r in rows]),
-                            'fit_line':  np.array([float(r['fit_line']) for r in rows]),
-                            'B_hat':     float(sr['B_hat_rad2_per_s']),
-                            'r_squared': float(sr['r_squared']),
-                        }
+                        sr = sr_by_cond[ck]
+                        disps = np.array([
+                            float(r['displacement_deg'])
+                            for r in trials_by_cond[ck]
+                            if r.get('valid', '1') == '1'
+                        ])
                         cond_label = STUDY_CONDITIONS[ck].name
-                        print(f"  {cond_label}: B_hat = {msd_data[ck]['B_hat']:.4e} rad²/s"
-                              f"  (R² = {msd_data[ck]['r_squared']:.3f})")
+                        print(f"  {cond_label}: mean |shift| = "
+                              f"{float(sr['abs_mean_deg']):.2f}°  "
+                              f"(n={sr['n_valid']}/{sr['n_total']})")
+                        disp_data[ck] = {
+                            'displacements_deg': disps,
+                            'mean_deg': float(sr['mean_deg']),
+                            'std_deg': float(sr['std_deg']),
+                            'abs_mean_deg': float(sr['abs_mean_deg']),
+                            'n_valid': int(sr['n_valid']),
+                            'n_total': int(sr['n_total']),
+                            # Activity snapshots not available from cache
+                            'snap_activity_start': None,
+                            'snap_activity_end': None,
+                            'snap_angles_deg': None,
+                            'snap_displacement_deg': None,
+                        }
                     loaded_from_cache = True
+
+                    # Also load amplitude data if available
+                    if os.path.exists(amplitude_csv):
+                        try:
+                            with open(amplitude_csv, newline='') as _fa:
+                                amp_rows = list(csv.DictReader(_fa))
+                            amp_by_cond: dict[str, list] = {}
+                            for row in amp_rows:
+                                amp_by_cond.setdefault(row['condition_key'], []).append(row)
+                            if cond_keys_set <= set(amp_by_cond.keys()):
+                                for ck in condition_keys:
+                                    rows_a = sorted(
+                                        amp_by_cond[ck], key=lambda r: float(r['t_s'])
+                                    )
+                                    nt_str = rows_a[0].get('noise_threshold', '')
+                                    disp_data[ck]['amp_t_s'] = np.array(
+                                        [float(r['t_s']) for r in rows_a]
+                                    )
+                                    disp_data[ck]['amp_mean'] = np.array(
+                                        [float(r['amp_mean']) for r in rows_a]
+                                    )
+                                    disp_data[ck]['amp_sem'] = np.array(
+                                        [float(r['amp_sem']) for r in rows_a]
+                                    )
+                                    disp_data[ck]['survival'] = np.array(
+                                        [float(r['survival_frac']) for r in rows_a]
+                                    )
+                                    disp_data[ck]['noise_threshold'] = (
+                                        float(nt_str) if nt_str else None
+                                    )
+                                print(f"  Loaded cached amplitude data from {amplitude_csv}")
+                        except Exception as _ea:
+                            print(f"  Amplitude cache read failed ({_ea}), skipping.")
         except Exception as _e:
             print(f"  Cache read failed ({_e}), rerunning simulations.")
-            msd_data = {}
+            disp_data = {}
 
     if not loaded_from_cache:
         # --- Build jobs ---
@@ -1180,86 +1249,296 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
             for job in tqdm(jobs, desc="Diffusion trials", unit="trial"):
                 all_results.append(_diffusion_run_single(job))
 
-        # --- Compute MSD per condition ---
-        fit_range_s = (0.1, min(args.delay_ms / 1000.0 * 0.4, 2.0))
+        # --- Auto-detect noise threshold from calibration ---
+        cal_conn_label = _calibration_conn_label(ring_params)
+        cal_csv = os.path.join(
+            _output_dir(f"figs/calibration/{ring_params.n_nodes}", args.params_json),
+            cal_conn_label, "calibration_summary.csv",
+        )
+        noise_thresholds: dict[str, Optional[float]] = {}
+        for ck in condition_keys:
+            noise_thresholds[ck] = _lookup_noise_threshold(
+                cal_csv, ck, amp_factor, ring_params.w_pyr_pyr_inter,
+            )
+        has_threshold = any(v is not None for v in noise_thresholds.values())
+        if has_threshold:
+            print(f"\nNoise thresholds from calibration ({cal_csv}):")
+            for ck, nt in noise_thresholds.items():
+                label = STUDY_CONDITIONS[ck].name
+                if nt is not None:
+                    exact_match = _lookup_noise_threshold_exact(
+                        cal_csv, ck, amp_factor, ring_params.w_pyr_pyr_inter,
+                    ) is not None
+                    tag = "" if exact_match else " (shared — no exact match)"
+                    print(f"  {label}: {nt:.4f}{tag}")
+                else:
+                    print(f"  {label}: not found — melt check disabled")
+        else:
+            print(f"\nNo calibration data found at {cal_csv}; bump-melt check disabled.")
+
+        # --- Final displacement analysis per condition ---
+        print("\nFinal displacement analysis:")
+        angles_deg = np.degrees(ring_params.node_angles_rad)
 
         for cond_key in condition_keys:
             trials = [r for r in all_results if r['cond_key'] == cond_key]
-            centers = [r['center_unwrapped_rad'] for r in trials]
             t_s = trials[0]['t_delay_s']
-
-            lag_times, msd_mean, msd_sem, msd_sd = compute_msd_curve(centers, t_s)
-            B_hat, fit_line, r_sq = fit_diffusion_coefficient(lag_times, msd_mean,
-                                                               fit_range=fit_range_s)
-
-            msd_data[cond_key] = {
-                'lag_times': lag_times,
-                'msd_mean': msd_mean,
-                'msd_sem': msd_sem,
-                'msd_sd': msd_sd,
-                'fit_line': fit_line,
-                'B_hat': B_hat,
-                'r_squared': r_sq,
-            }
-
+            noise_threshold = noise_thresholds.get(cond_key)
             cond_label = STUDY_CONDITIONS[cond_key].name
-            print(f"  {cond_label}: B_hat = {B_hat:.4e} rad²/s  (R² = {r_sq:.3f})")
+
+            # Amplitude stats over the full delay period
+            amplitudes_arr = np.array([r['amplitude'] for r in trials])
+            amp_mean = np.mean(amplitudes_arr, axis=0)
+            amp_sem = (
+                np.std(amplitudes_arr, axis=0, ddof=1) / np.sqrt(len(trials))
+                if len(trials) > 1 else np.zeros(len(t_s))
+            )
+            survival = (
+                np.mean(amplitudes_arr >= noise_threshold, axis=0)
+                if noise_threshold is not None else np.ones(len(t_s))
+            )
+
+            # Per-trial: compute final displacement from cue.
+            # Strategy:
+            #   - Start position: mean over a 150 ms window after stim offset
+            #     (suppresses transient and early oscillation phase).
+            #   - End window: last 500 ms of the delay (~5 oscillation cycles).
+            #     Within that window, take the displacement with the *minimum*
+            #     absolute value — i.e., the moment the bump was closest to the
+            #     cue during the end window.  This estimates the DC shift of the
+            #     attractor (oscillation amplitude cancels out at zero-crossings).
+            dt_s = float(t_s[1] - t_s[0]) if len(t_s) > 1 else 1e-3
+            start_window_frames = max(1, int(round(0.150 / dt_s)))  # 150 ms
+            end_window_frames = max(1, int(round(0.500 / dt_s)))    # 500 ms
+
+            trial_displacements: list[float] = []
+            trial_valid: list[bool] = []
+            trial_indices: list[int] = []
+            valid_trials_data: list[dict] = []  # for finding extreme trial
+
+            for r in trials:
+                center = r['center_unwrapped_rad']
+                amp_end = float(r['amplitude'][-1])
+
+                # Bump present at end of delay?
+                bump_present = (
+                    noise_threshold is None or amp_end >= noise_threshold
+                )
+
+                if len(center) >= start_window_frames + 1 and bump_present:
+                    # Mean start position (suppress early transient)
+                    w_start = min(start_window_frames, len(center) // 2)
+                    center_start = float(np.mean(center[:w_start]))
+
+                    # Displacement at every frame in the end window
+                    w_end = min(end_window_frames, len(center))
+                    disp_series = center[-w_end:] - center_start
+                    # Wrap to [-π, π]
+                    disp_series = (disp_series + np.pi) % (2 * np.pi) - np.pi
+                    # Frame where bump was closest to cue
+                    min_idx = int(np.argmin(np.abs(disp_series)))
+                    disp_rad = float(disp_series[min_idx])
+                    disp_deg = float(np.degrees(disp_rad))
+                    trial_displacements.append(disp_deg)
+                    trial_valid.append(True)
+                    valid_trials_data.append({
+                        'disp_deg': disp_deg,
+                        'abs_disp': abs(disp_deg),
+                        'activity_start': r['activity_start'],
+                        'activity_end': r['activity_end'],
+                        'trial_idx': r['trial_idx'],
+                    })
+                elif len(center) >= 2 and bump_present:
+                    # Trajectory too short — fall back to single-point difference
+                    disp_rad = center[-1] - center[0]
+                    disp_rad = (disp_rad + np.pi) % (2 * np.pi) - np.pi
+                    disp_deg = float(np.degrees(disp_rad))
+                    trial_displacements.append(disp_deg)
+                    trial_valid.append(True)
+                    valid_trials_data.append({
+                        'disp_deg': disp_deg,
+                        'abs_disp': abs(disp_deg),
+                        'activity_start': r['activity_start'],
+                        'activity_end': r['activity_end'],
+                        'trial_idx': r['trial_idx'],
+                    })
+                else:
+                    trial_displacements.append(0.0)
+                    trial_valid.append(False)
+
+                trial_indices.append(r['trial_idx'])
+
+            disps = np.array(trial_displacements)
+            valid_mask = np.array(trial_valid)
+            valid_disps = disps[valid_mask]
+            n_valid = int(np.sum(valid_mask))
+            n_melted = len(trials) - n_valid
+
+            mean_d = float(np.mean(valid_disps)) if n_valid > 0 else np.nan
+            std_d  = float(np.std(valid_disps, ddof=1)) if n_valid > 1 else np.nan
+            abs_mean = float(np.mean(np.abs(valid_disps))) if n_valid > 0 else np.nan
+
+            # Find extreme trial (largest |displacement|, bump present at end)
+            extreme_result = None
+            if valid_trials_data:
+                extreme = max(valid_trials_data, key=lambda x: x['abs_disp'])
+                snap_disp = extreme['disp_deg']
+                print(f"  {cond_label}: mean shift = {mean_d:+.2f}°, "
+                      f"mean |shift| = {abs_mean:.2f}°, "
+                      f"std = {std_d:.2f}°  "
+                      f"(n={n_valid}/{len(trials)}, "
+                      f"extreme trial = {snap_disp:+.1f}°)")
+
+                # Rerun the extreme trial with full recording for heatmap
+                extreme_seed = trial_seeds[extreme['trial_idx']]
+                print(f"    Rerunning extreme trial (seed={extreme_seed}) for visualization...")
+                local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
+                r0, I_adapt0 = burnin_states[cond_key]
+                actual_current = amp_factor * base_params.I_ext_pyr()
+                T_ms_short = T_ms_full - BURN_IN_MS
+                stimuli_short = [
+                    RingStimulus(
+                        center_deg=STIM_CENTER_DEG, amplitude=actual_current,
+                        sigma_deg=STIM_SIGMA_DEG,
+                        onset_ms=STIM_ONSET_MS - BURN_IN_MS,
+                        duration_ms=STIM_DURATION_MS,
+                    ),
+                ]
+                extreme_result = simulate_ring(
+                    local_params, ring_params, T_ms=T_ms_short,
+                    stimuli=stimuli_short, r0=r0, I_adapt0=I_adapt0,
+                    seed=extreme_seed, connectivity=connectivity,
+                    record_dt_ms=5.0,  # 5 ms resolution — enough for heatmap
+                )
+                extreme_result.t_ms += BURN_IN_MS
+            else:
+                snap_disp = None
+                print(f"  {cond_label}: WARNING — no valid trials (all melted at end)")
+
+            if noise_threshold is not None and n_melted > 0:
+                print(f"    ({n_melted} trial(s) had no bump at end of delay — excluded)")
+
+            stim_offset_ms_local = STIM_ONSET_MS + STIM_DURATION_MS
+            disp_data[cond_key] = {
+                'displacements_deg': valid_disps,
+                'mean_deg': mean_d,
+                'std_deg': std_d,
+                'abs_mean_deg': abs_mean,
+                'n_valid': n_valid,
+                'n_total': len(trials),
+                'noise_threshold': noise_threshold,
+                'amp_t_s': t_s,
+                'amp_mean': amp_mean,
+                'amp_sem': amp_sem,
+                'survival': survival,
+                # Full simulation result for the extreme trial
+                'extreme_result': extreme_result,
+                'extreme_displacement_deg': snap_disp,
+                'delay_start_ms': stim_offset_ms_local + 100,
+                'delay_end_ms': stim_offset_ms_local + args.delay_ms,
+                # Per-trial lists for CSV
+                '_all_displacements': trial_displacements,
+                '_all_valid': trial_valid,
+                '_all_indices': trial_indices,
+            }
 
     # --- Save CSVs (skipped when loaded from cache) ---
     if not loaded_from_cache:
         # 1. Summary CSV: one row per condition
         with open(summary_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
-                'condition_key', 'B_hat_rad2_per_s', 'r_squared', 'n_trials',
-                'delay_ms', 'amplitude_factor',
+                'condition_key', 'mean_deg', 'std_deg', 'abs_mean_deg',
+                'n_valid', 'n_total', 'delay_ms', 'amplitude_factor', 'seed', 'n_trials',
             ])
             writer.writeheader()
             for cond_key in condition_keys:
+                d = disp_data[cond_key]
                 writer.writerow({
                     'condition_key': cond_key,
-                    'B_hat_rad2_per_s': msd_data[cond_key]['B_hat'],
-                    'r_squared': msd_data[cond_key]['r_squared'],
-                    'n_trials': n_trials,
+                    'mean_deg': d['mean_deg'],
+                    'std_deg': d['std_deg'],
+                    'abs_mean_deg': d['abs_mean_deg'],
+                    'n_valid': d['n_valid'],
+                    'n_total': d['n_total'],
                     'delay_ms': args.delay_ms,
                     'amplitude_factor': amp_factor,
+                    'seed': args.seed,
+                    'n_trials': n_trials,
                 })
 
-        # 2. MSD curve CSV: per-condition MSD vs lag
-        with open(curve_csv, 'w', newline='') as f:
+        # 2. Per-trial displacement CSV
+        with open(trials_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
-                'condition_key', 'lag_s', 'msd_mean', 'msd_sem', 'msd_sd',
-                'fit_line',
+                'condition_key', 'trial_idx', 'displacement_deg', 'valid',
             ])
             writer.writeheader()
             for cond_key in condition_keys:
-                d = msd_data[cond_key]
-                for i in range(len(d['lag_times'])):
+                d = disp_data[cond_key]
+                for ti, disp, valid in zip(
+                    d['_all_indices'], d['_all_displacements'], d['_all_valid']
+                ):
                     writer.writerow({
                         'condition_key': cond_key,
-                        'lag_s': d['lag_times'][i],
-                        'msd_mean': d['msd_mean'][i],
-                        'msd_sem': d['msd_sem'][i],
-                        'msd_sd': d['msd_sd'][i],
-                        'fit_line': d['fit_line'][i],
+                        'trial_idx': ti,
+                        'displacement_deg': disp,
+                        'valid': int(valid),
+                    })
+
+        # 3. Amplitude CSV
+        with open(amplitude_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                'condition_key', 't_s', 'amp_mean', 'amp_sem',
+                'survival_frac', 'noise_threshold',
+            ])
+            writer.writeheader()
+            for cond_key in condition_keys:
+                d = disp_data[cond_key]
+                if 'amp_t_s' not in d:
+                    continue
+                nt = d.get('noise_threshold')
+                for i in range(len(d['amp_t_s'])):
+                    writer.writerow({
+                        'condition_key': cond_key,
+                        't_s': d['amp_t_s'][i],
+                        'amp_mean': d['amp_mean'][i],
+                        'amp_sem': d['amp_sem'][i],
+                        'survival_frac': d['survival'][i],
+                        'noise_threshold': nt if nt is not None else '',
                     })
 
         print(f"\nCSVs saved to {out_dir}/")
-        print(f"  diffusion_summary.csv  (B_hat per condition)")
-        print(f"  diffusion_msd_curves.csv  (MSD vs lag per condition)")
+        print(f"  diffusion_displacement_summary.csv  (per-condition stats)")
+        print(f"  diffusion_displacement_trials.csv   (per-trial displacements)")
+        print(f"  diffusion_amplitude.csv             (amplitude over time)")
 
-    # --- Plot ---
-    error_band = getattr(args, 'error_band', 'sem')
-    save_path = os.path.join(out_dir, f"diffusion_msd_{error_band}.png")
-    band_tag = f"  ({n_trials} trials, ±{error_band.upper()})" if n_trials > 1 else ""
-    plot_msd_curves(
-        msd_data,
-        save_path=save_path,
-        suptitle=f"Diffusion Analysis (MSD){band_tag}",
-        error_band=error_band,
+    # --- Plots ---
+    from .plotting import plot_displacement_distribution, plot_diffusion_ring_snapshot
+
+    band_tag = f"  ({n_trials} trials)" if n_trials > 1 else ""
+
+    # 1. Displacement distribution plot
+    disp_save = os.path.join(out_dir, "diffusion_displacement.png")
+    plot_displacement_distribution(
+        disp_data,
+        save_path=disp_save,
+        suptitle=f"Final Bump Displacement from Cue{band_tag}",
     )
     plt.close()
+    print(f"Figure saved to {disp_save}")
 
-    print(f"Figure saved to {save_path}")
+    # 2. Activity heatmap of the most extreme trial per condition
+    has_snaps = any(
+        d.get('extreme_result') is not None for d in disp_data.values()
+    )
+    if has_snaps:
+        snap_save = os.path.join(out_dir, "diffusion_ring_snapshot.png")
+        plot_diffusion_ring_snapshot(
+            disp_data,
+            save_path=snap_save,
+            suptitle=f"Most Extreme Drift Trial per Condition{band_tag}",
+        )
+        plt.close()
+        print(f"Figure saved to {snap_save}")
 
 
 # ============================================================================
@@ -1388,6 +1667,7 @@ def _drift_run_single(job: tuple) -> dict:
 
 def cmd_drift_field(args: argparse.Namespace) -> None:
     """Run distractor drift field analysis across conditions."""
+    _resolve_seed(args)
     from tqdm import tqdm
     import matplotlib
     if args.no_show:
@@ -1416,12 +1696,15 @@ def cmd_drift_field(args: argparse.Namespace) -> None:
     if args.conditions is None:
         condition_keys = list(CONDITION_ORDER)
     else:
-        condition_keys = args.conditions
-        for k in condition_keys:
-            if k not in STUDY_CONDITIONS:
-                print(f"Error: unknown condition '{k}'.\n"
-                      f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
-                sys.exit(1)
+        if "all" in args.conditions:
+            condition_keys = list(STUDY_CONDITIONS.keys())
+        else:
+            condition_keys = args.conditions
+            for k in condition_keys:
+                if k not in STUDY_CONDITIONS:
+                    print(f"Error: unknown condition '{k}'.\n"
+                        f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+                    sys.exit(1)
 
     n_trials = args.n_trials
     distractor_step = args.distractor_steps
@@ -1820,6 +2103,7 @@ def _calibrate_run_single(job: tuple) -> dict:
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Run 2D parameter calibration (amplitude x w_inter)."""
+    _resolve_seed(args)
     import json
     from tqdm import tqdm
     import matplotlib
@@ -1849,12 +2133,15 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     if args.conditions is None:
         condition_keys = ["WT"]
     else:
-        condition_keys = args.conditions
-        for k in condition_keys:
-            if k not in STUDY_CONDITIONS:
-                print(f"Error: unknown condition '{k}'.\n"
-                      f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
-                sys.exit(1)
+        if "all" in args.conditions:
+            condition_keys = list(STUDY_CONDITIONS.keys())
+        else:
+            condition_keys = args.conditions
+            for k in condition_keys:
+                if k not in STUDY_CONDITIONS:
+                    print(f"Error: unknown condition '{k}'.\n"
+                        f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+                    sys.exit(1)
 
     amplitudes = args.amplitudes
     w_inter_values = args.w_inter_values
@@ -2169,9 +2456,38 @@ def _lookup_noise_threshold(
 ) -> Optional[float]:
     """Read noise_threshold from a calibration_summary.csv for matching parameters.
 
-    Matches on condition_key, amplitude, and w_inter (within 1e-4 tolerance).
+    First tries to match on condition_key + amplitude + w_inter.  If no
+    condition-specific row is found, falls back to any row matching amplitude
+    and w_inter (the noise floor is primarily a network-parameter property,
+    not a condition property, so cross-condition reuse is a reasonable proxy).
     Returns None if the file is missing, unreadable, or has no matching row.
     """
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        fallback: Optional[float] = None
+        with open(csv_path, newline='') as f:
+            for row in csv.DictReader(f):
+                amp_match = abs(float(row['amplitude']) - amplitude) < 1e-4
+                w_match = abs(float(row['w_inter']) - w_inter) < 1e-4
+                if amp_match and w_match:
+                    if row.get('condition_key', '').strip() == cond_key:
+                        return float(row['noise_threshold'])
+                    if fallback is None:
+                        fallback = float(row['noise_threshold'])
+        return fallback  # None if no amp/w match at all
+    except Exception:
+        pass
+    return None
+
+
+def _lookup_noise_threshold_exact(
+    csv_path: str,
+    cond_key: str,
+    amplitude: float,
+    w_inter: float,
+) -> Optional[float]:
+    """Like _lookup_noise_threshold but only returns a condition-specific match."""
     if not os.path.exists(csv_path):
         return None
     try:
@@ -2316,6 +2632,7 @@ def _distractor_sweep_run_single(job: tuple) -> dict:
 
 def cmd_distractor_sweep(args: argparse.Namespace) -> None:
     """Run 2-D distractor parameter sweep (Δφ × distractor amplitude)."""
+    _resolve_seed(args)
     from tqdm import tqdm
     import matplotlib
     if args.no_show:
@@ -2342,7 +2659,7 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
     )
 
     cond_key = args.condition
-    if cond_key not in STUDY_CONDITIONS:
+    if cond_key not in STUDY_CONDITIONS and cond_key != ["all"]:
         print(f"Error: unknown condition '{cond_key}'.")
         import sys; sys.exit(1)
     condition = STUDY_CONDITIONS[cond_key]

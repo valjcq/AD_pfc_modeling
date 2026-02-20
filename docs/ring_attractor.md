@@ -20,7 +20,8 @@ This document describes the mathematical formulation and implementation of the r
     - [10.2 Distractor-Induced Drift Field Analysis](#102-distractor-induced-drift-field-analysis)
     - [10.2b 2D Distractor Sweep](#102b-2d-distractor-sweep)
     - [10.3–10.8 Other metrics](#103-bump-width-estimation)
-11. [References](#11-references)
+11. [Bump Amplitude Oscillations](#11-bump-amplitude-oscillations)
+12. [References](#12-references)
 
 ---
 
@@ -655,7 +656,51 @@ where $K$ is the number of trials and $s$ is the sample standard deviation.
 
 ---
 
-## 11. References
+## 11. Bump Amplitude Oscillations
+
+### 11.1 Mechanism
+
+After the stimulus offset, the bump amplitude does not settle immediately to a steady value. Instead, it undergoes **damped oscillations** driven by the slow negative feedback of spike-frequency adaptation (SFA). The sequence is:
+
+1. Stimulus drives strong activation → bump forms, amplitude rises.
+2. Adaptation builds up during the stimulus → suppresses activity slightly after offset.
+3. When the stimulus turns off, adaptation current is still elevated → amplitude undershoots.
+4. Adaptation decays → amplitude recovers, overshoots.
+5. This bounce repeats with exponentially decaying amplitude until the attractor settles.
+
+In practice (default parameters, 128 nodes), the dominant oscillation frequency is around **~9–10 Hz (period ≈ 100 ms)**. The oscillations are visible in the trial-averaged amplitude and are systematic (not noise-driven): they represent a genuine resonance of the bump attractor.
+
+### 11.2 Effect on MSD
+
+The bump position $\varphi(t)$ is estimated as the phase of the population vector. When the amplitude oscillates, the effective signal-to-noise on the phase estimate also oscillates. Moreover, the position itself may experience small correlated displacements at the oscillation frequency.
+
+The oscillation adds a periodic term to the theoretical MSD:
+
+$$\text{MSD}(\tau) \approx B\,\tau + C\left(1 - \cos\!\left(\frac{2\pi\tau}{T_\text{osc}}\right)\right) + \text{offset}$$
+
+where $B$ is the true diffusion coefficient, $C$ is the oscillation contribution, and $T_\text{osc} = 1/f_\text{osc}$. Fitting a pure line $B\tau$ in the early regime ($\tau < T_\text{osc}$) **overestimates $\hat{B}$** because the oscillation increases apparent displacement at short lags.
+
+### 11.3 Approaches to Correct or Mitigate the Problem
+
+Five strategies are available, from simplest to most principled:
+
+| Strategy | Description | Pros | Cons |
+|----------|-------------|------|------|
+| **A. Exclude early transient** | Start MSD fit range after $N$ oscillation periods (e.g. `fit_range_s[0] = 3 × T_osc`) | Simple, no pre-processing | Wastes early data; requires knowing $T_\text{osc}$ |
+| **B. Low-pass filter position** ✓ | Apply zero-phase Butterworth LP filter to $\varphi(t)$ at $f_\text{cut} < f_\text{osc}$ before MSD | Clean, preserves slow drift, intuitive | Introduces slight edge effects; needs $f_\text{cut}$ choice |
+| **C. Oscillation-corrected fit** ✓ | Fit $\text{MSD} = B\tau + C(1-\cos(2\pi f\tau))$ with $f$ fixed from FFT | Separates diffusion and oscillation rigorously | Requires prior knowledge of $f_\text{osc}$; 3-param fit |
+| **D. Time-windowed averaging** | Replace instantaneous $\varphi$ with running mean over 1 cycle | Simple, no filter needed | Introduces temporal smearing of genuine drift |
+| **E. Fit only long lags** | Restrict fit to $\tau \gg T_\text{osc}$ where cosine term averages out | No preprocessing | Greatly reduces usable lag range; noisier fit |
+
+**Current implementation**: strategies **B** (low-pass filter) and **C** (oscillation-corrected fit) are applied automatically when a dominant oscillation is detected by FFT of the per-trial amplitude. The filter cutoff defaults to $0.4 \times f_\text{osc}$ and can be overridden with `--filter_cutoff_hz` (set to `0` to disable).
+
+### 11.4 Oscillation Detection
+
+The `compute_oscillation_spectrum` function (in `analysis.py`) computes the power spectrum of the bump amplitude for each trial, averages across trials, and identifies the dominant frequency as the peak exceeding **3× the median power** in the band $[1, 50]$ Hz. The result is reported in `diffusion_oscillation.csv` and visualised in `diffusion_oscillation_spectrum.png`.
+
+---
+
+## 12. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.
 
