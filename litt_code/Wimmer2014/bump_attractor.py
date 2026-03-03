@@ -36,6 +36,12 @@ stimoff  = 1500  # time when external stimulus ceases in ms
 stim     = 200   # strength of external stimulus
 delayend = 3500  # time when delay ends in ms
 
+# Distractor parameters (applied during delay period)
+distractoron  = 2000   # time when distractor is applied in ms
+distractoroff = 2500   # time when distractor ceases in ms
+distractor_stim   = 0   # strength of distractor
+distractor_angle  = 150    # angular offset of distractor from cue (degrees)
+
 # ===== PRELIMINARY CALCULATIONS =====
 
 rE = np.zeros(N)
@@ -59,6 +65,15 @@ stimon_step   = int(stimon / dt)
 stimoff_step  = int(stimoff / dt)
 delayend_step = int(delayend / dt)
 delaywin      = int(100 / dt)  # 100 ms window
+
+# Distractor stimulus kernel: same shape as cue but at a different angle
+distractor_offset = np.radians(distractor_angle)
+v_dist = np.exp(kappa * np.cos(theta - distractor_offset))
+v_dist = v_dist / np.sum(v_dist)
+distractor = distractor_stim * v_dist
+
+distractoron_step  = int(distractoron / dt)
+distractoroff_step = int(distractoroff / dt)
 
 # Input-output function (Brunel, Cereb Cortex 13:1151, 2003)
 def f(x):
@@ -96,6 +111,8 @@ for i in range(1, nsteps + 1):
     # External task-dependent inputs
     if stimon_step < i < stimoff_step:
         IE = IE + stimulus  # cue stimulus before delay
+    if distractoron_step < i < distractoroff_step:
+        IE = IE + distractor  # distractor during delay
     if delayend_step < i < delayend_step + (stimoff_step - stimon_step):
         IE = IE - stim      # erasing global input after delay
 
@@ -136,9 +153,11 @@ im = ax1.imshow(
     vmin=0
 )
 plt.colorbar(im, ax=ax1, label='e-cell rate')
-ax1.axvline(stimon,   color='cyan',  lw=1.5, ls='--', label='stim on/off')
-ax1.axvline(stimoff,  color='cyan',  lw=1.5, ls='--')
-ax1.axvline(delayend, color='white', lw=1.5, ls='--', label='delay end')
+ax1.axvline(stimon,        color='cyan',   lw=1.5, ls='--', label='stim on/off')
+ax1.axvline(stimoff,       color='cyan',   lw=1.5, ls='--')
+ax1.axvline(distractoron,  color='orange', lw=1.5, ls='--', label='distractor on/off')
+ax1.axvline(distractoroff, color='orange', lw=1.5, ls='--')
+ax1.axvline(delayend,      color='white',  lw=1.5, ls='--', label='delay end')
 ax1.plot(history_t, np.degrees(history_ang), 'g.', ms=1.5, label='decoded angle')
 ax1.set_ylabel('neuron (deg)')
 ax1.set_title('Bump Attractor — e-cell activity')
@@ -168,7 +187,7 @@ ax3.legend()
 ax3.spines['top'].set_visible(False)
 ax3.spines['right'].set_visible(False)
 
-plt.suptitle('Bump Attractor')
+plt.suptitle(f'Bump Attractor — distractor at {distractor_angle}° offset')
 plt.tight_layout()
 plt.savefig('bump_attractor_final_state.png', dpi=300)
 plt.show()
