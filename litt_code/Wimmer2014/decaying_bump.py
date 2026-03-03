@@ -61,6 +61,12 @@ stimoff_step  = int(stimoff / dt)
 delayend_step = int(delayend / dt)
 delaywin      = int(100 / dt)  # 100 ms window
 
+# Distractor parameters (applied during delay period)
+distractoron  = 2000   # time when distractor is applied in ms
+distractoroff = 2500   # time when distractor ceases in ms
+distractor_stim   = 0   # strength of distractor
+distractor_angle  = 150    # angular offset of distractor from cue (degrees
+
 # Input-output function (Brunel, Cereb Cortex 13:1151, 2003)
 def f(x):
     return (x**2 * (x > 0) * (x < 1) +
