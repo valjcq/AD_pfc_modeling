@@ -16,6 +16,7 @@ import numpy as np
 
 from .simulation import RingSimulationResult
 from .connectivity import angular_distance
+from .constants import TRANSIENT_SKIP_TIME_MS
 
 
 def population_vector_decode(
@@ -145,6 +146,49 @@ def angular_distance_deg(angle1: float, angle2: float) -> float:
     """Angular distance in degrees, handling wraparound."""
     diff = abs(angle1 - angle2)
     return min(diff, 360 - diff)
+
+
+def compute_bump_asymmetry(
+    result: RingSimulationResult,
+    population: int = 0,
+) -> np.ndarray:
+    """Compute a left/right asymmetry index of activity around the cue location.
+
+    For each time step, compares total activity on the left vs right side of the
+    cue presentation angle, returning a normalized index in [-1, 1]:
+
+        -1  → all activity concentrated on the left side of the cue
+         0  → perfectly symmetric
+        +1  → all activity concentrated on the right side of the cue
+
+    "Left" means nodes with a negative signed angular offset from the cue
+    (counter-clockwise direction); "right" means a positive signed offset
+    (clockwise direction).
+
+    Parameters:
+        result: RingSimulationResult
+        population: Which population to analyze (0 = PYR)
+
+    Returns:
+        asymmetry: Normalized asymmetry index, shape (n_steps,).
+    """
+    activity = result.r[:, :, population]           # (n_steps, n_nodes)
+    node_angles = result.ring_params.node_angles_deg  # (n_nodes,)
+    cue_deg = result.stim_angle_deg
+
+    # Signed angular offset from cue: in (-180, 180]
+    offsets = ((node_angles - cue_deg + 180.0) % 360.0) - 180.0
+
+    left_mask = offsets < 0
+    right_mask = offsets > 0
+
+    left_activity = activity[:, left_mask].sum(axis=1)   # (n_steps,)
+    right_activity = activity[:, right_mask].sum(axis=1)  # (n_steps,)
+
+    total = left_activity + right_activity
+    asymmetry = np.where(total > 1e-10, (right_activity - left_activity) / total, 0.0)
+
+    return asymmetry
 
 
 def compute_bump_metrics(
@@ -502,6 +546,7 @@ def compute_oscillation_spectrum(
     t_s: np.ndarray,
     min_freq_hz: float = 1.0,
     max_freq_hz: float = 50.0,
+    skip_initial_s: float = 0.0,
 ) -> dict:
     """Compute power spectrum of bump amplitude and detect dominant oscillation.
 
@@ -515,6 +560,8 @@ def compute_oscillation_spectrum(
         t_s: Time vector in seconds, shape (n_steps,).
         min_freq_hz: Low edge of the frequency band to search (default: 1 Hz).
         max_freq_hz: High edge of the frequency band to search (default: 50 Hz).
+        skip_initial_s: Ignore this initial duration (seconds) before
+            estimating the spectrum to avoid early post-cue transients.
 
     Returns:
         dict with keys:
@@ -526,6 +573,14 @@ def compute_oscillation_spectrum(
     """
     n_trials, n_steps = amplitude_trials.shape
     dt = float(t_s[1] - t_s[0]) if len(t_s) > 1 else 1e-3
+
+    if skip_initial_s > 0:
+        valid_mask = t_s >= (t_s[0] + skip_initial_s)
+        if np.count_nonzero(valid_mask) >= 4:
+            t_s = t_s[valid_mask]
+            amplitude_trials = amplitude_trials[:, valid_mask]
+            n_steps = amplitude_trials.shape[1]
+
     freqs = np.fft.rfftfreq(n_steps, d=dt)
 
     psds = np.zeros((n_trials, len(freqs)))
@@ -695,3 +750,351 @@ def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
         result[f"{key}_sd"] = sd
         result[f"{key}_sem"] = sd / np.sqrt(n) if n > 1 else 0.0
     return result
+
+
+# ---------------------------------------------------------------------------
+# New analysis functions for the 4-experiment battery
+# ---------------------------------------------------------------------------
+
+def compute_bump_survival_time(
+    result: RingSimulationResult,
+    noise_floor: float,
+    sustain_ms: float = 100.0,
+    population: int = 0,
+) -> Optional[float]:
+    """Find when the bump collapses during the delay period.
+
+    A collapse is defined as the first moment when the decoded amplitude
+    drops below *noise_floor* and stays below for at least *sustain_ms*.
+    This guards against brief transient dips due to noise.
+
+    Parameters:
+        result: RingSimulationResult
+        noise_floor: Amplitude threshold below which the bump is considered
+            collapsed (same units as population_vector_decode amplitude, [0,1]).
+        sustain_ms: Minimum duration below threshold to count as collapse (ms).
+        population: Population index to decode (default 0 = PYR).
+
+    Returns:
+        Survival time in ms measured from the stimulus offset, or None if the
+        bump never collapses during the recorded period.
+    """
+    delay_start_ms = result.stim_window[1]
+    mask = result.t_ms >= delay_start_ms
+    if not np.any(mask):
+        return None
+
+    t_delay = result.t_ms[mask]
+    activity = result.r[mask, :, population]
+    _, amplitude = population_vector_decode(activity, result.ring_params.node_angles_rad)
+
+    collapsed = amplitude < noise_floor  # bool array over delay time
+
+    # Require sustained collapse: use a sliding sum with window = sustain_steps
+    dt_ms = float(t_delay[1] - t_delay[0]) if len(t_delay) > 1 else 1.0
+    sustain_steps = max(1, int(np.ceil(sustain_ms / dt_ms)))
+
+    if sustain_steps >= len(collapsed):
+        # Not enough timepoints to confirm sustained collapse
+        if np.all(collapsed):
+            return 0.0
+        return None
+
+    # Convolve with box kernel to find first window that is all-collapsed
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows = sliding_window_view(collapsed, sustain_steps)  # (n - sustain+1, sustain)
+    all_collapsed = np.all(windows, axis=1)  # bool (n - sustain+1,)
+
+    idx = np.argmax(all_collapsed)  # first True (argmax returns 0 if none found)
+    if not all_collapsed[idx]:
+        return None  # no sustained collapse found
+
+    # t_delay[idx] is the start of the first fully-collapsed window
+    collapse_time_ms = float(t_delay[idx])
+    return collapse_time_ms - delay_start_ms
+
+
+def compute_lesion_metrics(
+    results: list[RingSimulationResult],
+    noise_floor: float,
+    cue_window_ms: float = 50.0,
+    sustain_ms: float = 100.0,
+    population: int = 0,
+) -> dict:
+    """Compute formation success rate and bump survival statistics across trials.
+
+    Parameters:
+        results: list of RingSimulationResult, one per trial.
+        noise_floor: Amplitude threshold for bump detection.
+        cue_window_ms: Time window after stimulus offset to check for bump
+            formation (ms). A bump is counted as formed if amplitude >
+            noise_floor anywhere in this window.
+        sustain_ms: Collapse sustain duration for survival time (ms).
+        population: Population index to decode.
+
+    Returns:
+        dict with keys:
+            'formation_rate': float in [0, 1]
+            'survival_time_mean_ms': float or nan
+            'survival_time_sem_ms': float or nan
+            'survival_time_sd_ms': float or nan
+            'n_formed': int
+            'n_trials': int
+    """
+    n_trials = len(results)
+    formed = []
+    survival_times = []
+
+    for result in results:
+        stim_offset = result.stim_window[1]
+        # Check formation: amplitude > noise_floor within cue_window_ms after stim offset
+        check_end = stim_offset + cue_window_ms
+        mask_cue = (result.t_ms >= stim_offset) & (result.t_ms <= check_end)
+        if not np.any(mask_cue):
+            formed.append(False)
+            continue
+
+        activity_cue = result.r[mask_cue, :, population]
+        _, amp_cue = population_vector_decode(activity_cue, result.ring_params.node_angles_rad)
+        bump_formed = bool(np.any(amp_cue > noise_floor))
+        formed.append(bump_formed)
+
+        if bump_formed:
+            st = compute_bump_survival_time(result, noise_floor, sustain_ms, population)
+            survival_times.append(st)
+
+    n_formed = sum(formed)
+    formation_rate = n_formed / n_trials if n_trials > 0 else 0.0
+
+    # Survival times: None means no collapse → use delay duration as right-censored value
+    # For simplicity, treat None as the full delay (conservative: bump survived)
+    survival_arr = []
+    for r, st in zip([r for r, f in zip(results, formed) if f], survival_times):
+        if st is None:
+            # Bump survived the full delay — use end of recording as max survival
+            st = float(r.t_ms[-1] - r.stim_window[1])
+        survival_arr.append(st)
+
+    survival_arr = np.array(survival_arr, dtype=float)
+    if len(survival_arr) > 0:
+        mean_st = float(np.nanmean(survival_arr))
+        sd_st = float(np.nanstd(survival_arr, ddof=1)) if len(survival_arr) > 1 else 0.0
+        sem_st = sd_st / np.sqrt(len(survival_arr)) if len(survival_arr) > 1 else 0.0
+    else:
+        mean_st = np.nan
+        sd_st = np.nan
+        sem_st = np.nan
+
+    return {
+        'formation_rate': formation_rate,
+        'survival_time_mean_ms': mean_st,
+        'survival_time_sem_ms': sem_st,
+        'survival_time_sd_ms': sd_st,
+        'n_formed': n_formed,
+        'n_trials': n_trials,
+    }
+
+
+def extract_tau_sweep_metrics(
+    results_by_tau: dict,
+    noise_floor: float,
+    stim_offset_ms: float,
+    delay_ms: float,
+    sustain_ms: float = 100.0,
+    population: int = 0,
+    osc_skip_initial_ms: float = TRANSIENT_SKIP_TIME_MS,
+) -> dict:
+    """Extract bump dynamics metrics for each τ_adapt value.
+
+    Computes survival time, diffusion coefficient, and oscillation frequency
+    from a set of trials run at different τ_adapt_pyr values.
+
+    Parameters:
+        results_by_tau: {tau_ms: [RingSimulationResult, ...]}
+        noise_floor: Amplitude collapse threshold.
+        stim_offset_ms: Absolute time of stimulus offset (ms).
+        delay_ms: Expected delay period duration (ms).
+        sustain_ms: Collapse sustain window (ms).
+        population: Population index to decode.
+        osc_skip_initial_ms: Initial delay-period window to ignore when
+            estimating oscillation frequency (ms).
+
+    Returns:
+        {tau_ms: {
+            'survival_time_mean_ms': float,
+            'survival_time_sem_ms': float,
+            'survival_time_sd_ms': float,
+            'diffusion_deg2_per_s': float,
+            'diffusion_r2': float,
+            'osc_freq_hz': float or None,
+            'n_valid': int,
+        }}
+    """
+    metrics_by_tau = {}
+    for tau_ms, results in sorted(results_by_tau.items()):
+        lesion_m = compute_lesion_metrics(results, noise_floor, sustain_ms=sustain_ms,
+                                          population=population)
+
+        # Collect delay-period center trajectories for MSD
+        centers_rad_list = []
+        amp_list = []
+        for result in results:
+            mask = (result.t_ms >= stim_offset_ms) & \
+                   (result.t_ms <= stim_offset_ms + delay_ms)
+            if not np.any(mask):
+                continue
+            activity = result.r[mask, :, population]
+            node_angles = result.ring_params.node_angles_rad
+            center_rad, amplitude = population_vector_decode(activity, node_angles)
+            center_rad_unwrapped = np.unwrap(center_rad)
+            centers_rad_list.append(center_rad_unwrapped)
+            amp_list.append(amplitude)
+
+        # Diffusion
+        if len(centers_rad_list) >= 2:
+            t_ms_delay = result.t_ms[
+                (result.t_ms >= stim_offset_ms) &
+                (result.t_ms <= stim_offset_ms + delay_ms)
+            ]
+            t_s = (t_ms_delay - t_ms_delay[0]) / 1000.0
+            # Truncate all to same length
+            min_len = min(len(c) for c in centers_rad_list)
+            centers_trunc = [c[:min_len] for c in centers_rad_list]
+            t_s_trunc = t_s[:min_len]
+            lag_times, msd_mean, _, _ = compute_msd_curve(centers_trunc, t_s_trunc)
+            fit_range = (0.05, min(0.5, t_s_trunc[-1] * 0.75))
+            B_hat, _, r2 = fit_diffusion_coefficient(lag_times, msd_mean, fit_range)
+            # Convert rad²/s → deg²/s
+            diffusion_deg2_per_s = float(B_hat * (180 / np.pi) ** 2)
+            diffusion_r2 = float(r2)
+        else:
+            diffusion_deg2_per_s = np.nan
+            diffusion_r2 = np.nan
+
+        # Oscillation frequency
+        if len(amp_list) >= 2:
+            min_len = min(len(a) for a in amp_list)
+            amp_array = np.array([a[:min_len] for a in amp_list])
+            t_ms_arr = result.t_ms[
+                (result.t_ms >= stim_offset_ms) &
+                (result.t_ms <= stim_offset_ms + delay_ms)
+            ][:min_len]
+            t_s_arr = (t_ms_arr - t_ms_arr[0]) / 1000.0
+            osc = compute_oscillation_spectrum(
+                amp_array,
+                t_s_arr,
+                skip_initial_s=max(0.0, float(osc_skip_initial_ms) / 1000.0),
+            )
+            osc_freq = osc['dominant_freq_hz']
+        else:
+            osc_freq = None
+
+        metrics_by_tau[float(tau_ms)] = {
+            'survival_time_mean_ms': lesion_m['survival_time_mean_ms'],
+            'survival_time_sem_ms': lesion_m['survival_time_sem_ms'],
+            'survival_time_sd_ms': lesion_m['survival_time_sd_ms'],
+            'diffusion_deg2_per_s': diffusion_deg2_per_s,
+            'diffusion_r2': diffusion_r2,
+            'osc_freq_hz': osc_freq,
+            'n_valid': lesion_m['n_formed'],
+        }
+
+    return metrics_by_tau
+
+
+def run_phase_plane_sweep(
+    local_params,
+    delta_I_values: np.ndarray,
+    T_ms: float = 500.0,
+    settle_ms: float = 100.0,
+    dt_ms: float = 0.1,
+    bistable_threshold: float = 1.0,
+) -> dict:
+    """Sweep input current to PYR in a single decoupled node to find bistability.
+
+    Uses a single-node ring (n_nodes=1, w_pyr_pyr_inter=0, w_pv_global=0).
+    Runs an UP sweep (ascending delta_I) and a DOWN sweep (descending delta_I),
+    carrying the final state of each step as the initial condition of the next.
+
+    Parameters:
+        local_params: CircuitParams for the condition being analysed.
+        delta_I_values: Array of additive currents added to I0_pyr (pA),
+            sorted ascending for the UP sweep.
+        T_ms: Duration of each integration step (ms), 500 ms is usually
+            enough to settle.
+        settle_ms: Averaging window at the end of each step (ms).
+        dt_ms: Integration timestep (ms).
+        bistable_threshold: PYR firing-rate difference (Hz) between UP and
+            DOWN sweeps that is considered bistable.
+
+    Returns:
+        dict with keys:
+            'delta_I'       – np.ndarray, shape (n_steps,), sorted ascending
+            'up_rates'      – np.ndarray, shape (n_steps, 4) [PYR,SOM,PV,VIP]
+            'down_rates'    – np.ndarray, shape (n_steps, 4)
+            'bistable_mask' – np.ndarray bool, shape (n_steps,)
+    """
+    from dataclasses import replace as _replace
+    from .params import RingParams
+    from .simulation import simulate_ring
+
+    delta_I_values = np.sort(np.asarray(delta_I_values, dtype=float))
+    n_steps = len(delta_I_values)
+    up_rates = np.zeros((n_steps, 4))
+    down_rates = np.zeros((n_steps, 4))
+
+    # Single decoupled node: no inter-node PYR excitation, no global PV inhibition.
+    # We pass an explicit zero connectivity matrix to avoid the 0/0 warning in
+    # the connectivity builder when n_nodes=1.
+    from .connectivity import RingConnectivity as _RingConnectivity
+    ring_params_single = RingParams(n_nodes=1, w_pyr_pyr_inter=0.0, w_pv_global=0.0)
+    import numpy as _np_pp
+    zero_conn = _RingConnectivity(
+        W_pyr_pyr=_np_pp.zeros((1, 1)),
+        W_pv_pyr=_np_pp.zeros((1, 1)),
+    )
+
+    settle_steps = max(1, int(settle_ms / dt_ms))
+    record_step_ms = dt_ms  # record every step for accurate settling window
+
+    # ---- UP sweep (ascending delta_I) ----
+    r0 = None
+    I_adapt0 = None
+    for i, dI in enumerate(delta_I_values):
+        params_i = _replace(local_params, I0_pyr=local_params.I0_pyr + dI)
+        result = simulate_ring(
+            params_i, ring_params_single, T_ms=T_ms, dt_ms=dt_ms,
+            noise_type='none', r0=r0, I_adapt0=I_adapt0,
+            record_dt_ms=record_step_ms, connectivity=zero_conn,
+        )
+        # Carry state forward
+        r0 = result.r[-1]  # shape (1, 4)
+        I_adapt0 = result.I_adapt_final  # shape (1, 2)
+        # Record mean of last settle_steps
+        settle_start = max(0, len(result.r) - settle_steps)
+        up_rates[i] = np.mean(result.r[settle_start:, 0, :], axis=0)
+
+    # ---- DOWN sweep (descending delta_I) ----
+    r0 = None
+    I_adapt0 = None
+    for i, dI in enumerate(reversed(delta_I_values)):
+        rev_i = n_steps - 1 - i
+        params_i = _replace(local_params, I0_pyr=local_params.I0_pyr + dI)
+        result = simulate_ring(
+            params_i, ring_params_single, T_ms=T_ms, dt_ms=dt_ms,
+            noise_type='none', r0=r0, I_adapt0=I_adapt0,
+            record_dt_ms=record_step_ms, connectivity=zero_conn,
+        )
+        r0 = result.r[-1]
+        I_adapt0 = result.I_adapt_final
+        settle_start = max(0, len(result.r) - settle_steps)
+        down_rates[rev_i] = np.mean(result.r[settle_start:, 0, :], axis=0)
+
+    bistable_mask = np.abs(up_rates[:, 0] - down_rates[:, 0]) > bistable_threshold
+
+    return {
+        'delta_I': delta_I_values,
+        'up_rates': up_rates,
+        'down_rates': down_rates,
+        'bistable_mask': bistable_mask,
+    }

@@ -75,6 +75,7 @@ from .stimulus import (
 from .simulation import (
     RingSimulationResult,
     simulate_ring,
+    simulate_ring_batch,
     mean_rates_ring,
 )
 
@@ -85,6 +86,7 @@ from .analysis import (
     estimate_bump_width,
     angular_distance_deg,
     compute_bump_metrics,
+    compute_bump_asymmetry,
     compute_metrics_at_delay_times,
     compute_working_memory_accuracy,
     aggregate_metrics_across_trials,
@@ -125,6 +127,7 @@ __all__ = [
     # Simulation
     "RingSimulationResult",
     "simulate_ring",
+    "simulate_ring_batch",
     "mean_rates_ring",
     # Analysis
     "population_vector_decode",
@@ -132,6 +135,7 @@ __all__ = [
     "estimate_bump_width",
     "angular_distance_deg",
     "compute_bump_metrics",
+    "compute_bump_asymmetry",
     "compute_metrics_at_delay_times",
     "compute_working_memory_accuracy",
     "aggregate_metrics_across_trials",

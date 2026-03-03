@@ -23,6 +23,7 @@ from .loss import TargetRates, FitConfig
 from .io import load_params_json, format_params_as_code, output_dir as _output_dir
 from .optimization import nevergrad_optimize
 from .simulation import simulate_circuit
+from .ring.constants import TRANSIENT_SKIP_TIME_MS
 
 
 def parse_freeze_list(s: str) -> set[str]:
@@ -742,25 +743,25 @@ Examples:
     )
     ring_ds_parser.add_argument(
         "--offsets_deg", type=float, nargs="+",
-        default=[0, 5, 10, 15, 20, 30, 40, 60, 80, 100, 130, 150, 180],
-        help="Distractor angular offsets from cue in degrees (default: 0 5 10 15 20 30 40 60 80 100 130 150 180)",
+        default=[30, 90, 120, 170],
+        help="Distractor angular offsets from cue in degrees (default: 30 90 120 170)",
     )
     ring_ds_parser.add_argument(
         "--amp_factors", type=float, nargs="+",
-        default=[0.5, 0.75, 1.0, 1.25, 1.5],
-        help="Distractor amplitude factors relative to cue (default: 0.5 0.75 1.0 1.25 1.5)",
+        default=[1.0, 0.75],
+        help="Distractor amplitude factors relative to cue (default: 1.0 0.75)",
     )
     ring_ds_parser.add_argument(
-        "--n_trials", type=int, default=10,
-        help="Number of trials per grid cell (default: 10)",
+        "--n_trials", type=int, default=1,
+        help="Number of trials per grid cell (default: 1)",
     )
     ring_ds_parser.add_argument(
         "--delay1_ms", type=float, default=1000.0,
         help="Delay period before distractor in ms (default: 1000)",
     )
     ring_ds_parser.add_argument(
-        "--delay2_ms", type=float, default=1000.0,
-        help="Delay period after distractor in ms (default: 1000)",
+        "--delay2_ms", type=float, default=2500.0,
+        help="Delay period after distractor in ms (default: 2500)",
     )
     ring_ds_parser.add_argument(
         "--distractor_duration_ms", type=float, default=250.0,
@@ -785,9 +786,9 @@ Examples:
         "ring-calibrate",
         help="Run 2D parameter calibration (amplitude x w_inter) for the ring attractor",
         description="Sweep a 2D grid of (stimulus_amplitude, w_pyr_pyr_inter) to find "
-                    "parameter combinations that produce a stable memory bump. Estimates "
-                    "a noise floor from no-stimulus baseline trials and outputs diagnostic "
-                    "figures and a JSON summary with recommended parameters.",
+                    "parameter combinations that produce a stable memory bump. "
+                    "Requires noise floor data (baseline_A_hat.csv) — auto-runs "
+                    "ring-noise-floor with default parameters if it is missing.",
     )
     _add_ring_common(ring_cal_parser)
     ring_cal_parser.add_argument(
@@ -796,7 +797,7 @@ Examples:
     )
     ring_cal_parser.add_argument(
         "--amplitudes", type=float, nargs="+",
-        default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
+        default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0],
         help="Stimulus amplitude factors to sweep (default: 5 10 15 20 25 30)",
     )
     ring_cal_parser.add_argument(
@@ -809,12 +810,9 @@ Examples:
         help="Number of trials per grid point (default: 50)",
     )
     ring_cal_parser.add_argument(
-        "--n_baseline", type=int, default=100,
-        help="Number of no-stimulus baseline trials per w_inter for noise floor (default: 100)",
-    )
-    ring_cal_parser.add_argument(
         "--noise_percentile", type=float, default=95.0,
-        help="Percentile of baseline A_hat used as noise floor threshold (default: 95)",
+        help="Percentile of baseline A_hat used as noise floor threshold (default: 95). "
+             "Applied when reading cached baseline data.",
     )
     ring_cal_parser.add_argument(
         "--n_workers", type=int, default=None,
@@ -824,6 +822,245 @@ Examples:
         "--error_band", type=str, default="sem", choices=["sem", "sd"],
         help="Error band type for plots: 'sem' (default) or 'sd'.",
     )
+    ring_cal_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing CSV cache and recompute all conditions from scratch.",
+    )
+    ring_cal_parser.add_argument(
+        "--batch_chunk_size", type=int, default=50,
+        help="Max trials per simulation batch chunk to limit peak RAM usage (default: 50). "
+             "Lower values use less memory but may be slower.",
+    )
+
+    # =========================================================================
+    # RING-NOISE-FLOOR subcommand
+    # =========================================================================
+    ring_nf_parser = subparsers.add_parser(
+        "ring-noise-floor",
+        help="Estimate noise floor from no-stimulus baseline trials",
+        description="Run no-stimulus baseline trials and compute a noise floor threshold "
+                    "as the Nth percentile of bump amplitude under spontaneous noise. "
+                    "Saves baseline_A_hat.csv consumed automatically by ring-calibrate. "
+                    "Run this first for custom baseline parameters (n_baseline, percentile).",
+    )
+    _add_ring_common(ring_nf_parser)
+    ring_nf_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to run (default: WT only).",
+    )
+    ring_nf_parser.add_argument(
+        "--w_inter_values", type=float, nargs="+",
+        default=[2.0, 3.0, 4.0, 5.0, 6.0],
+        help="w_pyr_pyr_inter values for baseline sweep (default: 2.0 3.0 4.0 5.0 6.0)",
+    )
+    ring_nf_parser.add_argument(
+        "--n_baseline", type=int, default=100,
+        help="Number of no-stimulus trials per w_inter (default: 100)",
+    )
+    ring_nf_parser.add_argument(
+        "--noise_percentile", type=float, default=95.0,
+        help="Percentile of baseline A_hat used as threshold (default: 95)",
+    )
+    ring_nf_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_nf_parser.add_argument(
+        "--batch_chunk_size", type=int, default=50,
+        help="Max trials per simulation batch chunk (default: 50)",
+    )
+    ring_nf_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing baseline cache and recompute from scratch.",
+    )
+    ring_nf_parser.add_argument(
+        "--replot_only", action="store_true",
+        help="Rebuild noise-floor plots from cached baseline_A_hat.csv; "
+             "skips simulations.",
+    )
+
+    # =========================================================================
+    # RING-LESION subcommand
+    # =========================================================================
+    ring_lesion_parser = subparsers.add_parser(
+        "ring-lesion",
+        help="Systematic population lesion study (knockdown × population)",
+        description="Sweep knockdown level [0-100%%] for each population "
+                    "(PYR_recurrence, PV, SOM, VIP) and measure formation success "
+                    "rate and bump survival time. Produces a 4×2 panel figure.",
+    )
+    _add_ring_common(ring_lesion_parser)
+    ring_lesion_parser.add_argument(
+        "--populations", type=str, nargs="+",
+        default=["PYR_recurrence", "PV", "SOM", "VIP"],
+        help="Populations to knock down (default: all 4).",
+    )
+    ring_lesion_parser.add_argument(
+        "--knockdown_levels", type=float, nargs="+",
+        default=[0.0, 25.0, 50.0, 75.0, 100.0],
+        help="Knockdown percentages to sweep (default: 0 25 50 75 100).",
+    )
+    ring_lesion_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per knockdown level per population (default: 50).",
+    )
+    ring_lesion_parser.add_argument(
+        "--noise_floor", type=float, default=0.2,
+        help="Amplitude noise floor for formation/collapse detection (default: 0.2).",
+    )
+    ring_lesion_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto).",
+    )
+    ring_lesion_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing CSV cache and recompute from scratch.",
+    )
+
+    # =========================================================================
+    # RING-TAU-SWEEP subcommand
+    # =========================================================================
+    ring_tau_parser = subparsers.add_parser(
+        "ring-tau-sweep",
+        help="Sweep tau_adapt_pyr and measure bump dynamics",
+        description="Vary tau_adapt_pyr over a log-spaced range and measure "
+                    "bump survival time, diffusion coefficient, and oscillation "
+                    "frequency. Produces a 3-panel figure with shared log x-axis.",
+    )
+    _add_ring_common(ring_tau_parser)
+    ring_tau_parser.add_argument(
+        "--tau_values", type=float, nargs="+",
+        default=[50.0, 100.0, 200.0, 400.0, 600.0, 1000.0, 2000.0],
+        help="tau_adapt_pyr values to sweep in ms (default: 50 100 200 400 600 1000 2000).",
+    )
+    ring_tau_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per tau value (default: 50).",
+    )
+    ring_tau_parser.add_argument(
+        "--noise_floor", type=float, default=0.2,
+        help="Amplitude noise floor for collapse detection (default: 0.2).",
+    )
+    ring_tau_parser.add_argument(
+        "--osc_skip_initial_ms", type=float, default=TRANSIENT_SKIP_TIME_MS,
+        help=f"Initial delay window to skip before FFT oscillation-period estimation (ms, default: {TRANSIENT_SKIP_TIME_MS:.0f}).",
+    )
+    ring_tau_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto).",
+    )
+    ring_tau_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing CSV cache and recompute from scratch.",
+    )
+
+    # =========================================================================
+    # RING-PHASE-PLANE subcommand
+    # =========================================================================
+    ring_phase_parser = subparsers.add_parser(
+        "ring-phase-plane",
+        help="Phase plane bifurcation analysis (single decoupled node)",
+        description="Sweep I_ext_pyr offset in both directions on a single "
+                    "decoupled node (n_nodes=1, no ring connectivity) to detect "
+                    "bistability and visualise operating points. Produces a "
+                    "4-condition × 4-population S-curve grid.",
+    )
+    _add_ring_common(ring_phase_parser)
+    ring_phase_parser.add_argument(
+        "--conditions", type=str, nargs="+",
+        default=["WT", "a7_KO", "b2_KO", "WT_APP"],
+        help="Conditions to analyse (default: WT a7_KO b2_KO WT_APP).",
+    )
+    ring_phase_parser.add_argument(
+        "--delta_I_min", type=float, default=-10.0,
+        help="Minimum additive current offset to PYR I0 (default: -10.0).",
+    )
+    ring_phase_parser.add_argument(
+        "--delta_I_max", type=float, default=15.0,
+        help="Maximum additive current offset to PYR I0 (default: 15.0).",
+    )
+    ring_phase_parser.add_argument(
+        "--delta_I_steps", type=int, default=60,
+        help="Number of current sweep steps (default: 60).",
+    )
+    ring_phase_parser.add_argument(
+        "--settle_ms", type=float, default=100.0,
+        help="Settling window at end of each step for averaging (ms, default: 100).",
+    )
+    ring_phase_parser.add_argument(
+        "--step_ms", type=float, default=500.0,
+        help="Duration of each integration step (ms, default: 500).",
+    )
+    ring_phase_parser.add_argument(
+        "--bistable_threshold", type=float, default=1.0,
+        help="PYR rate difference (Hz) between UP/DOWN sweeps for bistability (default: 1.0).",
+    )
+
+    # =========================================================================
+    # RING-TEMPORAL-DISSECTION subcommand
+    # =========================================================================
+    ring_dissect_parser = subparsers.add_parser(
+        "ring-temporal-dissection",
+        help="Single clean trial temporal dissection at 3 ring locations",
+        description="Run a single noise-free trial and plot firing rates of all 4 "
+                    "populations plus adaptation current at the center node, +90°, "
+                    "and +180° (antipodal). Produces a 5×3 panel figure.",
+    )
+    _add_ring_common(ring_dissect_parser)
+    ring_dissect_parser.add_argument(
+        "--condition", type=str, default="WT",
+        help="Experimental condition (default: WT).",
+    )
+    ring_dissect_parser.add_argument(
+        "--noise_floor", type=float, default=0.2,
+        help="Amplitude noise floor for collapse detection (default: 0.2).",
+    )
+
+    # =========================================================================
+    # RING-ASYMMETRY subcommand
+    # =========================================================================
+    ring_asym_parser = subparsers.add_parser(
+        "ring-asymmetry",
+        help="L/R asymmetry analysis across conditions and trials",
+        description=(
+            "Run N trials per condition, each with a unique noisy settling "
+            "period before the cue, so the pre-cue spontaneous state varies. "
+            "Measures left/right asymmetry before the cue and during the delay "
+            "period, then tests: (1) is the average asymmetry balanced at zero? "
+            "(2) does pre-cue asymmetry predict delay asymmetry? "
+            "Also generates full visualisations for the worst-case trial per "
+            "condition (highest |delay asymmetry|)."
+        ),
+    )
+    _add_ring_common(ring_asym_parser)
+    ring_asym_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to analyse (default: WT WT_APP a7_KO_APP). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_asym_parser.add_argument(
+        "--n_trials", type=int, default=100,
+        help="Number of trials per condition (default: 100)",
+    )
+    ring_asym_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto)",
+    )
+    ring_asym_parser.add_argument(
+        "--random_cue_location", action="store_true", default=False,
+        help="Randomise the cue location uniformly in [0°, 360°) for each trial, "
+             "independently of the simulation seed. When disabled (default), all trials "
+             "use STIM_CENTER_DEG (180°). With a continuous random angle, left and right "
+             "node counts are balanced (no structural pre-cue bias).",
+    )
+    ring_asym_parser.add_argument(
+        "--snap_cue_to_node", action="store_true", default=False,
+        help="Snap the cue centre to the nearest node angle before presenting the stimulus. "
+             "For the fixed default cue (180°) and even N, 180° is always exactly on a node "
+             "so snapping has no effect. For random cue locations this reintroduces a "
+             "one-node structural imbalance (left has one more node than right). "
+             "Disabled by default.",
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -832,7 +1069,9 @@ Examples:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
               "'ring-run', 'ring-study', 'ring-diffusion', 'ring-drift-field', "
-              "'ring-distractor-sweep', or 'ring-calibrate'.")
+              "'ring-distractor-sweep', 'ring-noise-floor', 'ring-calibrate', "
+              "'ring-lesion', 'ring-tau-sweep', 'ring-phase-plane', "
+              "'ring-temporal-dissection', or 'ring-asymmetry'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -858,6 +1097,24 @@ Examples:
     elif args.command == "ring-calibrate":
         from .ring.cli import cmd_calibrate as cmd_ring_calibrate
         cmd_ring_calibrate(args)
+    elif args.command == "ring-noise-floor":
+        from .ring.cli import cmd_noise_floor as _cmd
+        _cmd(args)
+    elif args.command == "ring-lesion":
+        from .ring.cli import cmd_lesion as _cmd
+        _cmd(args)
+    elif args.command == "ring-tau-sweep":
+        from .ring.cli import cmd_tau_sweep as _cmd
+        _cmd(args)
+    elif args.command == "ring-phase-plane":
+        from .ring.cli import cmd_phase_plane as _cmd
+        _cmd(args)
+    elif args.command == "ring-temporal-dissection":
+        from .ring.cli import cmd_temporal_dissection as _cmd
+        _cmd(args)
+    elif args.command == "ring-asymmetry":
+        from .ring.cli import cmd_asymmetry as _cmd
+        _cmd(args)
     else:
         parser.print_help()
         sys.exit(1)
