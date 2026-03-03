@@ -4817,6 +4817,25 @@ ASYM_PRE_CUE_WINDOW_MS: float = 500.0
 _asym_sim_args: Optional[dict] = None
 
 
+def _balance_cue_location(center_deg: float, ring_params: RingParams) -> float:
+    """Place cue to guarantee equal left/right node counts in the asymmetry index.
+
+    Even N: placing the cue exactly on a node causes the antipodal node (offset
+    exactly -180°) to fall in the left mask, giving left=N/2, right=N/2-1.
+    Fix: shift by half a node-step so the cue sits strictly between two nodes.
+    Then no node has offset 0 or ±180°, and left=right=N/2.
+
+    Odd N: the antipodal position (cue ± 180°) is never on a node, so snapping
+    to the nearest node already gives left=right=(N-1)/2 — no imbalance.
+    """
+    nearest_idx = ring_params.angle_to_node(center_deg)
+    if ring_params.n_nodes % 2 == 0:
+        return (ring_params.node_to_angle_deg(nearest_idx)
+                + ring_params.angular_spacing_deg / 2) % 360.0
+    else:
+        return ring_params.node_to_angle_deg(nearest_idx)
+
+
 def _asym_init_worker(
     base_params: CircuitParams,
     ring_params: RingParams,
@@ -4825,7 +4844,7 @@ def _asym_init_worker(
     delay_ms: float,
     record_dt_ms: float,
     random_cue_location: bool = False,
-    snap_cue_to_node: bool = False,
+    balance_cue: bool = True,
 ) -> None:
     """Initialise worker process for asymmetry trials."""
     global _asym_sim_args
@@ -4837,7 +4856,7 @@ def _asym_init_worker(
         'delay_ms': delay_ms,
         'record_dt_ms': record_dt_ms,
         'random_cue_location': random_cue_location,
-        'snap_cue_to_node': snap_cue_to_node,
+        'balance_cue': balance_cue,
     }
 
 
@@ -4866,19 +4885,17 @@ def _asym_run_single(job: tuple) -> dict:
 
     # --- Determine cue location for this trial ---
     random_cue_location: bool = cfg.get('random_cue_location', False)
-    snap_cue_to_node: bool = cfg.get('snap_cue_to_node', False)
+    balance_cue: bool = cfg.get('balance_cue', True)
 
     if random_cue_location:
-        # Use a separate RNG (XOR-masked seed) so the cue angle is independent
-        # of the simulation noise seed and deterministically reproducible.
+        # Continuous random angle → left and right counts are inherently equal;
+        # no balance correction needed.
         cue_rng = np.random.default_rng(int(seed) ^ 0xA5A5A5A5)
         center_deg = float(cue_rng.uniform(0.0, 360.0))
+    elif balance_cue:
+        center_deg = _balance_cue_location(STIM_CENTER_DEG, cfg['ring_params'])
     else:
         center_deg = STIM_CENTER_DEG
-
-    if snap_cue_to_node:
-        rp = cfg['ring_params']
-        center_deg = rp.node_to_angle_deg(rp.angle_to_node(center_deg))
 
     stimuli = [RingStimulus(
         center_deg=center_deg, amplitude=actual_current,
@@ -4975,7 +4992,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     n_trials = args.n_trials
     n_workers = _resolve_workers(args)
     random_cue_location: bool = getattr(args, 'random_cue_location', False)
-    snap_cue_to_node: bool = getattr(args, 'snap_cue_to_node', False)
+    balance_cue: bool = not getattr(args, 'no_cue_balance', False)
 
     conn_label = _connectivity_label(ring_params)
     amp_label = f"amp{amp:g}"
@@ -4986,22 +5003,37 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     )
     os.makedirs(out_dir, exist_ok=True)
 
-    # --- Determine fixed-cue on-node status for diagnostics ---
-    _nearest_node = ring_params.angle_to_node(STIM_CENTER_DEG)
-    _snapped_deg = ring_params.node_to_angle_deg(_nearest_node)
-    _on_node = abs(_snapped_deg - STIM_CENTER_DEG) < 1e-6
-
-    _snap_note = " (snapped to nearest node)" if snap_cue_to_node else ""
-    if random_cue_location:
-        cue_label = f"random [0°, 360°){_snap_note}"
+    # --- Even-N warning and cue placement diagnostics ---
+    N = ring_params.n_nodes
+    even_n = (N % 2 == 0)
+    if even_n and not random_cue_location:
+        if balance_cue:
+            _effective_cue = _balance_cue_location(STIM_CENTER_DEG, ring_params)
+            _balance_note = (
+                f"  [N={N} is even] Cue placed at {_effective_cue:.4f}° "
+                f"(half-step between nodes) to balance left/right counts."
+            )
+        else:
+            _bias = -1.0 / (N - 1)
+            _balance_note = (
+                f"  WARNING: N={N} is even and --no_cue_balance is set. "
+                f"Cue at {STIM_CENTER_DEG:.1f}° falls exactly on a node → "
+                f"structural pre-cue bias ≈ {_bias:.4f} (left has one extra node)."
+            )
     else:
-        cue_label = f"{STIM_CENTER_DEG:.1f}° (fixed, on-node: {_on_node}){_snap_note}"
+        _balance_note = None
 
-    # Used in plot titles to indicate cue mode
     if random_cue_location:
-        _cue_title = "cue@random" + (" (snapped)" if snap_cue_to_node else "")
+        cue_label = "random [0°, 360°)  (no balance correction needed)"
+        _cue_title = "cue@random"
+    elif balance_cue:
+        _eff = _balance_cue_location(STIM_CENTER_DEG, ring_params)
+        _strategy = "between nodes" if even_n else "on nearest node"
+        cue_label = f"{_eff:.4f}° (balanced, {_strategy})"
+        _cue_title = f"cue@{_eff:.2f}° (balanced)"
     else:
-        _cue_title = f"cue@{STIM_CENTER_DEG:.0f}°" + (" (snapped)" if snap_cue_to_node else "")
+        cue_label = f"{STIM_CENTER_DEG:.1f}° (raw, no balance)"
+        _cue_title = f"cue@{STIM_CENTER_DEG:.0f}° (unbalanced)"
 
     _print_config(args, amp, base_params, 0.0, ring_params)
     print(f"\nAsymmetry experiment:")
@@ -5011,6 +5043,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
           f"pre-cue window: {ASYM_PRE_CUE_WINDOW_MS:.0f} ms,  "
           f"delay: {args.delay_ms:.0f} ms")
     print(f"  Cue location: {cue_label}")
+    if _balance_note:
+        print(_balance_note)
 
     # --- Connectivity ---
     connectivity = RingConnectivity.from_params(ring_params)
@@ -5031,11 +5065,11 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     and abs(float(r.get('amplitude', 0)) - amp) < 1e-9
                     for r in cached_rows
                 )
-                # Validate cue mode: check random_cue and snap_cue flags match
+                # Validate cue mode: check random_cue and balance_cue flags match
                 if params_ok and 'random_cue' in cached_rows[0]:
                     cached_random = bool(int(cached_rows[0].get('random_cue', 0)))
-                    cached_snap = bool(int(cached_rows[0].get('snap_cue', 0)))
-                    if cached_random != random_cue_location or cached_snap != snap_cue_to_node:
+                    cached_balance = bool(int(cached_rows[0].get('balance_cue', 1)))
+                    if cached_random != random_cue_location or cached_balance != balance_cue:
                         params_ok = False
             else:
                 params_ok = False  # old format — no validation columns
@@ -5080,7 +5114,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         init_args = (
             base_params, ring_params, connectivity,
             amp, args.delay_ms, args.record_dt_ms,
-            random_cue_location, snap_cue_to_node,
+            random_cue_location, balance_cue,
         )
         if n_workers > 1 and len(jobs) > 1:
             with ProcessPoolExecutor(
@@ -5123,7 +5157,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
             writer = csv.DictWriter(f, fieldnames=[
                 'condition', 'trial_idx', 'seed', 'cue_deg',
                 'pre_cue_asym', 'delay_asym', 'delay_ms', 'amplitude',
-                'random_cue', 'snap_cue',
+                'random_cue', 'balance_cue',
             ])
             writer.writeheader()
             for r in sorted(all_results, key=lambda r: (r['cond_key'], r['trial_idx'])):
@@ -5137,7 +5171,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     'delay_ms': args.delay_ms,
                     'amplitude': amp,
                     'random_cue': int(random_cue_location),
-                    'snap_cue': int(snap_cue_to_node),
+                    'balance_cue': int(balance_cue),
                 })
         print(f"\nTrial data → {csv_path}")
 

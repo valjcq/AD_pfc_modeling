@@ -1054,12 +1054,14 @@ Examples:
              "node counts are balanced (no structural pre-cue bias).",
     )
     ring_asym_parser.add_argument(
-        "--snap_cue_to_node", action="store_true", default=False,
-        help="Snap the cue centre to the nearest node angle before presenting the stimulus. "
-             "For the fixed default cue (180°) and even N, 180° is always exactly on a node "
-             "so snapping has no effect. For random cue locations this reintroduces a "
-             "one-node structural imbalance (left has one more node than right). "
-             "Disabled by default.",
+        "--no_cue_balance", action="store_true", default=False,
+        help="Disable the automatic cue-placement balance correction (on by default). "
+             "When enabled (default), for even N the cue is placed at a half-step between "
+             "two nodes so that left and right node counts are exactly equal (N/2 each); "
+             "for odd N the cue is snapped to the nearest node (already balanced). "
+             "Use --no_cue_balance to place the cue at the raw STIM_CENTER_DEG (180°), "
+             "which for even N lands exactly on a node and creates a one-node structural "
+             "pre-cue bias of -1/(N-1).",
     )
 
     # Parse arguments
