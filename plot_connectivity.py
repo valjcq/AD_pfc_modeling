@@ -31,15 +31,9 @@ def plot_connectivity_matrices(
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
     # --- Title ---
-    profile = ring_params.pyr_profile_type
-    pv_type = ring_params.pv_global_type
-    if profile == "compte":
-        pyr_label = f"J+={ring_params.J_plus}, σ_pyr={ring_params.sigma_pyr_deg:.1f}°"
-    else:
-        pyr_label = f"w_pyr_inter={ring_params.w_pyr_pyr_inter}, σ_pyr={ring_params.sigma_pyr_deg:.1f}°"
+    pyr_label = f"w_pyr_inter={ring_params.w_pyr_pyr_inter}, σ_pyr={ring_params.sigma_pyr_deg:.1f}°"
     fig.suptitle(
-        f"Ring connectivity  |  N={n},  {pyr_label},  "
-        f"w_pv_global={ring_params.w_pv_global},  profile={profile},  pv={pv_type}",
+        f"Ring connectivity  |  N={n},  {pyr_label},  w_pv_global={ring_params.w_pv_global}",
         fontsize=11,
     )
 
@@ -84,11 +78,7 @@ def main():
     parser.add_argument("--n_nodes", type=int, default=128)
     parser.add_argument("--w_pyr_pyr_inter", type=float, default=4.0)
     parser.add_argument("--sigma_pyr_deg", type=float, default=30.0)
-    parser.add_argument("--pyr_profile", choices=["gaussian", "compte"], default="gaussian")
-    parser.add_argument("--J_plus", type=float, default=1.6)
     parser.add_argument("--w_pv_global", type=float, default=4.0)
-    parser.add_argument("--pv_profile", choices=["uniform", "gaussian"], default="uniform")
-    parser.add_argument("--sigma_pv_deg", type=float, default=180.0)
     parser.add_argument("--save", type=str, default=None, help="Save path for the figure")
     args = parser.parse_args()
 
@@ -96,11 +86,7 @@ def main():
         n_nodes=args.n_nodes,
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
     )
 
     fig = plot_connectivity_matrices(ring_params, save_path=args.save)
