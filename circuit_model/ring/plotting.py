@@ -3735,59 +3735,69 @@ def plot_asymmetry_correlation(
 
     cmap, norm = _asym_cmap_norm()
 
-    fig, axes = plt.subplots(1, n_conds, figsize=(4.5 * n_conds, 4.5))
-    if n_conds == 1:
-        axes = [axes]
+    # Two rows: top = mean pre-cue, bottom = last time-step before cue
+    has_last = all('last_pre_cue' in data_by_condition[k] and
+                   not np.all(np.isnan(data_by_condition[k]['last_pre_cue']))
+                   for k in conds)
+    n_rows = 2 if has_last else 1
+    row_keys   = ['pre_cue', 'last_pre_cue'] if has_last else ['pre_cue']
+    row_labels = ['Mean pre-cue A (500 ms window)', 'Last A before cue (instantaneous)'] \
+                 if has_last else ['Mean pre-cue A (500 ms window)']
 
-    for ax, cond_key in zip(axes, conds):
-        d = data_by_condition[cond_key]
-        cname = STUDY_CONDITIONS[cond_key].name
-        pre = np.asarray(d['pre_cue'], dtype=float)
-        delay = np.asarray(d['delay'], dtype=float)
+    fig, axes_2d = plt.subplots(n_rows, n_conds,
+                                figsize=(4.5 * n_conds, 4.5 * n_rows),
+                                squeeze=False)
 
-        # Per-panel symmetric limits with equal x/y scales.
-        # Small headroom keeps the most extreme points close to the frame.
-        lim = float(np.max(np.abs(np.concatenate([pre, delay])))) * 1.05
-        if lim <= 0.0:
-            lim = 1e-6
-        elif lim < 0.01:
-            lim = 0.01
-
-        ax.scatter(pre, delay, c=delay, cmap=cmap, norm=norm,
+    def _scatter_panel(ax, pre, delay, cname, xlabel, cond_key, first_col):
+        valid = ~(np.isnan(pre) | np.isnan(delay))
+        pre_v, delay_v = pre[valid], delay[valid]
+        if len(pre_v) == 0:
+            ax.set_visible(False)
+            return
+        lim = float(np.max(np.abs(np.concatenate([pre_v, delay_v])))) * 1.05
+        lim = max(lim, 0.01)
+        ax.scatter(pre_v, delay_v, c=delay_v, cmap=cmap, norm=norm,
                    s=25, alpha=0.7, linewidths=0)
-
-        # Pearson r annotation
-        if len(pre) > 2:
+        if len(pre_v) > 2:
             try:
                 from scipy.stats import pearsonr
-                r, p = pearsonr(pre, delay)
+                r, p = pearsonr(pre_v, delay_v)
                 star = ("***" if p < 0.001 else "**" if p < 0.01
                         else "*" if p < 0.05 else "ns")
                 ax.text(0.05, 0.95, f"r = {r:.2f} {star}",
-                        transform=ax.transAxes, fontsize=9,
-                        va='top', ha='left',
+                        transform=ax.transAxes, fontsize=9, va='top', ha='left',
                         bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
             except ImportError:
                 pass
-
-        # Reference lines (panel-specific scale)
         ax.plot([-lim, lim], [-lim, lim], color='gray', ls='--', lw=0.8, alpha=0.5, zorder=0)
         ax.axhline(0, color='gray', ls=':', lw=0.6, alpha=0.5)
         ax.axvline(0, color='gray', ls=':', lw=0.6, alpha=0.5)
-
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
-        ax.set_xlabel("Pre-cue asymmetry", fontsize=10)
-        if ax is axes[0]:
+        ax.set_xlabel(xlabel, fontsize=9)
+        if first_col:
             ax.set_ylabel("Delay asymmetry", fontsize=10)
         ax.set_title(cname, fontsize=11, fontweight='bold',
                      color=CONDITION_COLORS.get(cond_key, 'black'))
         ax.set_aspect('equal')
 
-    # Shared colorbar
+    for row_i, (rkey, rlabel) in enumerate(zip(row_keys, row_labels)):
+        for col_i, cond_key in enumerate(conds):
+            d = data_by_condition[cond_key]
+            _scatter_panel(
+                ax=axes_2d[row_i, col_i],
+                pre=np.asarray(d[rkey], dtype=float),
+                delay=np.asarray(d['delay'], dtype=float),
+                cname=STUDY_CONDITIONS[cond_key].name,
+                xlabel=rlabel,
+                cond_key=cond_key,
+                first_col=(col_i == 0),
+            )
+
+    # Shared colorbar on the last column of last row
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    fig.colorbar(sm, ax=axes[-1], fraction=0.04, pad=0.02,
+    fig.colorbar(sm, ax=axes_2d[-1, -1], fraction=0.04, pad=0.02,
                  label='← left        right →')
 
     fig.suptitle(f"Pre-cue vs Delay Asymmetry{title_suffix}", fontsize=13, fontweight='bold')
@@ -3797,6 +3807,96 @@ def plot_asymmetry_correlation(
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
 
     return fig
+
+
+def _pairwise_bracket_stars(p) -> str:
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return 'n.s.'
+    if p < 0.001: return '***'
+    if p < 0.01:  return '**'
+    if p < 0.05:  return '*'
+    return 'n.s.'
+
+
+def _draw_pairwise_brackets(ax, conds, pairwise_stats, period_key, base_ylim):
+    """Draw all pairwise significance brackets on a bar-chart axes.
+
+    Parameters
+    ----------
+    ax : Axes
+    conds : list[str]   condition keys in x-axis order
+    pairwise_stats : list[dict]  each dict has 'period', 'cond_a', 'cond_b', 'p_u'
+    period_key : str  value of 'period' to filter on
+    base_ylim : float  top of the bar region (used to anchor brackets above bars)
+    """
+    if not pairwise_stats:
+        return
+    pairs = [
+        (pw['cond_a'], pw['cond_b'], pw['p_u'])
+        for pw in pairwise_stats
+        if pw.get('period') == period_key
+        and pw['cond_a'] in conds and pw['cond_b'] in conds
+    ]
+    pairs.sort(key=lambda t: abs(conds.index(t[1]) - conds.index(t[0])))
+    bracket_unit = base_ylim * 0.10
+    occupied: dict = {}
+    max_level = 0
+    for ca, cb, p_val in pairs:
+        xi_a = conds.index(ca)
+        xi_b = conds.index(cb)
+        lo, hi = min(xi_a, xi_b), max(xi_a, xi_b)
+        level = max((occupied.get(xi, 0) for xi in range(lo, hi + 1)), default=0) + 1
+        for xi in range(lo, hi + 1):
+            occupied[xi] = max(occupied.get(xi, 0), level)
+        y_bot = base_ylim * 1.02 + (level - 1) * bracket_unit * 1.5
+        color = 'black' if p_val < 0.05 else '#999999'
+        label = _pairwise_bracket_stars(p_val)
+        ax.plot([lo, lo, hi, hi], [y_bot, y_bot + bracket_unit * 0.6,
+                                    y_bot + bracket_unit * 0.6, y_bot],
+                lw=0.9, c=color, clip_on=False)
+        ax.text((lo + hi) / 2, y_bot + bracket_unit * 0.6, label,
+                ha='center', va='bottom', fontsize=7.5, fontweight='bold',
+                color=color, clip_on=False)
+        max_level = max(max_level, level)
+    if max_level > 0:
+        new_top = base_ylim * 1.02 + max_level * bracket_unit * 1.5 + bracket_unit
+        ax.set_ylim(0, max(ax.get_ylim()[1], new_top))
+
+
+def _new_metric_bar(ax, conds, data_by_condition, key, title, ylabel,
+                    pairwise_stats=None):
+    """Bar chart ± SEM for a per-trial scalar metric stored in data_by_condition.
+
+    If *pairwise_stats* is provided and contains entries whose 'period' matches
+    *key*, significance brackets are drawn above the bars.
+    """
+    from ..study import STUDY_CONDITIONS
+    x = np.arange(len(conds))
+    labels = [STUDY_CONDITIONS[k].name for k in conds]
+    vals = np.array([
+        np.nanmean(data_by_condition[k].get(key, np.array([np.nan]))) for k in conds
+    ])
+    sems = np.array([
+        np.nanstd(data_by_condition[k].get(key, np.array([np.nan])), ddof=1)
+        / np.sqrt(np.sum(~np.isnan(data_by_condition[k].get(key, np.array([np.nan])))))
+        if np.sum(~np.isnan(data_by_condition[k].get(key, np.array([np.nan])))) > 1 else 0.0
+        for k in conds
+    ])
+    colors = [CONDITION_COLORS.get(k, '#888888') for k in conds]
+    ax.bar(x, vals, yerr=sems, capsize=5, color=colors,
+           edgecolor='black', linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    base = max(float(np.nanmax(vals + sems)) * 1.6, 1e-6)
+    ax.set_ylim(0, base)
+    if pairwise_stats:
+        _draw_pairwise_brackets(ax, conds, pairwise_stats, key, base)
+    legend_pw = "pairwise (MWU):\n* p<0.05\n** p<0.01\n*** p<0.001\nn.s. = not significant"
+    ax.text(0.98, 0.98, legend_pw, transform=ax.transAxes,
+            ha='right', va='top', fontsize=7, family='monospace',
+            bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
 
 
 def plot_asymmetry_summary(
@@ -3844,50 +3944,14 @@ def plot_asymmetry_summary(
     period_hatches = ['///', None]
 
     def _stars(p):
-        if p is None or (isinstance(p, float) and np.isnan(p)):
-            return 'n.s.'
-        if p < 0.001: return '***'
-        if p < 0.01:  return '**'
-        if p < 0.05:  return '*'
-        return 'n.s.'
-
-    def _draw_bracket(ax, x1, x2, y_bot, h, label, color='black', fs=7.5):
-        ax.plot([x1, x1, x2, x2], [y_bot, y_bot + h, y_bot + h, y_bot],
-                lw=0.9, c=color, clip_on=False)
-        ax.text((x1 + x2) / 2, y_bot + h, label,
-                ha='center', va='bottom', fontsize=fs, fontweight='bold',
-                color=color, clip_on=False)
+        return _pairwise_bracket_stars(p)
 
     def _add_all_pairwise_brackets(ax, period_key, base_ylim):
-        """Draw ALL pairwise brackets (sig in black, n.s. in gray) for a given period."""
-        if not pairwise_stats:
-            return
-        pairs = [
-            (pw['cond_a'], pw['cond_b'], pw['p_u'])
-            for pw in pairwise_stats
-            if pw.get('period') == period_key
-            and pw['cond_a'] in conds and pw['cond_b'] in conds
-        ]
-        pairs.sort(key=lambda t: abs(conds.index(t[1]) - conds.index(t[0])))
-        bracket_unit = base_ylim * 0.10
-        occupied: dict = {}
-        max_level = 0
-        for ca, cb, p_val in pairs:
-            xi_a = conds.index(ca)
-            xi_b = conds.index(cb)
-            lo, hi = min(xi_a, xi_b), max(xi_a, xi_b)
-            level = max((occupied.get(xi, 0) for xi in range(lo, hi + 1)), default=0) + 1
-            for xi in range(lo, hi + 1):
-                occupied[xi] = max(occupied.get(xi, 0), level)
-            y_bot = base_ylim * 1.02 + (level - 1) * bracket_unit * 1.5
-            color = 'black' if p_val < 0.05 else '#999999'
-            _draw_bracket(ax, lo, hi, y_bot, bracket_unit * 0.6, _stars(p_val), color=color)
-            max_level = max(max_level, level)
-        if max_level > 0:
-            new_top = base_ylim * 1.02 + max_level * bracket_unit * 1.5 + bracket_unit
-            ax.set_ylim(0, max(ax.get_ylim()[1], new_top))
+        _draw_pairwise_brackets(ax, conds, pairwise_stats, period_key, base_ylim)
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 5.5))
+    fig, axes_2d = plt.subplots(2, 3, figsize=(14, 10))
+    axes = axes_2d[0]           # top row: existing three panels
+    axes_new = axes_2d[1]       # bottom row: two new temporal panels + one empty
 
     # --- Panel 1: mean asymmetry ± SEM (both periods, both annotated vs 0) ---
     ax = axes[0]
@@ -3961,12 +4025,12 @@ def plot_asymmetry_summary(
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
     ax2.set_ylabel("Mean |asymmetry| ± SEM")
-    ax2.set_title("Magnitude — Delay\n(all pairwise comparisons)")
+    ax2.set_title("Magnitude — Delay")
     base_d = max((abs_d + sem_d).max() * 1.6, 0.005)
     ax2.set_ylim(0, base_d)
     _add_all_pairwise_brackets(ax2, 'delay', base_d)
 
-    legend_pw = "pairwise (MWU):\n■ black = p<0.05\n■ gray  = n.s."
+    legend_pw = "pairwise (MWU):\n* p<0.05\n** p<0.01\n*** p<0.001\nn.s. = not significant"
     ax2.text(0.98, 0.98, legend_pw, transform=ax2.transAxes,
              ha='right', va='top', fontsize=7, family='monospace',
              bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
@@ -3985,13 +4049,29 @@ def plot_asymmetry_summary(
     ax3.set_xticks(x)
     ax3.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
     ax3.set_ylabel("Mean |asymmetry| ± SEM")
-    ax3.set_title("Magnitude — Pre-cue\n(all pairwise comparisons)")
+    ax3.set_title("Magnitude — Pre-cue")
     base_p = max((abs_p + sem_p).max() * 1.6, 0.005)
     ax3.set_ylim(0, base_p)
     _add_all_pairwise_brackets(ax3, 'pre_cue', base_p)
     ax3.text(0.98, 0.98, legend_pw, transform=ax3.transAxes,
              ha='right', va='top', fontsize=7, family='monospace',
              bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
+
+    # --- Panel 4: Mean |A(t)| per trial (temporal, does not cancel) ---
+    ax4 = axes_new[0]
+    _new_metric_bar(ax4, conds, data_by_condition, 'mean_abs_asym',
+                    "Mean |A(t)| — Delay\n(magnitude, does not cancel)",
+                    "Mean |A(t)| ± SEM",
+                    pairwise_stats=pairwise_stats)
+
+    # --- Panel 5: Std of A(t) (amplitude + side variability) ---
+    ax5 = axes_new[1]
+    _new_metric_bar(ax5, conds, data_by_condition, 'asym_std',
+                    "Std(A(t)) — Delay\n(amplitude + side variability)",
+                    "Std(A(t)) ± SEM",
+                    pairwise_stats=pairwise_stats)
+
+    axes_new[2].set_visible(False)
 
     fig.suptitle(f"L/R Asymmetry Summary{title_suffix}", fontsize=13, fontweight='bold')
     fig.tight_layout()
