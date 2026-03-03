@@ -2849,21 +2849,55 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         record_dt_ms = getattr(args, 'record_dt_ms', 5.0)
         T_ms_short = T_ms_full - BURN_IN_MS
 
-        # --- Noise floor: auto-trigger ring-noise-floor if baseline not cached ---
-        conditions_missing_baseline = [
-            ck for ck in conditions_to_run
-            if not _is_baseline_cached(os.path.join(out_dir, ck), ck, w_inter_values)
-        ]
-        conditions_with_cached_baseline = [
-            ck for ck in conditions_to_run
-            if ck not in conditions_missing_baseline
-        ]
+        # --- Noise floor: auto-trigger ring-noise-floor if baseline is missing/incomplete ---
+        baseline_n_trials_target = 100
+        conditions_missing_baseline: list[str] = []
+        condition_missing_w: dict[str, list[float]] = {}
+        trials_to_add_by_key: dict[tuple[str, float], int] = {}
+        trial_start_idx_by_key: dict[tuple[str, float], int] = {}
+
+        # Preload cached baselines for all conditions to run
+        for ck in conditions_to_run:
+            cond_dir_load = os.path.join(out_dir, ck)
+            cached_nt, cached_base = _load_calibrate_baseline(
+                cond_dir_load, ck, w_inter_values, noise_percentile)
+            noise_thresholds.update(cached_nt)
+            baseline_A_hat_data.update(cached_base)
+
+        for ck in conditions_to_run:
+            cond_dir_check = os.path.join(out_dir, ck)
+            trial_counts, has_trial_metadata = _load_baseline_trial_counts(cond_dir_check, ck)
+            missing_ws: list[float] = []
+
+            for w in w_inter_values:
+                key = (ck, w)
+                if key not in noise_thresholds:
+                    missing_ws.append(w)
+                    trials_to_add_by_key[key] = baseline_n_trials_target
+                    trial_start_idx_by_key[key] = 0
+                    continue
+
+                if has_trial_metadata:
+                    cached_trials = int(trial_counts.get(key, 0))
+                    if cached_trials < baseline_n_trials_target:
+                        missing_ws.append(w)
+                        trials_to_add_by_key[key] = baseline_n_trials_target - cached_trials
+                        trial_start_idx_by_key[key] = cached_trials
+
+            if missing_ws:
+                conditions_missing_baseline.append(ck)
+                condition_missing_w[ck] = missing_ws
+
         if conditions_missing_baseline:
+            missing_desc = [
+                f"{ck} (missing w_inter: {', '.join(_fmt(w) for w in condition_missing_w.get(ck, []))})"
+                for ck in conditions_missing_baseline
+            ]
             print(
-                f"\nNo noise floor data found for: "
-                f"{', '.join(conditions_missing_baseline)}\n"
+                f"\nNoise floor cache incomplete for: "
+                f"{'; '.join(missing_desc)}\n"
                 f"  Auto-running ring-noise-floor with default parameters "
-                f"(n_baseline=100, noise_percentile={noise_percentile}).\n"
+                f"(n_baseline={baseline_n_trials_target}, noise_percentile={noise_percentile}).\n"
                 f"  Run 'ring-noise-floor' separately to customise these."
             )
             new_nt, new_base = _run_noise_floor_for_conditions(
@@ -2871,7 +2905,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 w_inter_values=w_inter_values,
                 ring_params_base=ring_params_base,
                 base_params=base_params,
-                n_baseline=100,
+                n_baseline=baseline_n_trials_target,
                 noise_percentile=noise_percentile,
                 out_dir=out_dir,
                 n_workers=n_workers,
@@ -2879,19 +2913,18 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 seed=args.seed,
                 delay_ms=args.delay_ms,
                 record_dt_ms=record_dt_ms,
+                w_inter_values_by_condition=condition_missing_w,
+                trials_to_add_by_key=trials_to_add_by_key,
+                trial_start_idx_by_key=trial_start_idx_by_key,
+                preserve_existing_cache=True,
             )
             noise_thresholds.update(new_nt)
             baseline_A_hat_data.update(new_base)
         else:
             print("  All noise floor baselines cached — skipping noise floor simulation")
 
-        # Load baselines for conditions that already had a cache
-        for ck in conditions_with_cached_baseline:
-            cond_dir_load = os.path.join(out_dir, ck)
-            cached_nt, cached_base = _load_calibrate_baseline(
-                cond_dir_load, ck, w_inter_values, noise_percentile)
-            noise_thresholds.update(cached_nt)
-            baseline_A_hat_data.update(cached_base)
+        # Report cached / loaded baselines
+        for ck in conditions_to_run:
             cond_label = STUDY_CONDITIONS[ck].name
             for w in w_inter_values:
                 key = (ck, w)
@@ -3089,10 +3122,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         thresholds_for_plot = {w: noise_thresholds[(ck, w)] for w in w_inter_values}
         # Noise floor histogram requires the full A_hat distribution (not available from old CSVs)
         if any(len(v) > 0 for v in baseline_for_plot.values()):
+            baseline_n_samples = int(sum(len(v) for v in baseline_for_plot.values()))
             plot_noise_floor_histogram(
                 baseline_for_plot, thresholds_for_plot,
                 save_path=os.path.join(cond_dir, "noise_floor.png"),
-                suptitle=f"Noise Floor ({cond_label}, {n_baseline} trials, p{noise_percentile:.0f})",
+                suptitle=f"Noise Floor ({cond_label}, n={baseline_n_samples} samples, p{noise_percentile:.0f})",
             )
             plt.close()
         else:
@@ -4791,7 +4825,7 @@ def _asym_run_single(job: tuple) -> dict:
     delay asymmetry from the full delay window after cue offset.
     """
     global _asym_sim_args
-    from .analysis import compute_bump_asymmetry, decode_bump_center
+    from .analysis import compute_bump_asymmetry, decode_bump_center, compute_asymmetry_temporal_metrics
 
     cfg = _asym_sim_args
     cond_key, trial_idx, seed = job
@@ -4832,21 +4866,36 @@ def _asym_run_single(job: tuple) -> dict:
     )
 
     asym = compute_bump_asymmetry(result)
-    if cfg.get('correct_asymmetry', True):
-        _, bump_amplitude = decode_bump_center(result, population=0)
-        asym = asym * bump_amplitude
+    _, bump_amplitude = decode_bump_center(result, population=0)
+
+    def _window_metric(mask: np.ndarray) -> float:
+        if not mask.any():
+            return 0.0
+        asym_w = asym[mask]
+        if not cfg.get('correct_asymmetry', True):
+            return float(asym_w.mean())
+        amp_w = bump_amplitude[mask]
+        denom = float(amp_w.sum())
+        if denom <= 1e-10:
+            return 0.0
+        return float((asym_w * amp_w).sum() / denom)
 
     # Pre-cue: last ASYM_PRE_CUE_WINDOW_MS before cue onset
     pre_mask = (
         (result.t_ms >= stim_onset - ASYM_PRE_CUE_WINDOW_MS)
         & (result.t_ms < stim_onset)
     )
-    pre_cue_asym = float(asym[pre_mask].mean()) if pre_mask.any() else 0.0
+    pre_cue_asym = _window_metric(pre_mask)
+    # Instantaneous A(t) at the single time step just before cue onset
+    last_pre_cue_asym = float(asym[pre_mask][-1]) if pre_mask.any() else 0.0
 
     # Delay: after stim offset + transient skip
     delay_start = stim_offset + TRANSIENT_SKIP_TIME_MS
     delay_mask = (result.t_ms >= delay_start) & (result.t_ms <= T_ms)
-    delay_asym = float(asym[delay_mask].mean()) if delay_mask.any() else 0.0
+    delay_asym = _window_metric(delay_mask)
+
+    # Temporal metrics on the raw (uncorrected) asymmetry timecourse
+    temporal = compute_asymmetry_temporal_metrics(asym[delay_mask], result.t_ms[delay_mask])
 
     del result
 
@@ -4856,8 +4905,11 @@ def _asym_run_single(job: tuple) -> dict:
         'seed': seed,
         'cue_deg': center_deg,
         'pre_cue_asym': pre_cue_asym,
+        'last_pre_cue_asym': last_pre_cue_asym,
         'delay_asym': delay_asym,
         'correct_asymmetry': bool(cfg.get('correct_asymmetry', True)),
+        'mean_abs_asym': temporal['mean_abs_asym'],
+        'asym_std': temporal['asym_std'],
     }
 
 
@@ -4967,7 +5019,14 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
           f"pre-cue window: {ASYM_PRE_CUE_WINDOW_MS:.0f} ms,  "
           f"delay: {args.delay_ms:.0f} ms")
     print(f"  Cue location: {cue_label}")
-    print(f"  Asymmetry correction: {'on (A(t) × bump amplitude)' if correct_asymmetry else 'off (raw A(t))'}")
+    print(
+        "  Asymmetry correction: "
+        + (
+            "on (weighted: Σ[A(t)·Amp(t)] / Σ[Amp(t)])"
+            if correct_asymmetry else
+            "off (raw mean of A(t))"
+        )
+    )
     if _balance_note:
         print(_balance_note)
 
@@ -5028,7 +5087,10 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                         'seed': int(r['seed']),
                         'cue_deg': float(r.get('cue_deg', STIM_CENTER_DEG)),
                         'pre_cue_asym': float(r['pre_cue_asym']),
+                        'last_pre_cue_asym': float(r['last_pre_cue_asym']) if r.get('last_pre_cue_asym', '') != '' else float('nan'),
                         'delay_asym': float(r['delay_asym']),
+                        'mean_abs_asym': float(r['mean_abs_asym']) if r.get('mean_abs_asym', '') != '' else float('nan'),
+                        'asym_std': float(r['asym_std']) if r.get('asym_std', '') != '' else float('nan'),
                     })
                     cached_indices[ck].add(int(r['trial_idx']))
                 n_cached = sum(len(v) for v in cached_indices.values())
@@ -5090,7 +5152,13 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         )
         pre_cue = np.array([t['pre_cue_asym'] for t in trials])
         delay = np.array([t['delay_asym'] for t in trials])
-        data_by_condition[cond_key] = {'pre_cue': pre_cue, 'delay': delay}
+        data_by_condition[cond_key] = {
+            'pre_cue': pre_cue,
+            'last_pre_cue': np.array([t.get('last_pre_cue_asym', float('nan')) for t in trials]),
+            'delay': delay,
+            'mean_abs_asym': np.array([t.get('mean_abs_asym', float('nan')) for t in trials]),
+            'asym_std': np.array([t.get('asym_std', float('nan')) for t in trials]),
+        }
 
         worst_idx = int(np.argmax(np.abs(delay)))
         worst_by_condition[cond_key] = trials[worst_idx]
@@ -5100,8 +5168,9 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         with open(csv_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
                 'condition', 'trial_idx', 'seed', 'cue_deg',
-                'pre_cue_asym', 'delay_asym', 'delay_ms', 'amplitude',
+                'pre_cue_asym', 'last_pre_cue_asym', 'delay_asym', 'delay_ms', 'amplitude',
                 'random_cue', 'balance_cue', 'correct_asymmetry',
+                'mean_abs_asym', 'asym_std',
             ])
             writer.writeheader()
             for r in sorted(all_results, key=lambda r: (r['cond_key'], r['trial_idx'])):
@@ -5111,12 +5180,15 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     'seed': r['seed'],
                     'cue_deg': r.get('cue_deg', STIM_CENTER_DEG),
                     'pre_cue_asym': r['pre_cue_asym'],
+                    'last_pre_cue_asym': r.get('last_pre_cue_asym', float('nan')),
                     'delay_asym': r['delay_asym'],
                     'delay_ms': args.delay_ms,
                     'amplitude': amp,
                     'random_cue': int(random_cue_location),
                     'balance_cue': int(balance_cue),
                     'correct_asymmetry': int(correct_asymmetry),
+                    'mean_abs_asym': r.get('mean_abs_asym', float('nan')),
+                    'asym_std': r.get('asym_std', float('nan')),
                 })
         print(f"\nTrial data → {csv_path}")
 
@@ -5162,9 +5234,10 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
             }
         print("  (* p<0.05  ** p<0.01  *** p<0.001)")
 
-    # --- Pairwise tests: asymmetry magnitude between conditions, both periods ---
+    # --- Pairwise tests: asymmetry magnitude between conditions, both periods + new metrics ---
     pairwise_stats: list[dict] = []
     if len(condition_keys) >= 2:
+        # Signed-magnitude tests for pre-cue / delay (existing behaviour: compare |scalar|)
         for period_key, period_label in [('delay', 'Delay'), ('pre_cue', 'Pre-cue')]:
             print(f"\nStatistical tests — pairwise |asymmetry| {period_label} (Mann-Whitney U):")
             print(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}")
@@ -5183,6 +5256,38 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                         'period': period_key,
                         'cond_a': ck_a, 'cond_b': ck_b,
                         'n_a': len(abs_a), 'n_b': len(abs_b),
+                        'u_stat': float(u_stat), 'p_u': float(p_u),
+                    })
+            print("  (* p<0.05  ** p<0.01  *** p<0.001)")
+
+        # Pairwise tests for the two new temporal metrics
+        for metric_key, metric_label in [('mean_abs_asym', 'Mean|A(t)|'), ('asym_std', 'Std(A(t))')]:
+            vals_by_cond = {ck: data_by_condition[ck].get(metric_key, np.array([]))
+                            for ck in condition_keys}
+            # Skip if all NaN (old CSV without these columns)
+            if all(np.all(np.isnan(v)) for v in vals_by_cond.values()):
+                continue
+            print(f"\nStatistical tests — pairwise {metric_label} (Mann-Whitney U):")
+            print(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}")
+            print("  " + "-" * 70)
+            for i, ck_a in enumerate(condition_keys):
+                for j, ck_b in enumerate(condition_keys):
+                    if j <= i:
+                        continue
+                    va = vals_by_cond[ck_a]
+                    vb = vals_by_cond[ck_b]
+                    va = va[~np.isnan(va)]
+                    vb = vb[~np.isnan(vb)]
+                    if len(va) < 2 or len(vb) < 2:
+                        continue
+                    u_stat, p_u = _scipy_stats.mannwhitneyu(va, vb, alternative='two-sided')
+                    stars = _sig_label(p_u)
+                    print(f"  {ck_a:<14}  {ck_b:<14}  {len(va):>4}  {len(vb):>4}  "
+                          f"{u_stat:>8.1f}  {p_u:.4f} {stars:<3}")
+                    pairwise_stats.append({
+                        'period': metric_key,
+                        'cond_a': ck_a, 'cond_b': ck_b,
+                        'n_a': len(va), 'n_b': len(vb),
                         'u_stat': float(u_stat), 'p_u': float(p_u),
                     })
             print("  (* p<0.05  ** p<0.01  *** p<0.001)")

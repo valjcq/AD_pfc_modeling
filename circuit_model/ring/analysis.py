@@ -712,6 +712,44 @@ def fit_oscillation_corrected_diffusion(
         return fit_diffusion_coefficient(lag_times, msd, fit_range)
 
 
+def compute_asymmetry_temporal_metrics(
+    asym: np.ndarray,
+    t_ms: np.ndarray,
+) -> dict:
+    """Compute temporal metrics of an asymmetry timecourse.
+
+    These metrics avoid the cancellation problem of the simple time-average:
+    oscillations that are symmetric around zero (same signed area on each side)
+    give a mean close to zero even though the bump is severely displaced most
+    of the time.
+
+    Parameters
+    ----------
+    asym : np.ndarray, shape (n_steps,)
+        Instantaneous asymmetry A(t) for the window of interest (e.g. the delay
+        period after the transient skip, already masked).
+    t_ms : np.ndarray, shape (n_steps,)
+        Corresponding time vector in milliseconds.
+
+    Returns
+    -------
+    dict with:
+        ``mean_abs_asym``
+            Mean of |A(t)|.  Unlike mean(A(t)) this never cancels: a bump that
+            oscillates ±0.3 gives mean_abs ≈ 0.3 even though mean(A) ≈ 0.
+        ``asym_std``
+            Standard deviation of A(t).  Captures both amplitude of variation
+            and side-switching together; independent of the DC offset.
+    """
+    if len(asym) == 0:
+        return {'mean_abs_asym': np.nan, 'asym_std': np.nan}
+
+    mean_abs_asym = float(np.mean(np.abs(asym)))
+    asym_std = float(np.std(asym, ddof=1)) if len(asym) > 1 else 0.0
+
+    return {'mean_abs_asym': mean_abs_asym, 'asym_std': asym_std}
+
+
 def compute_noise_floor(A_hat_values: np.ndarray, percentile: float = 95.0) -> float:
     """Compute noise floor threshold from no-stimulus Â_hat values.
 

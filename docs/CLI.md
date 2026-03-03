@@ -907,7 +907,7 @@ python -m circuit_model ring-asymmetry [options]
 | `--n_workers` | int | `None` | Number of parallel workers (default: auto) |
 | `--random_cue_location` | flag | off | Draw a uniformly random cue angle in [0°, 360°) per trial (inherently balanced, skips balance correction) |
 | `--no_cue_balance` | flag | off | Disable the automatic balance correction (even N → between nodes; odd N → on nearest node). Leaves the cue at raw 180°, which for even N creates a structural bias of −1/(N−1). |
-| `--correct_asymmetry` | flag | on | Multiply asymmetry by bump amplitude at each time step before averaging (bias correction for weaker bumps) |
+| `--correct_asymmetry` | flag | on | Use amplitude-weighted normalized asymmetry in each window: $\sum A(t)\,\mathrm{Amp}(t) / \sum \mathrm{Amp}(t)$ |
 | `--no_correct_asymmetry` | flag | off | Disable amplitude-based asymmetry correction and use raw asymmetry index |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
@@ -920,11 +920,11 @@ $$\text{asymmetry} = \frac{\sum_{\text{right}} r_i - \sum_{\text{left}} r_i}{\su
 
 where "left" and "right" are nodes with signed angular offset < 0 or > 0 relative to the cue location. A value of −1 means all activity is on the left; +1 means all activity is on the right; 0 means perfectly symmetric.
 
-With the default correction enabled, the reported signal is:
+With the default correction enabled, pre-cue and delay asymmetry are computed as amplitude-weighted normalized means:
 
-$$\text{asymmetry}_{\text{corr}}(t) = \text{asymmetry}(t) \times \text{bump\_amplitude}(t)$$
+$$a_{\text{window,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{window}}} A(t)\,\mathrm{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{window}}} \mathrm{Amp}(t)}$$
 
-This down-weights time points where the bump is weak and therefore more noise-sensitive.
+This down-weights time points where the bump is weak and normalizes by total bump strength, making values more comparable across conditions.
 
 **Trial design** — each trial is fully independent:
 1. **Per-trial burn-in**: each trial starts from zero initial conditions and runs `ASYM_SETTLING_MS` (6000 ms) of noisy spontaneous activity with its own unique seed, producing fully uncorrelated pre-cue states across trials
