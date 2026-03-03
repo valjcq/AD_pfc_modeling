@@ -68,6 +68,11 @@ The model do exactly what we expect, with a bump of activity that is more or les
 - ADD the per population metric, start to analyze the impact of each population on the bump attractor behavior and stability, and how it can be important in the oscillation pattern and the working memory performance.
 - Explore the litterature about the oscillation pattern in the context of working memory to see if the oscilation we see in our models is a feature that can be observed in the litterature, or if it is a consequence of the parameters set we have. 
 
+### 03.03
+- Fine tuned the asymmetry experiment, with more robust metrics and better visualization.
+- Continue the slides with mostly the asymmetry part.
+
+
 ### TODO
 - Explore the litterature on bump attractor in the context of working memory, and see their metrics and how the fit their weights and stimuli amplitude. -> Article from Wimmer et Al. 2014
 - Think about how to read each populations impact on the bump attractor stability and metrics.

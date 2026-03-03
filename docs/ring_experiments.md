@@ -965,11 +965,11 @@ $$\text{offset}_i = \bigl((\theta_i - \theta_{\text{cue}} + 180°) \bmod 360°\b
 
 $$A(t) = \frac{\sum_{i:\,\text{offset}_i > 0} r_i^{\text{PYR}}(t) \;-\; \sum_{i:\,\text{offset}_i < 0} r_i^{\text{PYR}}(t)}{\sum_{i:\,\text{offset}_i \neq 0} r_i^{\text{PYR}}(t)}$$
 
-By default (`--correct_asymmetry` on), the reported asymmetry is amplitude-weighted at each time step:
+By default (`--correct_asymmetry` on), pre-cue and delay metrics use amplitude-weighted normalized means:
 
-$$A_{\text{corr}}(t) = A(t) \times \text{Amp}(t)$$
+$$a_{\mathcal{T},\text{corr}} = \frac{\sum_{t\in\mathcal{T}} A(t)\,\text{Amp}(t)}{\sum_{t\in\mathcal{T}} \text{Amp}(t)}$$
 
-where $\text{Amp}(t)$ is the decoded bump amplitude. This reduces bias from condition-dependent bump strength (weak bumps are more noise-sensitive). Use `--no_correct_asymmetry` to recover the raw index $A(t)$.
+where $\text{Amp}(t)$ is the decoded bump amplitude. This reduces bias from condition-dependent bump strength (weak bumps are more noise-sensitive) and normalizes by total bump strength in the window. Use `--no_correct_asymmetry` to recover the raw (unweighted) mean of $A(t)$.
 
 The index $A(t) \in [-1, +1]$:
 
@@ -1022,15 +1022,17 @@ A diagnostic line is always printed when $N$ is even:
 
 ### 19.4 Measured Quantities
 
-For each trial two scalar values are extracted from either $A_{\text{corr}}(t)$ (default) or $A(t)$ (with `--no_correct_asymmetry`):
+For each trial two scalar values are extracted from either the corrected weighted metric (default) or the raw mean of $A(t)$ (with `--no_correct_asymmetry`):
 
 **Pre-cue asymmetry** — mean of $A(t)$ over the last 500 ms of the burn-in period (before cue onset). This serves as a per-trial baseline: in the absence of any stimulus the ring should be approximately symmetric, so any pre-existing asymmetry in the spontaneous state can be tracked and correlated with the delay outcome.
 
 **Delay asymmetry** — mean of $A(t)$ from cue offset + 400 ms to the end of the delay. The 400 ms skip discards the large SOM/PYR transient that follows stimulus offset (see [§9.1](ring_attractor.md#91-mechanism)).
 
-$$a_{\text{pre}} = \frac{1}{|\mathcal{T}_{\text{pre}}|}\sum_{t \in \mathcal{T}_{\text{pre}}} A(t), \qquad \mathcal{T}_{\text{pre}} = [t_{\text{cue}} - 500\,\text{ms},\; t_{\text{cue}})$$
+$$a_{\text{pre,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{pre}}} A(t)\,\text{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{pre}}} \text{Amp}(t)}, \qquad \mathcal{T}_{\text{pre}} = [t_{\text{cue}} - 500\,\text{ms},\; t_{\text{cue}})$$
 
-$$a_{\text{delay}} = \frac{1}{|\mathcal{T}_{\text{delay}}|}\sum_{t \in \mathcal{T}_{\text{delay}}} A(t), \qquad \mathcal{T}_{\text{delay}} = [t_{\text{off}} + 400\,\text{ms},\; T]$$
+$$a_{\text{delay,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{delay}}} A(t)\,\text{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{delay}}} \text{Amp}(t)}, \qquad \mathcal{T}_{\text{delay}} = [t_{\text{off}} + 400\,\text{ms},\; T]$$
+
+With `--no_correct_asymmetry`, the code uses the raw unweighted means over each window.
 
 ### 19.5 Statistical Tests
 
