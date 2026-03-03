@@ -120,10 +120,7 @@ def _build_common(args, amp_factor: float | None = None):
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     factor = amp_factor if amp_factor is not None else args.amplitude
@@ -153,7 +150,6 @@ def _build_common(args, amp_factor: float | None = None):
             center_deg=STIM_CENTER_DEG, amplitude=actual_current,
             sigma_deg=STIM_SIGMA_DEG,
             onset_ms=STIM_ONSET_MS, duration_ms=STIM_DURATION_MS,
-            shape=getattr(args, 'stim_shape', 'square'),
         ),
     ]
 
@@ -186,17 +182,9 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
           f"duration={STIM_DURATION_MS:.0f} ms")
 
     if ring_params is not None:
-        if ring_params.pyr_profile_type == "compte":
-            print(f"Connectivity: Compte profile, J+ = {ring_params.J_plus:.2f}, "
-                  f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
-        else:
-            print(f"Connectivity: Gaussian profile, w_inter = {ring_params.w_pyr_pyr_inter:.2f}, "
-                  f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
-        if ring_params.pv_global_type == "gaussian":
-            print(f"Inhibition:   Gaussian PV profile, sigma = {ring_params.sigma_pv_deg:.1f} deg, "
-                  f"w_pv = {ring_params.w_pv_global:.2f}")
-        else:
-            print(f"Inhibition:   Uniform PV, w_pv = {ring_params.w_pv_global:.2f}")
+        print(f"Connectivity: Gaussian profile, w_inter = {ring_params.w_pyr_pyr_inter:.2f}, "
+              f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
+        print(f"Inhibition:   Uniform PV, w_pv = {ring_params.w_pv_global:.2f}")
 
     response_onset = getattr(args, 'response_onset_ms', 0.0)
     if response_onset > 0:
@@ -265,23 +253,10 @@ def _start_mp4_progress(
 def _connectivity_label(rp: RingParams) -> str:
     """Build a directory-safe label encoding connectivity parameters.
 
-    Examples:
-        gauss_w4_s30-pv_unif_2.0
-        compte_J1.6_s30-pv_gauss_0.3_s180
+    Example: gauss_w4_s30-pv_unif_2.0
     """
-
-    # Excitatory profile
-    if rp.pyr_profile_type == "compte":
-        exc = f"compte_J{_fmt(rp.J_plus)}_s{_fmt(rp.sigma_pyr_deg)}"
-    else:
-        exc = f"gauss_w{_fmt(rp.w_pyr_pyr_inter)}_s{_fmt(rp.sigma_pyr_deg)}"
-
-    # Inhibitory profile
-    if rp.pv_global_type == "gaussian":
-        inh = f"pv_gauss_{_fmt(rp.w_pv_global)}_s{_fmt(rp.sigma_pv_deg)}"
-    else:
-        inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
-
+    exc = f"gauss_w{_fmt(rp.w_pyr_pyr_inter)}_s{_fmt(rp.sigma_pyr_deg)}"
+    inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
     return f"{exc}-{inh}"
 
 
@@ -307,6 +282,13 @@ def _resolve_seed(args: argparse.Namespace) -> None:
     if args.seed is None:
         args.seed = int(np.random.default_rng().integers(0, 2**31 - 1))
         print(f"Using random seed: {args.seed}")
+
+
+def _snapshot_animation_quality_kwargs(args: argparse.Namespace) -> dict[str, int]:
+    """Return animation quality settings from CLI flags."""
+    if getattr(args, "quality_high", False):
+        return {"dpi": 130, "av1_crf": 31, "av1_preset": 7}
+    return {"dpi": 100, "av1_crf": 35, "av1_preset": 8}
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -341,34 +323,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         help="Recording time step in ms (default: 5.0). "
                              "Only every record_dt_ms the state is stored.")
     # Connectivity parameters
-    parser.add_argument("--pyr_profile", type=str, default="gaussian",
-                        choices=["gaussian", "compte"],
-                        help="PYR→PYR connectivity profile (default: gaussian). "
-                             "'compte' uses Compte et al. (2000) with surround inhibition.")
-    parser.add_argument("--J_plus", type=float, default=1.6,
-                        help="Compte profile J+ parameter (local excitation). "
-                             "Only used with --pyr_profile compte. (default: 1.6)")
     parser.add_argument("--sigma_pyr_deg", type=float, default=30.0,
                         help="PYR→PYR connectivity width in degrees (default: 30.0)")
     parser.add_argument("--w_pyr_pyr_inter", type=float, default=4.0,
-                        help="Total PYR→PYR coupling for Gaussian profile (default: 4.0). "
-                             "Not used with --pyr_profile compte.")
+                        help="Total PYR→PYR coupling strength (default: 4.0)")
     parser.add_argument("--w_pv_global", type=float, default=4.0,
                         help="Total PV→PYR global inhibition strength (default: 4.0)")
-    parser.add_argument("--pv_profile", type=str, default="uniform",
-                        choices=["uniform", "gaussian"],
-                        help="PV→PYR connectivity profile (default: uniform). "
-                             "'gaussian' uses a spatially tuned inhibition profile.")
-    parser.add_argument("--sigma_pv_deg", type=float, default=180.0,
-                        help="PV→PYR connectivity width in degrees (default: 180.0). "
-                             "Only used with --pv_profile gaussian.")
-    # Stimulus temporal shape
-    parser.add_argument("--stim_shape", type=str, default="square",
-                        choices=["square", "ramp_on", "ramp_off", "gaussian"],
-                        help="Temporal shape of the stimulus (default: square). "
-                             "'ramp_on': gradual onset over 10%% of duration; "
-                             "'ramp_off': gradual offset over 10%% of duration; "
-                             "'gaussian': bell-shaped over full duration.")
     # Noise parameters
     parser.add_argument("--sigma_noise", type=float, default=None,
                         help="Noise amplitude sigma_s (overrides params_json value). "
@@ -377,8 +337,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         help="FPS for snapshot evolution animation (default: 30)")
     parser.add_argument("--snapshot_anim_step_ms", type=float, default=2.0,
                         help="Time step between animation frames in ms (default: 2.0 — 60ms sim = 1s video at 30fps)")
-    parser.add_argument("--no_snapshot_animation", action="store_true",
-                        help="Disable saving snapshot evolution animations")
+    parser.add_argument("--quality_high", action="store_true",
+                        help="Use moderately higher-quality animation rendering (higher DPI + AV1 quality; ~up to 2× slower encoding)")
 
 
 # ============================================================================
@@ -433,36 +393,37 @@ def cmd_run(args: argparse.Namespace) -> None:
     t_offset = BURN_IN_MS
     time_range = (BURN_IN_MS, T_ms)
     suptitle = _stim_label(amp)
+    anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
 
     plot_ring_dashboard(result, save_path=os.path.join(out_dir, "dashboard.png"),
                         time_range=time_range, t_offset=t_offset, suptitle=suptitle)
     plt.close()
 
-    if not args.no_snapshot_animation:
-        anim_path = os.path.join(out_dir, "snapshot_evolution.mp4")
-        mp4_pbar = _start_mp4_progress(
-            total_videos=1,
+    anim_path = os.path.join(out_dir, "snapshot_evolution.mp4")
+    mp4_pbar = _start_mp4_progress(
+        total_videos=1,
+        frame_step_ms=args.snapshot_anim_step_ms,
+        fps=args.snapshot_anim_fps,
+        sample_time_range=time_range,
+    )
+    try:
+        mp4_pbar.set_postfix_str(f"cond={cond_key}")
+        fig_anim, _ = animate_ring_snapshot_evolution(
+            result,
+            save_path=anim_path,
+            time_range=time_range,
+            t_offset=t_offset,
             frame_step_ms=args.snapshot_anim_step_ms,
             fps=args.snapshot_anim_fps,
-            sample_time_range=time_range,
+            suptitle=f"{condition.label} — Snapshot Evolution ({suptitle})",
+            show_asymmetry=True,
+            **anim_quality_kwargs,
         )
-        try:
-            mp4_pbar.set_postfix_str(f"cond={cond_key}")
-            fig_anim, _ = animate_ring_snapshot_evolution(
-                result,
-                save_path=anim_path,
-                time_range=time_range,
-                t_offset=t_offset,
-                frame_step_ms=args.snapshot_anim_step_ms,
-                fps=args.snapshot_anim_fps,
-                suptitle=f"{condition.label} — Snapshot Evolution ({suptitle})",
-                show_asymmetry=True,
-            )
-            plt.close(fig_anim)
-            mp4_pbar.update(1)
-        finally:
-            mp4_pbar.close()
-        print(f"Saved animation: {anim_path}")
+        plt.close(fig_anim)
+        mp4_pbar.update(1)
+    finally:
+        mp4_pbar.close()
+    print(f"Saved animation: {anim_path}")
 
     plot_bump_metrics_over_time(result, time_range=time_range, t_offset=t_offset)
     plt.suptitle(f"Bump Metrics Over Time  ({suptitle})", fontsize=13, fontweight="bold")
@@ -803,10 +764,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     # Determine conditions
@@ -956,15 +914,14 @@ def cmd_study(args: argparse.Namespace) -> None:
 
     # --- Aggregate and plot ---
     all_delay_metrics_agg: dict[float, dict[str, dict]] = {}
-    mp4_pbar = None
-    if not args.no_snapshot_animation:
-        total_videos = len(amplitudes) * len(condition_keys)
-        mp4_pbar = _start_mp4_progress(
-            total_videos=total_videos,
-            frame_step_ms=args.snapshot_anim_step_ms,
-            fps=args.snapshot_anim_fps,
-            sample_time_range=(BURN_IN_MS, T_ms_full),
-        )
+    anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
+    total_videos = len(amplitudes) * len(condition_keys)
+    mp4_pbar = _start_mp4_progress(
+        total_videos=total_videos,
+        frame_step_ms=args.snapshot_anim_step_ms,
+        fps=args.snapshot_anim_fps,
+        sample_time_range=(BURN_IN_MS, T_ms_full),
+    )
 
     try:
         for amp in amplitudes:
@@ -1020,56 +977,52 @@ def cmd_study(args: argparse.Namespace) -> None:
                 )
                 plt.close()
 
-            if not args.no_snapshot_animation:
-                anim_dir = os.path.join(amp_out, "snapshot_evolution")
-                os.makedirs(anim_dir, exist_ok=True)
-                for cond_key in condition_keys:
-                    if mp4_pbar is not None:
-                        mp4_pbar.set_postfix_str(f"amp={_fmt(amp)} cond={cond_key}")
-                    condition = STUDY_CONDITIONS[cond_key]
-                    local_params = apply_condition(base_params, condition)
-                    delay_end_ms = stim_offset_ms + args.delay_ms
-                    local_params = _apply_response_transient(local_params, args, delay_end_ms)
-                    cue_current = amp * base_params.I_ext_pyr()
-                    stimuli = [
-                        RingStimulus(
-                            center_deg=STIM_CENTER_DEG,
-                            amplitude=cue_current,
-                            sigma_deg=STIM_SIGMA_DEG,
-                            onset_ms=STIM_ONSET_MS,
-                            duration_ms=STIM_DURATION_MS,
-                            shape=getattr(args, 'stim_shape', 'square'),
-                        )
-                    ]
-                    vis_seed = trial_seeds[0] if trial_seeds else args.seed
-                    vis_result = simulate_ring(
-                        local_params,
-                        ring_params,
-                        T_ms=T_ms_full,
-                        stimuli=stimuli,
-                        seed=vis_seed,
-                        connectivity=connectivity,
-                        record_dt_ms=args.record_dt_ms,
+            anim_dir = os.path.join(amp_out, "snapshot_evolution")
+            os.makedirs(anim_dir, exist_ok=True)
+            for cond_key in condition_keys:
+                mp4_pbar.set_postfix_str(f"amp={_fmt(amp)} cond={cond_key}")
+                condition = STUDY_CONDITIONS[cond_key]
+                local_params = apply_condition(base_params, condition)
+                delay_end_ms = stim_offset_ms + args.delay_ms
+                local_params = _apply_response_transient(local_params, args, delay_end_ms)
+                cue_current = amp * base_params.I_ext_pyr()
+                stimuli = [
+                    RingStimulus(
+                        center_deg=STIM_CENTER_DEG,
+                        amplitude=cue_current,
+                        sigma_deg=STIM_SIGMA_DEG,
+                        onset_ms=STIM_ONSET_MS,
+                        duration_ms=STIM_DURATION_MS,
                     )
-                    anim_path = os.path.join(anim_dir, f"{cond_key}.mp4")
-                    fig_anim, _ = animate_ring_snapshot_evolution(
-                        vis_result,
-                        save_path=anim_path,
-                        time_range=(BURN_IN_MS, T_ms_full),
-                        t_offset=BURN_IN_MS,
-                        frame_step_ms=args.snapshot_anim_step_ms,
-                        fps=args.snapshot_anim_fps,
-                        suptitle=f"{condition.label} — Snapshot Evolution ({suptitle})",
-                        show_asymmetry=True,
-                    )
-                    plt.close(fig_anim)
-                    if mp4_pbar is not None:
-                        mp4_pbar.update(1)
+                ]
+                vis_seed = trial_seeds[0] if trial_seeds else args.seed
+                vis_result = simulate_ring(
+                    local_params,
+                    ring_params,
+                    T_ms=T_ms_full,
+                    stimuli=stimuli,
+                    seed=vis_seed,
+                    connectivity=connectivity,
+                    record_dt_ms=args.record_dt_ms,
+                )
+                anim_path = os.path.join(anim_dir, f"{cond_key}.mp4")
+                fig_anim, _ = animate_ring_snapshot_evolution(
+                    vis_result,
+                    save_path=anim_path,
+                    time_range=(BURN_IN_MS, T_ms_full),
+                    t_offset=BURN_IN_MS,
+                    frame_step_ms=args.snapshot_anim_step_ms,
+                    fps=args.snapshot_anim_fps,
+                    suptitle=f"{condition.label} — Snapshot Evolution ({suptitle})",
+                    show_asymmetry=True,
+                    **anim_quality_kwargs,
+                )
+                plt.close(fig_anim)
+                mp4_pbar.update(1)
 
             all_delay_metrics_agg[amp] = delay_end_metrics_agg
     finally:
-        if mp4_pbar is not None:
-            mp4_pbar.close()
+        mp4_pbar.close()
 
     # Cross-amplitude comparison (full delay)
     if len(amplitudes) > 1:
@@ -1279,10 +1232,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     if args.conditions is None:
@@ -1886,10 +1836,7 @@ def cmd_drift_field(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     if args.conditions is None:
@@ -2159,16 +2106,8 @@ def _calibration_conn_label(rp: RingParams) -> str:
     Like _connectivity_label but omits the w_pyr_pyr_inter component since
     that parameter is swept during calibration.
     """
-    if rp.pyr_profile_type == "compte":
-        exc = f"compte_s{_fmt(rp.sigma_pyr_deg)}"
-    else:
-        exc = f"gauss_s{_fmt(rp.sigma_pyr_deg)}"
-
-    if rp.pv_global_type == "gaussian":
-        inh = f"pv_gauss_{_fmt(rp.w_pv_global)}_s{_fmt(rp.sigma_pv_deg)}"
-    else:
-        inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
-
+    exc = f"gauss_s{_fmt(rp.sigma_pyr_deg)}"
+    inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
     return f"{exc}-{inh}"
 
 
@@ -2777,10 +2716,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     if args.conditions is None:
@@ -3244,10 +3180,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     if args.conditions is None:
@@ -3699,10 +3632,7 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     cond_key = args.condition
@@ -4128,57 +4058,58 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
         print(f"  node_diff_dist_end/dist_end_amp{amp_str}.png")
         print(f"  node_diff_cue_end/cue_end_amp{amp_str}.png")
 
-    if not args.no_snapshot_animation:
-        amp_target = 1.0
-        if amp_factors:
-            amp_anim = min(amp_factors, key=lambda a: abs(a - amp_target))
-            if abs(amp_anim - amp_target) > 1e-12:
-                print(f"Requested amp×1 not in sweep; using closest available {amp_anim:.3g}×")
-            anim_dir = os.path.join(out_dir, "snapshot_evolution_amp1")
-            os.makedirs(anim_dir, exist_ok=True)
-            print("Saving snapshot evolution animations for each offset at distractor amp×1...")
-            mp4_jobs: list[tuple[float, dict]] = []
-            for off in offsets_deg:
-                entry = tc_map.get((off, amp_anim))
-                if entry is not None:
-                    mp4_jobs.append((off, entry))
+    anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
+    amp_target = 1.0
+    if amp_factors:
+        amp_anim = min(amp_factors, key=lambda a: abs(a - amp_target))
+        if abs(amp_anim - amp_target) > 1e-12:
+            print(f"Requested amp×1 not in sweep; using closest available {amp_anim:.3g}×")
+        anim_dir = os.path.join(out_dir, "snapshot_evolution_amp1")
+        os.makedirs(anim_dir, exist_ok=True)
+        print("Saving snapshot evolution animations for each offset at distractor amp×1...")
+        mp4_jobs: list[tuple[float, dict]] = []
+        for off in offsets_deg:
+            entry = tc_map.get((off, amp_anim))
+            if entry is not None:
+                mp4_jobs.append((off, entry))
 
-            sample_time_range = None
-            if mp4_jobs:
-                sample_time_range = (BURN_IN_MS, mp4_jobs[0][1]['full_result'].t_ms[-1])
+        sample_time_range = None
+        if mp4_jobs:
+            sample_time_range = (BURN_IN_MS, mp4_jobs[0][1]['full_result'].t_ms[-1])
 
-            mp4_pbar = _start_mp4_progress(
-                total_videos=len(mp4_jobs),
-                frame_step_ms=args.snapshot_anim_step_ms,
-                fps=args.snapshot_anim_fps,
-                sample_time_range=sample_time_range,
-            )
-            try:
-                for off, entry in mp4_jobs:
-                    mp4_pbar.set_postfix_str(f"offset={_fmt(off)}deg")
-                    anim_path = os.path.join(anim_dir, f"offset_{_fmt(off)}deg.mp4")
-                    fig_anim, _ = animate_ring_snapshot_evolution(
-                        entry['full_result'],
-                        save_path=anim_path,
-                        time_range=(BURN_IN_MS, entry['full_result'].t_ms[-1]),
-                        t_offset=BURN_IN_MS,
-                        frame_step_ms=args.snapshot_anim_step_ms,
-                        fps=args.snapshot_anim_fps,
-                        cue_window=(cue_onset_abs, cue_offset_abs),
-                        cue_angle_deg=STIM_CENTER_DEG,
-                        distractor_window=(dist_onset_abs, dist_offset_abs),
-                        distractor_angle_deg=(STIM_CENTER_DEG + off) % 360.0,
-                        suptitle=(
-                            f"{condition.name} — Snapshot Evolution "
-                            f"(Δφ={off:.0f}°, distractor {amp_anim:.2g}× cue)"
-                        ),
-                        show_asymmetry=True,
-                    )
-                    plt.close(fig_anim)
-                    mp4_pbar.update(1)
-                    print(f"  snapshot_evolution_amp1/offset_{_fmt(off)}deg.mp4")
-            finally:
-                mp4_pbar.close()
+        mp4_pbar = _start_mp4_progress(
+            total_videos=len(mp4_jobs),
+            frame_step_ms=args.snapshot_anim_step_ms,
+            fps=args.snapshot_anim_fps,
+            sample_time_range=sample_time_range,
+        )
+        try:
+            for off, entry in mp4_jobs:
+                mp4_pbar.set_postfix_str(f"offset={_fmt(off)}deg")
+                anim_path = os.path.join(anim_dir, f"offset_{_fmt(off)}deg.mp4")
+                fig_anim, _ = animate_ring_snapshot_evolution(
+                    entry['full_result'],
+                    save_path=anim_path,
+                    time_range=(BURN_IN_MS, entry['full_result'].t_ms[-1]),
+                    t_offset=BURN_IN_MS,
+                    frame_step_ms=args.snapshot_anim_step_ms,
+                    fps=args.snapshot_anim_fps,
+                    cue_window=(cue_onset_abs, cue_offset_abs),
+                    cue_angle_deg=STIM_CENTER_DEG,
+                    distractor_window=(dist_onset_abs, dist_offset_abs),
+                    distractor_angle_deg=(STIM_CENTER_DEG + off) % 360.0,
+                    suptitle=(
+                        f"{condition.name} — Snapshot Evolution "
+                        f"(Δφ={off:.0f}°, distractor {amp_anim:.2g}× cue)"
+                    ),
+                    show_asymmetry=True,
+                    **anim_quality_kwargs,
+                )
+                plt.close(fig_anim)
+                mp4_pbar.update(1)
+                print(f"  snapshot_evolution_amp1/offset_{_fmt(off)}deg.mp4")
+        finally:
+            mp4_pbar.close()
 
     print(f"\nAll outputs saved to {out_dir}/")
 
@@ -4241,10 +4172,7 @@ def cmd_lesion(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     amp_factor = args.amplitude
@@ -4455,10 +4383,7 @@ def cmd_tau_sweep(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     amp_factor = args.amplitude
@@ -4648,10 +4573,7 @@ def cmd_phase_plane(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
     conn_label = _connectivity_label(ring_params)
     out_dir = os.path.join(
@@ -4735,10 +4657,7 @@ def cmd_temporal_dissection(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     cond_key = getattr(args, 'condition', 'WT')
@@ -4845,6 +4764,7 @@ def _asym_init_worker(
     record_dt_ms: float,
     random_cue_location: bool = False,
     balance_cue: bool = True,
+    correct_asymmetry: bool = True,
 ) -> None:
     """Initialise worker process for asymmetry trials."""
     global _asym_sim_args
@@ -4857,6 +4777,7 @@ def _asym_init_worker(
         'record_dt_ms': record_dt_ms,
         'random_cue_location': random_cue_location,
         'balance_cue': balance_cue,
+        'correct_asymmetry': correct_asymmetry,
     }
 
 
@@ -4870,7 +4791,7 @@ def _asym_run_single(job: tuple) -> dict:
     delay asymmetry from the full delay window after cue offset.
     """
     global _asym_sim_args
-    from .analysis import compute_bump_asymmetry
+    from .analysis import compute_bump_asymmetry, decode_bump_center
 
     cfg = _asym_sim_args
     cond_key, trial_idx, seed = job
@@ -4911,6 +4832,9 @@ def _asym_run_single(job: tuple) -> dict:
     )
 
     asym = compute_bump_asymmetry(result)
+    if cfg.get('correct_asymmetry', True):
+        _, bump_amplitude = decode_bump_center(result, population=0)
+        asym = asym * bump_amplitude
 
     # Pre-cue: last ASYM_PRE_CUE_WINDOW_MS before cue onset
     pre_mask = (
@@ -4933,6 +4857,7 @@ def _asym_run_single(job: tuple) -> dict:
         'cue_deg': center_deg,
         'pre_cue_asym': pre_cue_asym,
         'delay_asym': delay_asym,
+        'correct_asymmetry': bool(cfg.get('correct_asymmetry', True)),
     }
 
 
@@ -4975,10 +4900,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter,
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-        pv_global_type=args.pv_profile,
-        sigma_pv_deg=args.sigma_pv_deg,
-        pyr_profile_type=args.pyr_profile,
-        J_plus=args.J_plus,
+
     )
 
     condition_keys = args.conditions if args.conditions else ['WT', 'WT_APP', 'a7_KO_APP']
@@ -4993,9 +4915,11 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     n_workers = _resolve_workers(args)
     random_cue_location: bool = getattr(args, 'random_cue_location', False)
     balance_cue: bool = not getattr(args, 'no_cue_balance', False)
+    correct_asymmetry: bool = getattr(args, 'correct_asymmetry', True)
 
     conn_label = _connectivity_label(ring_params)
-    amp_label = f"amp{amp:g}"
+    asym_mode_label = "corrected" if correct_asymmetry else "uncorrected"
+    amp_label = f"amp{amp:g}_{asym_mode_label}"
     out_dir = os.path.join(
         _output_dir(f"figs/asymmetry/{ring_params.n_nodes}", args.params_json),
         conn_label,
@@ -5043,6 +4967,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
           f"pre-cue window: {ASYM_PRE_CUE_WINDOW_MS:.0f} ms,  "
           f"delay: {args.delay_ms:.0f} ms")
     print(f"  Cue location: {cue_label}")
+    print(f"  Asymmetry correction: {'on (A(t) × bump amplitude)' if correct_asymmetry else 'off (raw A(t))'}")
     if _balance_note:
         print(_balance_note)
 
@@ -5070,6 +4995,25 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     cached_random = bool(int(cached_rows[0].get('random_cue', 0)))
                     cached_balance = bool(int(cached_rows[0].get('balance_cue', 1)))
                     if cached_random != random_cue_location or cached_balance != balance_cue:
+                        params_ok = False
+                if params_ok and 'correct_asymmetry' in cached_rows[0]:
+                    cached_correct = bool(int(cached_rows[0].get('correct_asymmetry', 1)))
+                    if cached_correct != correct_asymmetry:
+                        params_ok = False
+                elif params_ok:
+                    # Backward compatibility: legacy CSVs may not include
+                    # 'correct_asymmetry'. Infer mode from folder suffix.
+                    # - amp*_uncorrected -> raw asymmetry cache
+                    # - amp*_corrected   -> corrected asymmetry cache
+                    # - no suffix        -> legacy raw cache
+                    amp_dir_name = os.path.basename(out_dir)
+                    if amp_dir_name.endswith("_uncorrected"):
+                        cached_correct = False
+                    elif amp_dir_name.endswith("_corrected"):
+                        cached_correct = True
+                    else:
+                        cached_correct = False
+                    if cached_correct != correct_asymmetry:
                         params_ok = False
             else:
                 params_ok = False  # old format — no validation columns
@@ -5114,7 +5058,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         init_args = (
             base_params, ring_params, connectivity,
             amp, args.delay_ms, args.record_dt_ms,
-            random_cue_location, balance_cue,
+            random_cue_location, balance_cue, correct_asymmetry,
         )
         if n_workers > 1 and len(jobs) > 1:
             with ProcessPoolExecutor(
@@ -5157,7 +5101,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
             writer = csv.DictWriter(f, fieldnames=[
                 'condition', 'trial_idx', 'seed', 'cue_deg',
                 'pre_cue_asym', 'delay_asym', 'delay_ms', 'amplitude',
-                'random_cue', 'balance_cue',
+                'random_cue', 'balance_cue', 'correct_asymmetry',
             ])
             writer.writeheader()
             for r in sorted(all_results, key=lambda r: (r['cond_key'], r['trial_idx'])):
@@ -5172,6 +5116,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     'amplitude': amp,
                     'random_cue': int(random_cue_location),
                     'balance_cue': int(balance_cue),
+                    'correct_asymmetry': int(correct_asymmetry),
                 })
         print(f"\nTrial data → {csv_path}")
 
@@ -5186,84 +5131,100 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         if p < 0.05:  return '*'
         return 'n.s.'
 
+    # --- One-sample tests vs 0 for both pre-cue and delay ---
     stats_by_condition: dict[str, dict] = {}
-    print("\nStatistical tests — delay asymmetry vs. 0 (one-sample):")
-    print(f"  {'Condition':<14}  {'n':>4}  {'mean':>8}  {'t':>7}  {'p(t)':>8}  {'W':>8}  {'p(W)':>8}")
-    print("  " + "-" * 68)
-    for cond_key in condition_keys:
-        delay = data_by_condition[cond_key]['delay']
-        n = len(delay)
-        mean = float(np.mean(delay))
-        t_stat, p_t = _scipy_stats.ttest_1samp(delay, 0.0)
-        if n >= 10:
-            w_stat, p_w = _scipy_stats.wilcoxon(delay, alternative='two-sided')
-        else:
-            w_stat, p_w = np.nan, np.nan
-        stars_t = _sig_label(p_t)
-        stars_w = _sig_label(p_w if not np.isnan(p_w) else None)
-        p_w_str = f"{p_w:.4f} {stars_w:<3}" if not np.isnan(p_w) else "    n/a   "
-        print(f"  {cond_key:<14}  {n:>4}  {mean:>+8.4f}  {t_stat:>+7.3f}  "
-              f"{p_t:.4f} {stars_t:<3}  {w_stat:>8.1f}  {p_w_str}")
-        stats_by_condition[cond_key] = {
-            'n': n, 'mean': mean,
-            't_stat': float(t_stat), 'p_t': float(p_t),
-            'w_stat': float(w_stat) if not np.isnan(w_stat) else None,
-            'p_w': float(p_w) if not np.isnan(p_w) else None,
-        }
-    print("  (* p<0.05  ** p<0.01  *** p<0.001)")
-
-    # --- Pairwise tests: asymmetry magnitude between conditions ---
-    pairwise_stats: list[dict] = []
-    if len(condition_keys) >= 2:
-        print("\nStatistical tests — pairwise asymmetry magnitude (Mann-Whitney U):")
-        print(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}")
-        print("  " + "-" * 70)
-        for i, ck_a in enumerate(condition_keys):
-            for j, ck_b in enumerate(condition_keys):
-                if j <= i:
-                    continue
-                abs_a = np.abs(data_by_condition[ck_a]['delay'])
-                abs_b = np.abs(data_by_condition[ck_b]['delay'])
-                u_stat, p_u = _scipy_stats.mannwhitneyu(abs_a, abs_b, alternative='two-sided')
-                stars = _sig_label(p_u)
-                print(f"  {ck_a:<14}  {ck_b:<14}  {len(abs_a):>4}  {len(abs_b):>4}  "
-                      f"{u_stat:>8.1f}  {p_u:.4f} {stars:<3}")
-                pairwise_stats.append({
-                    'cond_a': ck_a, 'cond_b': ck_b,
-                    'n_a': len(abs_a), 'n_b': len(abs_b),
-                    'u_stat': float(u_stat), 'p_u': float(p_u),
-                })
+    hdr = f"  {'Condition':<14}  {'n':>4}  {'mean':>8}  {'t':>7}  {'p(t)':>8}  {'W':>8}  {'p(W)':>8}"
+    for period_key, period_label in [('pre_cue', 'Pre-cue'), ('delay', 'Delay')]:
+        print(f"\nStatistical tests — {period_label} asymmetry vs. 0 (one-sample):")
+        print(hdr)
+        print("  " + "-" * 68)
+        for cond_key in condition_keys:
+            vals = data_by_condition[cond_key][period_key]
+            n = len(vals)
+            mean = float(np.mean(vals))
+            t_stat, p_t = _scipy_stats.ttest_1samp(vals, 0.0)
+            if n >= 10:
+                w_stat, p_w = _scipy_stats.wilcoxon(vals, alternative='two-sided')
+            else:
+                w_stat, p_w = np.nan, np.nan
+            stars_t = _sig_label(p_t)
+            stars_w = _sig_label(p_w if not np.isnan(p_w) else None)
+            p_w_str = f"{p_w:.4f} {stars_w:<3}" if not np.isnan(p_w) else "    n/a   "
+            print(f"  {cond_key:<14}  {n:>4}  {mean:>+8.4f}  {t_stat:>+7.3f}  "
+                  f"{p_t:.4f} {stars_t:<3}  {w_stat:>8.1f}  {p_w_str}")
+            if cond_key not in stats_by_condition:
+                stats_by_condition[cond_key] = {}
+            stats_by_condition[cond_key][period_key] = {
+                'n': n, 'mean': mean,
+                't_stat': float(t_stat), 'p_t': float(p_t),
+                'w_stat': float(w_stat) if not np.isnan(w_stat) else None,
+                'p_w': float(p_w) if not np.isnan(p_w) else None,
+            }
         print("  (* p<0.05  ** p<0.01  *** p<0.001)")
 
+    # --- Pairwise tests: asymmetry magnitude between conditions, both periods ---
+    pairwise_stats: list[dict] = []
+    if len(condition_keys) >= 2:
+        for period_key, period_label in [('delay', 'Delay'), ('pre_cue', 'Pre-cue')]:
+            print(f"\nStatistical tests — pairwise |asymmetry| {period_label} (Mann-Whitney U):")
+            print(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}")
+            print("  " + "-" * 70)
+            for i, ck_a in enumerate(condition_keys):
+                for j, ck_b in enumerate(condition_keys):
+                    if j <= i:
+                        continue
+                    abs_a = np.abs(data_by_condition[ck_a][period_key])
+                    abs_b = np.abs(data_by_condition[ck_b][period_key])
+                    u_stat, p_u = _scipy_stats.mannwhitneyu(abs_a, abs_b, alternative='two-sided')
+                    stars = _sig_label(p_u)
+                    print(f"  {ck_a:<14}  {ck_b:<14}  {len(abs_a):>4}  {len(abs_b):>4}  "
+                          f"{u_stat:>8.1f}  {p_u:.4f} {stars:<3}")
+                    pairwise_stats.append({
+                        'period': period_key,
+                        'cond_a': ck_a, 'cond_b': ck_b,
+                        'n_a': len(abs_a), 'n_b': len(abs_b),
+                        'u_stat': float(u_stat), 'p_u': float(p_u),
+                    })
+            print("  (* p<0.05  ** p<0.01  *** p<0.001)")
+
     # --- Save text statistics report ---
+    def _fmt_onesample(s):
+        p_t_str = f"{s['p_t']:.4f} {_sig_label(s['p_t']):<4}"
+        if s['w_stat'] is not None:
+            return (f"{s['n']:>4}  {s['mean']:>+8.4f}  {s['t_stat']:>+7.3f}  "
+                    f"{p_t_str}  {s['w_stat']:>8.1f}  {s['p_w']:.4f} {_sig_label(s['p_w']):<4}")
+        return (f"{s['n']:>4}  {s['mean']:>+8.4f}  {s['t_stat']:>+7.3f}  "
+                f"{p_t_str}  {'n/a':>8}  {'n/a':<9}")
+
     stats_txt_path = os.path.join(out_dir, "asymmetry_stats.txt")
     with open(stats_txt_path, 'w') as _f:
-        _f.write(f"Asymmetry Statistical Report — amp {amp:g}×\n")
+        _f.write(
+            f"Asymmetry Statistical Report — amp {amp:g}× "
+            f"({'corrected' if correct_asymmetry else 'raw'})\n"
+        )
         _f.write("=" * 60 + "\n\n")
-        _f.write("One-sample tests — delay asymmetry vs. 0\n")
-        _f.write(f"  {'Condition':<14}  {'n':>4}  {'mean':>8}  {'t':>7}  {'p(t)':>10}  {'W':>8}  {'p(W)':>10}\n")
-        _f.write("  " + "-" * 72 + "\n")
-        for ck in condition_keys:
-            s = stats_by_condition[ck]
-            p_t_str = f"{s['p_t']:.4f} {_sig_label(s['p_t']):<3}"
-            if s['w_stat'] is not None:
-                p_w_str = f"{s['p_w']:.4f} {_sig_label(s['p_w']):<3}"
-                w_str = f"{s['w_stat']:>8.1f}"
-            else:
-                p_w_str = "   n/a    "
-                w_str = "     n/a"
-            _f.write(f"  {ck:<14}  {s['n']:>4}  {s['mean']:>+8.4f}  "
-                     f"{s['t_stat']:>+7.3f}  {p_t_str:>10}  {w_str}  {p_w_str}\n")
-        _f.write("  (* p<0.05  ** p<0.01  *** p<0.001)\n\n")
+        col_hdr = f"  {'Condition':<14}  {'n':>4}  {'mean':>8}  {'t':>7}  {'p(t)':>10}  {'W':>8}  {'p(W)':>10}\n"
+        sep = "  " + "-" * 74 + "\n"
+        for period_key, period_label in [('pre_cue', 'Pre-cue'), ('delay', 'Delay')]:
+            _f.write(f"One-sample tests — {period_label} asymmetry vs. 0\n")
+            _f.write(col_hdr)
+            _f.write(sep)
+            for ck in condition_keys:
+                s = stats_by_condition[ck][period_key]
+                _f.write(f"  {ck:<14}  {_fmt_onesample(s)}\n")
+            _f.write("  (* p<0.05  ** p<0.01  *** p<0.001)\n\n")
         if pairwise_stats:
-            _f.write("Pairwise tests — asymmetry magnitude (Mann-Whitney U)\n")
-            _f.write(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}\n")
-            _f.write("  " + "-" * 70 + "\n")
-            for pw in pairwise_stats:
-                p_str = f"{pw['p_u']:.4f} {_sig_label(pw['p_u']):<3}"
-                _f.write(f"  {pw['cond_a']:<14}  {pw['cond_b']:<14}  "
-                         f"{pw['n_a']:>4}  {pw['n_b']:>4}  {pw['u_stat']:>8.1f}  {p_str}\n")
-            _f.write("  (* p<0.05  ** p<0.01  *** p<0.001)\n")
+            for period_key, period_label in [('delay', 'Delay'), ('pre_cue', 'Pre-cue')]:
+                _f.write(f"Pairwise tests — |asymmetry| {period_label} (Mann-Whitney U)\n")
+                _f.write(f"  {'Cond A':<14}  {'Cond B':<14}  {'n_A':>4}  {'n_B':>4}  {'U':>8}  {'p(U)':>10}\n")
+                _f.write("  " + "-" * 70 + "\n")
+                for pw in pairwise_stats:
+                    if pw['period'] != period_key:
+                        continue
+                    p_str = f"{pw['p_u']:.4f} {_sig_label(pw['p_u']):<4}"
+                    _f.write(f"  {pw['cond_a']:<14}  {pw['cond_b']:<14}  "
+                             f"{pw['n_a']:>4}  {pw['n_b']:>4}  {pw['u_stat']:>8.1f}  {p_str}\n")
+                _f.write("  (* p<0.05  ** p<0.01  *** p<0.001)\n\n")
     print(f"Statistical report saved to {stats_txt_path}")
 
     # --- Summary figures ---
@@ -5276,7 +5237,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         animate_ring_snapshot_evolution,
     )
 
-    title_suffix = f" — amp {amp:g}×, {_cue_title}"
+    corr_label = "asymmetry corrected" if correct_asymmetry else "asymmetry raw"
+    title_suffix = f" — amp {amp:g}×, {_cue_title}, {corr_label}"
 
     plot_asymmetry_distribution(
         data_by_condition, condition_keys,
@@ -5314,14 +5276,14 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     t_offset_disp = ASYM_SETTLING_MS
     time_range = (ASYM_SETTLING_MS - ASYM_PRE_CUE_WINDOW_MS, T_ms)
 
-    total_videos = 0 if args.no_snapshot_animation else len(condition_keys)
-    if total_videos:
-        mp4_pbar = _start_mp4_progress(
-            total_videos=total_videos,
-            frame_step_ms=args.snapshot_anim_step_ms,
-            fps=args.snapshot_anim_fps,
-            sample_time_range=time_range,
-        )
+    anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
+    total_videos = len(condition_keys)
+    mp4_pbar = _start_mp4_progress(
+        total_videos=total_videos,
+        frame_step_ms=args.snapshot_anim_step_ms,
+        fps=args.snapshot_anim_fps,
+        sample_time_range=time_range,
+    )
 
     for cond_key in condition_keys:
         worst = worst_by_condition[cond_key]
@@ -5352,7 +5314,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         side = "right" if worst['delay_asym'] > 0 else "left"
         suptitle = (
             f"{STUDY_CONDITIONS[cond_key].name} — worst-case trial "
-            f"(amp {amp:g}×, {_cue_title}, delay asym = {worst['delay_asym']:+.3f}, {side}ward)"
+            f"(amp {amp:g}×, {_cue_title}, {corr_label}, "
+            f"delay asym = {worst['delay_asym']:+.3f}, {side}ward)"
         )
 
         # Dashboard
@@ -5375,29 +5338,28 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         plt.close()
 
         # Snapshot evolution animation
-        if not args.no_snapshot_animation:
-            anim_path = os.path.join(cond_dir, "snapshot_evolution.mp4")
-            mp4_pbar.set_postfix_str(f"cond={cond_key}")
-            try:
-                fig_anim, _ = animate_ring_snapshot_evolution(
-                    result_worst,
-                    save_path=anim_path,
-                    time_range=time_range,
-                    t_offset=t_offset_disp,
-                    frame_step_ms=args.snapshot_anim_step_ms,
-                    fps=args.snapshot_anim_fps,
-                    suptitle=f"{STUDY_CONDITIONS[cond_key].name} — worst-case",
-                    show_asymmetry=True,
-                )
-                plt.close(fig_anim)
-                mp4_pbar.update(1)
-            except Exception as exc:
-                print(f"  Warning: animation failed: {exc}")
+        anim_path = os.path.join(cond_dir, "snapshot_evolution.mp4")
+        mp4_pbar.set_postfix_str(f"cond={cond_key}")
+        try:
+            fig_anim, _ = animate_ring_snapshot_evolution(
+                result_worst,
+                save_path=anim_path,
+                time_range=time_range,
+                t_offset=t_offset_disp,
+                frame_step_ms=args.snapshot_anim_step_ms,
+                fps=args.snapshot_anim_fps,
+                suptitle=f"{STUDY_CONDITIONS[cond_key].name} — worst-case",
+                show_asymmetry=True,
+                **anim_quality_kwargs,
+            )
+            plt.close(fig_anim)
+            mp4_pbar.update(1)
+        except Exception as exc:
+            print(f"  Warning: animation failed: {exc}")
 
         del result_worst
 
-    if total_videos:
-        mp4_pbar.close()
+    mp4_pbar.close()
 
     print(f"\nAll outputs saved to {out_dir}/")
     print(f"\nFigure saved to {out_dir}/temporal_dissection.png")

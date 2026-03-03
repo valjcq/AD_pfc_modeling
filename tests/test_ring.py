@@ -14,7 +14,6 @@ from circuit_model.ring import (
     RingStimulus,
     WorkingMemoryProtocol,
     build_pyr_pyr_weights,
-    build_pyr_pyr_weights_compte,
     build_pv_pyr_weights,
     compute_stimulus_current,
     simulate_ring,
@@ -84,8 +83,8 @@ class TestConnectivity:
         assert row[63] > row[32]  # Adjacent > opposite
 
     def test_pv_global_uniform(self):
-        """Uniform PV weights should be equal for all off-diagonal elements."""
-        params = RingParams(n_nodes=8, pv_global_type="uniform", w_pv_global=1.0)
+        """PV weights should be equal for all off-diagonal elements."""
+        params = RingParams(n_nodes=8, w_pv_global=1.0)
         W = build_pv_pyr_weights(params)
         # All off-diagonal should be equal
         expected = 1.0 / 7  # 1/(n-1)
@@ -308,70 +307,6 @@ class TestIntegration:
 
         # Should complete without error
         assert result.t_ms[-1] >= protocol.total_duration_ms - 1
-
-
-class TestCompteConnectivity:
-    """Test Compte et al. (2000) connectivity profile."""
-
-    def test_diagonal_zero(self):
-        """Self-connections should be zero."""
-        params = RingParams(n_nodes=64, pyr_profile_type="compte",
-                            J_plus=1.5, sigma_pyr_deg=30.0)
-        W = build_pyr_pyr_weights(params)
-        assert np.allclose(np.diag(W), 0.0)
-
-    def test_symmetric(self):
-        """Weight matrix should be symmetric."""
-        params = RingParams(n_nodes=64, pyr_profile_type="compte",
-                            J_plus=1.5, sigma_pyr_deg=30.0)
-        W = build_pyr_pyr_weights(params)
-        assert np.allclose(W, W.T)
-
-    def test_row_sum(self):
-        """Off-diagonal row sums should equal 1/N."""
-        params = RingParams(n_nodes=64, pyr_profile_type="compte",
-                            J_plus=1.5, sigma_pyr_deg=30.0)
-        W = build_pyr_pyr_weights(params)
-        n = params.n_nodes
-        row_sums = W.sum(axis=1)
-        assert np.allclose(row_sums, 1.0 / n, rtol=1e-10)
-
-    def test_local_excitation_peak(self):
-        """Nearby weights should be larger than distant weights."""
-        params = RingParams(n_nodes=64, pyr_profile_type="compte",
-                            J_plus=1.8, sigma_pyr_deg=30.0)
-        W = build_pyr_pyr_weights(params)
-        assert W[0, 1] > W[0, 32]
-
-    def test_surround_inhibition(self):
-        """With large J+, distant weights should be negative."""
-        params = RingParams(n_nodes=64, pyr_profile_type="compte",
-                            J_plus=2.5, sigma_pyr_deg=20.0)
-        W = build_pyr_pyr_weights(params)
-        assert W[0, 32] < 0
-
-    def test_scaling_with_n(self):
-        """Total input W@r should be 1/N for uniform r=1 at any N."""
-        for n in [32, 64, 128]:
-            params = RingParams(n_nodes=n, pyr_profile_type="compte",
-                                J_plus=1.5, sigma_pyr_deg=30.0)
-            W = build_pyr_pyr_weights(params)
-            total_input = W @ np.ones(n)
-            assert total_input[0] == pytest.approx(1.0 / n, rel=1e-10)
-
-    def test_dispatch_gaussian_default(self):
-        """Default pyr_profile_type='gaussian' should produce all non-negative weights."""
-        params = RingParams(n_nodes=32, pyr_profile_type="gaussian")
-        W = build_pyr_pyr_weights(params)
-        assert np.all(W >= 0)
-
-    def test_compte_direct_call(self):
-        """Direct call to build_pyr_pyr_weights_compte should work."""
-        params = RingParams(n_nodes=32, pyr_profile_type="compte",
-                            J_plus=1.5, sigma_pyr_deg=30.0)
-        W = build_pyr_pyr_weights_compte(params)
-        assert W.shape == (32, 32)
-        assert np.allclose(W.sum(axis=1), 1.0 / 32, rtol=1e-10)
 
 
 if __name__ == "__main__":

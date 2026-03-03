@@ -8,7 +8,7 @@ spatially and temporally localized stimuli on the ring.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -29,7 +29,6 @@ class RingStimulus:
         sigma_deg: Spatial width (degrees)
         onset_ms: When stimulus turns on (ms)
         duration_ms: How long stimulus lasts (ms)
-        shape: Temporal shape ("square", "ramp_on", "ramp_off", "gaussian")
     """
 
     # Location
@@ -42,9 +41,6 @@ class RingStimulus:
     # Temporal profile
     onset_ms: float = 500.0  # When stimulus turns on
     duration_ms: float = 250.0  # How long stimulus lasts
-
-    # Temporal shape
-    shape: Literal["square", "ramp_on", "ramp_off", "gaussian"] = "square"
 
     @property
     def offset_ms(self) -> float:
@@ -88,26 +84,7 @@ def compute_stimulus_current(
     dist = angular_distance(node_angles_rad, stimulus.center_rad)
     spatial = np.exp(-dist**2 / (2 * stimulus.sigma_rad**2))
 
-    # Compute temporal modulation
-    t_rel = t_ms - stimulus.onset_ms  # Time since onset
-
-    if stimulus.shape == "square":
-        temporal = 1.0
-    elif stimulus.shape == "ramp_on":
-        ramp_time = stimulus.duration_ms * 0.1
-        temporal = min(t_rel / ramp_time, 1.0) if ramp_time > 0 else 1.0
-    elif stimulus.shape == "ramp_off":
-        t_until_off = stimulus.offset_ms - t_ms
-        ramp_time = stimulus.duration_ms * 0.1
-        temporal = min(t_until_off / ramp_time, 1.0) if ramp_time > 0 else 1.0
-    elif stimulus.shape == "gaussian":
-        t_center = stimulus.duration_ms / 2
-        t_sigma = stimulus.duration_ms / 4
-        temporal = np.exp(-((t_rel - t_center) ** 2) / (2 * t_sigma**2))
-    else:
-        temporal = 1.0
-
-    return stimulus.amplitude * spatial * temporal
+    return stimulus.amplitude * spatial
 
 
 @dataclass(frozen=True)

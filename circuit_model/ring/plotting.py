@@ -233,65 +233,17 @@ def plot_ring_snapshot(
         ax.legend(loc="upper right")
     else:
         r_pyr = result.r[idx, :, 0]
-        r_som = result.r[idx, :, 1]
         color = POPULATION_COLORS["PYR"]
-        som_color = POPULATION_COLORS["SOM"]
-
-        # Scale SOM axis on delay activity only (cue offset + 100 ms → end),
-        # to avoid the large cue-evoked transient distorting the radial range.
-        _scale_mask = result.t_ms >= (result.stim_window[1] + 100.0)
-        _som_scale = result.r[_scale_mask, :, 1] if _scale_mask.any() else result.r[:, :, 1]
-        som_rmax = max(float(np.max(_som_scale)) * 1.05, 1.0)
 
         if polar:
             r_closed = np.append(r_pyr, r_pyr[0])
             ax.plot(angles_closed, r_closed, color=color, linewidth=2)
             ax.fill(angles_closed, r_closed, color=color, alpha=0.3)
-
-            # SOM on a secondary polar axis with its own radial scale
-            r_som_closed = np.append(r_som, r_som[0])
-            fig = ax.figure
-            pos = ax.get_position()
-            ax_som = fig.add_axes(
-                [pos.x0, pos.y0, pos.width, pos.height],
-                projection="polar",
-                label=f"som_overlay_{id(ax)}",
-            )
-            ax_som.patch.set_visible(False)
-            ax_som.spines["polar"].set_visible(False)
-            ax_som.grid(False)
-            ax_som.set_rticks([])
-            ax_som.set_thetagrids([])
-            ax_som.set_xticklabels([])
-            ax_som.set_rmax(som_rmax)
-            ax_som.plot(angles_closed, r_som_closed, color=som_color, linewidth=1.5,
-                        ls="--", alpha=0.85)
-            ax_som.fill(angles_closed, r_som_closed, color=som_color, alpha=0.15)
-
-            from matplotlib.lines import Line2D
-            leg = [
-                Line2D([0], [0], color=color, lw=2, label="PYR"),
-                Line2D([0], [0], color=som_color, lw=1.5, ls="--",
-                       label=f"SOM (max {som_rmax / 1.05:.0f} Hz)"),
-            ]
-            ax.legend(handles=leg, loc="upper right", fontsize=7)
+            ax.legend(["PYR"], loc="upper right", fontsize=7)
         else:
             ax.plot(angles, r_pyr, color=color, linewidth=2, label="PYR")
             ax.fill_between(angles, 0, r_pyr, color=color, alpha=0.3)
-
-            ax_som = ax.twinx()
-            ax_som.plot(angles, r_som, color=som_color, linewidth=1.5, ls="--",
-                        alpha=0.85, label="SOM")
-            ax_som.set_ylim(0, som_rmax)
-            ax_som.set_ylabel("SOM Rate (Hz)", color=som_color)
-            ax_som.tick_params(axis="y", labelcolor=som_color)
-
-            from matplotlib.lines import Line2D
-            leg = [
-                Line2D([0], [0], color=color, lw=2, label="PYR"),
-                Line2D([0], [0], color=som_color, lw=1.5, ls="--", label="SOM"),
-            ]
-            ax.legend(handles=leg, loc="upper right", fontsize=7)
+            ax.legend(["PYR"], loc="upper right", fontsize=7)
 
     ax.set_title(f"t = {actual_t - t_offset:.1f} ms")
 
@@ -320,6 +272,8 @@ def animate_ring_snapshot_evolution(
     show_asymmetry: bool = False,
     n_workers: int = 4,
     dpi: int = 100,
+    av1_crf: int = 35,
+    av1_preset: int = 8,
 ):
     """Animate ring snapshot evolution over time and save to MP4.
 
@@ -337,6 +291,8 @@ def animate_ring_snapshot_evolution(
         cue_angle_deg: Optional cue angle marker override
         distractor_window: Optional (onset_ms, offset_ms) for distractor shading
         distractor_angle_deg: Optional distractor angle marker on snapshot/profile
+        av1_crf: AV1 constant-rate-factor (lower = better quality, slower/larger)
+        av1_preset: AV1 speed/quality preset (lower = better quality, slower)
 
     Returns:
         fig: Matplotlib figure used for animation
@@ -580,7 +536,7 @@ def animate_ring_snapshot_evolution(
         "-f", "rawvideo", "-vcodec", "rawvideo",
         "-s", f"{W}x{H}", "-pix_fmt", "rgba", "-r", str(fps),
         "-i", "pipe:0",
-        "-c:v", "libsvtav1", "-preset", "8", "-crf", "35",
+        "-c:v", "libsvtav1", "-preset", str(av1_preset), "-crf", str(av1_crf),
         "-pix_fmt", "yuv420p", "-svtav1-params", f"lp={n_workers}",
         save_path,
     ]
@@ -1192,15 +1148,11 @@ def plot_ring_connectome(
         )
 
     # --- Legend ---
-    if ring_params.pyr_profile_type == "compte":
-        exc_label = (f"PYR->PYR Compte (J+={ring_params.J_plus:.2f}, "
-                     f"sigma={ring_params.sigma_pyr_deg:.0f} deg)")
-    else:
-        exc_label = f"PYR->PYR excitatory (sigma={ring_params.sigma_pyr_deg:.0f} deg)"
+    exc_label = f"PYR->PYR excitatory (sigma={ring_params.sigma_pyr_deg:.0f} deg)"
     legend_elements = [
         Line2D([0], [0], color=excit_color, linewidth=2.5, label=exc_label),
         Line2D([0], [0], color=inhib_color, linewidth=1, linestyle="--",
-               label=f"PV->PYR inhibitory ({ring_params.pv_global_type})"),
+               label="PV->PYR inhibitory (uniform)"),
     ]
     ax.legend(handles=legend_elements, loc="upper right", fontsize=11,
               framealpha=0.9)
@@ -1353,7 +1305,7 @@ def plot_bump_metrics_comparison(
 
     if suptitle:
         plt.suptitle(suptitle, fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1467,7 +1419,7 @@ def plot_metrics_vs_delay(
             ax.set_title(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
 
         plt.suptitle(suptitle or "Bump Metrics During Delay Period", fontsize=13, fontweight="bold")
-        plt.tight_layout()
+        
 
         if save_path:
             fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1510,7 +1462,7 @@ def plot_metrics_vs_delay(
         ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
 
     plt.suptitle(suptitle or "Bump Metrics During Delay Period", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1619,7 +1571,7 @@ def plot_metrics_vs_amplitude(
 
         plt.suptitle(suptitle or "Bump Metrics vs Stimulus Amplitude",
                      fontsize=13, fontweight="bold")
-        plt.tight_layout()
+        
 
         if save_path:
             fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1642,7 +1594,7 @@ def plot_metrics_vs_amplitude(
 
     plt.suptitle(suptitle or "Bump Metrics vs Stimulus Amplitude",
                  fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1785,7 +1737,7 @@ def plot_msd_curves(
         ax_msd.legend(fontsize=8)
 
     plt.suptitle(suptitle or "Diffusion Analysis (MSD)", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1892,7 +1844,7 @@ def plot_oscillation_spectrum(
 
     plt.suptitle(suptitle or "Bump Amplitude Oscillation Spectrum",
                  fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2021,7 +1973,7 @@ def plot_displacement_distribution(
 
     plt.suptitle(suptitle or "Final Bump Displacement from Cue",
                  fontsize=12, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2256,7 +2208,7 @@ def plot_extreme_drift_trials(
 
     plt.suptitle(suptitle or "Most Prominent Drift Trial per Condition",
                  fontsize=12, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2316,7 +2268,7 @@ def plot_drift_field(
     ax.grid(True, alpha=0.3)
 
     plt.suptitle(suptitle or "Drift Field Analysis", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2371,7 +2323,7 @@ def plot_noise_floor_histogram(
 
     plt.suptitle(suptitle or "Noise Floor: Â_hat Distribution (No Stimulus)",
                  fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2446,7 +2398,7 @@ def plot_calibration_heatmap(
     ax.set_title(metric_labels.get(metric, metric))
 
     plt.suptitle(suptitle or "Parameter Calibration", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2512,7 +2464,7 @@ def plot_calibration_timecourses(
     ax.set_ylim(bottom=0)
 
     plt.suptitle(suptitle or "Â_hat Time Courses", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2588,7 +2540,7 @@ def plot_calibration_scatter(
     ax.grid(True, alpha=0.3)
 
     plt.suptitle(suptitle or "Calibration Summary", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2637,7 +2589,7 @@ def plot_noise_summary(
     ax.grid(True, alpha=0.3)
 
     plt.suptitle(suptitle or "Noise Floor Summary", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2720,7 +2672,7 @@ def plot_distractor_sweep_heatmaps(
     _annotate(ax1, drift_mat)
     plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Drift Field",
                  fontsize=12, fontweight="bold")
-    plt.tight_layout()
+    
     if save_dir:
         fig1.savefig(os.path.join(save_dir, "drift.png"),
                      dpi=150, bbox_inches="tight")
@@ -2748,7 +2700,7 @@ def plot_distractor_sweep_heatmaps(
                          color="black" if val < 0.5 else "white")
     plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Collapse Probability",
                  fontsize=12, fontweight="bold")
-    plt.tight_layout()
+    
     if save_dir:
         fig2.savefig(os.path.join(save_dir, "collapse.png"),
                      dpi=150, bbox_inches="tight")
@@ -2961,7 +2913,7 @@ def plot_distractor_sweep_timecourses(
 
     plt.suptitle(suptitle or "Distractor Sweep — Bump Trajectories",
                  fontsize=12, fontweight="bold")
-    plt.tight_layout()
+    
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
@@ -3269,7 +3221,7 @@ def plot_lesion_study(
         suptitle or 'Population Lesion Study: Formation & Survival',
         fontsize=13, fontweight='bold',
     )
-    plt.tight_layout()
+    
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3345,7 +3297,7 @@ def plot_tau_adapt_sweep(
         suptitle or 'τ_adapt Sweep: Survival, Diffusion & Oscillation',
         fontsize=12, fontweight='bold',
     )
-    plt.tight_layout()
+    
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3456,7 +3408,7 @@ def plot_phase_plane(
         suptitle or 'Phase Plane Analysis: Bifurcation Fingerprinting',
         fontsize=12, fontweight='bold',
     )
-    plt.tight_layout()
+    
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3574,7 +3526,7 @@ def plot_temporal_dissection(
         suptitle or 'Temporal Dissection: Population Time Courses',
         fontsize=12, fontweight='bold',
     )
-    plt.tight_layout()
+    
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3656,7 +3608,8 @@ def plot_asymmetry_distribution(
     cmap, norm = _asym_cmap_norm()
     rng = np.random.default_rng(0)
 
-    # Robust y-scale: 98th percentile of |values| across all conditions/groups
+    # Symmetric y-scale around 0 so distributions stay visually centered.
+    # Keep a small headroom so the most extreme points nearly touch bounds.
     all_vals = np.concatenate([
         np.concatenate([
             np.asarray(data_by_condition[k]['pre_cue'], dtype=float),
@@ -3664,10 +3617,8 @@ def plot_asymmetry_distribution(
         ])
         for k in conds
     ])
-    y_lim = min(float(np.percentile(np.abs(all_vals), 98)) * 1.3, 1.15)
+    y_lim = float(np.max(np.abs(all_vals))) * 1.05
     y_lim = max(y_lim, 0.1)
-    # Extra space below violins for mean/variance annotations
-    y_annot_bottom = -(y_lim + 0.28)
 
     fig, axes = plt.subplots(1, n_conds, figsize=(4.5 * n_conds, 5.5), sharey=True)
     if n_conds == 1:
@@ -3706,31 +3657,37 @@ def plot_asymmetry_distribution(
             var_val = float(np.var(vals, ddof=1))
             annot = f"μ={mean_val:+.3f}\nσ²={var_val:.4f}"
             if stats_by_condition and cond_key in stats_by_condition:
-                s = stats_by_condition[cond_key]
-                # prefer Wilcoxon p if available, fall back to t-test
-                p_use = s.get('p_w') if s.get('p_w') is not None else s.get('p_t')
+                cond_s = stats_by_condition[cond_key]
+                # support both nested {period: {...}} and legacy flat structure
+                s = cond_s.get(key) if isinstance(cond_s.get(key), dict) else (
+                    cond_s if key == 'delay' else None)
+                if s is not None:
+                    p_use = s.get('p_w') if s.get('p_w') is not None else s.get('p_t')
 
-                def _stars(p):
-                    if p is None: return ''
-                    if p < 0.001: return '***'
-                    if p < 0.01:  return '**'
-                    if p < 0.05:  return '*'
-                    return 'n.s.'
+                    def _stars(p):
+                        if p is None: return ''
+                        if p < 0.001: return '***'
+                        if p < 0.01:  return '**'
+                        if p < 0.05:  return '*'
+                        return 'n.s.'
 
-                if key == 'delay':
                     annot += f"\np={s['p_t']:.3f} {_stars(p_use)}"
+            # Put stats text below the axis in axes coordinates so it does not
+            # alter y-limits or push data upward.
             ax.text(
-                xi, y_annot_bottom,
+                xi, -0.22,
                 annot,
+                transform=ax.get_xaxis_transform(),
                 ha='center', va='top', fontsize=7.5,
                 color='#333333', style='italic',
+                clip_on=False,
             )
 
         ax.axhline(0, color='gray', ls='--', lw=0.8, alpha=0.7)
         ax.set_xticks([0, 1])
         ax.set_xticklabels([g[1] for g in groups], fontsize=10)
         ax.set_title(cname, fontsize=11, fontweight='bold', color=ccolor)
-        ax.set_ylim(y_annot_bottom - 0.05, y_lim + 0.05)
+        ax.set_ylim(-y_lim, y_lim)
         if ax is axes[0]:
             ax.set_ylabel("Asymmetry index (right − left)", fontsize=10)
 
@@ -3741,7 +3698,7 @@ def plot_asymmetry_distribution(
                  label='← left        right →')
 
     fig.suptitle(f"L/R Asymmetry Distribution{title_suffix}", fontsize=13, fontweight='bold')
-    fig.tight_layout()
+    fig.tight_layout(rect=[0.0, 0.12, 1.0, 0.95])
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -3778,17 +3735,6 @@ def plot_asymmetry_correlation(
 
     cmap, norm = _asym_cmap_norm()
 
-    # Compute adaptive axis range: 99th percentile of |values| across all conditions
-    all_vals = np.concatenate([
-        np.concatenate([
-            np.asarray(data_by_condition[k]['pre_cue'], dtype=float),
-            np.asarray(data_by_condition[k]['delay'], dtype=float),
-        ])
-        for k in conds
-    ])
-    lim = min(float(np.percentile(np.abs(all_vals), 99)) * 1.2, 1.0)
-    lim = max(lim, 0.1)
-
     fig, axes = plt.subplots(1, n_conds, figsize=(4.5 * n_conds, 4.5))
     if n_conds == 1:
         axes = [axes]
@@ -3798,6 +3744,14 @@ def plot_asymmetry_correlation(
         cname = STUDY_CONDITIONS[cond_key].name
         pre = np.asarray(d['pre_cue'], dtype=float)
         delay = np.asarray(d['delay'], dtype=float)
+
+        # Per-panel symmetric limits with equal x/y scales.
+        # Small headroom keeps the most extreme points close to the frame.
+        lim = float(np.max(np.abs(np.concatenate([pre, delay])))) * 1.05
+        if lim <= 0.0:
+            lim = 1e-6
+        elif lim < 0.01:
+            lim = 0.01
 
         ax.scatter(pre, delay, c=delay, cmap=cmap, norm=norm,
                    s=25, alpha=0.7, linewidths=0)
@@ -3816,7 +3770,7 @@ def plot_asymmetry_correlation(
             except ImportError:
                 pass
 
-        # Reference lines (clipped to axis range)
+        # Reference lines (panel-specific scale)
         ax.plot([-lim, lim], [-lim, lim], color='gray', ls='--', lw=0.8, alpha=0.5, zorder=0)
         ax.axhline(0, color='gray', ls=':', lw=0.6, alpha=0.5)
         ax.axvline(0, color='gray', ls=':', lw=0.6, alpha=0.5)
@@ -3855,17 +3809,17 @@ def plot_asymmetry_summary(
 ):
     """Summary bar chart of asymmetry statistics across conditions.
 
-    Three panels, each showing pre-cue and delay periods side by side:
-    1. Mean asymmetry ± SEM (is the average centered at 0?)
-    2. Fraction of trials with rightward asymmetry (balance check)
-    3. Mean absolute asymmetry ± SEM with pairwise significance brackets (delay only)
+    Three panels:
+    1. Mean asymmetry ± SEM for both pre-cue and delay, annotated with vs-0 stars
+    2. Mean |asymmetry| ± SEM — Delay period, with all pairwise brackets
+    3. Mean |asymmetry| ± SEM — Pre-cue period, with all pairwise brackets
 
     Parameters:
         data_by_condition: {cond_key: {'pre_cue': np.ndarray, 'delay': np.ndarray}}
         condition_order: Condition keys to display
         save_path: If provided, save figure here
-        stats_by_condition: One-sample test results per condition (from cmd_asymmetry)
-        pairwise_stats: List of pairwise test dicts {cond_a, cond_b, p_u, ...}
+        stats_by_condition: {cond_key: {'pre_cue': {...}, 'delay': {...}}} one-sample stats
+        pairwise_stats: List of {period, cond_a, cond_b, p_u, ...} dicts
 
     Returns:
         fig: Matplotlib figure
@@ -3883,7 +3837,6 @@ def plot_asymmetry_summary(
     x = np.arange(n_conds)
     labels = [STUDY_CONDITIONS[k].name for k in conds]
 
-    # Two bars per condition: pre-cue (hatched, light) and delay (solid)
     periods = [('pre_cue', 'Pre-cue'), ('delay', 'Delay')]
     bar_w = 0.35
     offsets = np.array([-bar_w / 2, bar_w / 2])
@@ -3898,19 +3851,49 @@ def plot_asymmetry_summary(
         if p < 0.05:  return '*'
         return 'n.s.'
 
-    def _draw_bracket(ax, x1, x2, y_bot, h, label, fs=8):
+    def _draw_bracket(ax, x1, x2, y_bot, h, label, color='black', fs=7.5):
         ax.plot([x1, x1, x2, x2], [y_bot, y_bot + h, y_bot + h, y_bot],
-                lw=1.0, c='black', clip_on=False)
+                lw=0.9, c=color, clip_on=False)
         ax.text((x1 + x2) / 2, y_bot + h, label,
-                ha='center', va='bottom', fontsize=fs, fontweight='bold', clip_on=False)
+                ha='center', va='bottom', fontsize=fs, fontweight='bold',
+                color=color, clip_on=False)
+
+    def _add_all_pairwise_brackets(ax, period_key, base_ylim):
+        """Draw ALL pairwise brackets (sig in black, n.s. in gray) for a given period."""
+        if not pairwise_stats:
+            return
+        pairs = [
+            (pw['cond_a'], pw['cond_b'], pw['p_u'])
+            for pw in pairwise_stats
+            if pw.get('period') == period_key
+            and pw['cond_a'] in conds and pw['cond_b'] in conds
+        ]
+        pairs.sort(key=lambda t: abs(conds.index(t[1]) - conds.index(t[0])))
+        bracket_unit = base_ylim * 0.10
+        occupied: dict = {}
+        max_level = 0
+        for ca, cb, p_val in pairs:
+            xi_a = conds.index(ca)
+            xi_b = conds.index(cb)
+            lo, hi = min(xi_a, xi_b), max(xi_a, xi_b)
+            level = max((occupied.get(xi, 0) for xi in range(lo, hi + 1)), default=0) + 1
+            for xi in range(lo, hi + 1):
+                occupied[xi] = max(occupied.get(xi, 0), level)
+            y_bot = base_ylim * 1.02 + (level - 1) * bracket_unit * 1.5
+            color = 'black' if p_val < 0.05 else '#999999'
+            _draw_bracket(ax, lo, hi, y_bot, bracket_unit * 0.6, _stars(p_val), color=color)
+            max_level = max(max_level, level)
+        if max_level > 0:
+            new_top = base_ylim * 1.02 + max_level * bracket_unit * 1.5 + bracket_unit
+            ax.set_ylim(0, max(ax.get_ylim()[1], new_top))
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 5.5))
 
-    # --- Panel 1: mean asymmetry ± SEM ---
+    # --- Panel 1: mean asymmetry ± SEM (both periods, both annotated vs 0) ---
     ax = axes[0]
-    all_peak_tops = []
     means_by_period: dict = {}
     sems_by_period: dict = {}
+    all_peak_tops = []
     for pi, (pkey, _) in enumerate(periods):
         means = np.array([np.mean(data_by_condition[k][pkey]) for k in conds])
         sems = np.array([
@@ -3931,115 +3914,86 @@ def plot_asymmetry_summary(
     ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
     ax.set_ylabel("Mean asymmetry ± SEM")
     ax.set_title("Average asymmetry\n(0 = perfectly balanced)")
-
-    ylim1 = max(max(all_peak_tops) * 2.5, sems_by_period['delay'].max() * 6.0, 0.005)
+    ylim1 = max(max(all_peak_tops) * 2.5, 0.005)
     ax.set_ylim(-ylim1, ylim1)
 
-    # One-sample significance stars above/below the delay bars
+    # Stars vs 0 for both periods
     if stats_by_condition:
-        d_means = means_by_period['delay']
-        d_sems = sems_by_period['delay']
-        for xi, ck in enumerate(conds):
-            s = stats_by_condition.get(ck)
-            if s is None:
-                continue
-            p_use = s.get('p_w') if s.get('p_w') is not None else s.get('p_t')
-            star = _stars(p_use)
-            bar_top = abs(d_means[xi]) + d_sems[xi] + ylim1 * 0.04
-            y_star = np.sign(d_means[xi] + 1e-12) * bar_top
-            ax.text(xi + offsets[1], y_star, star, ha='center', va='bottom',
-                    fontsize=9, fontweight='bold', color='black')
+        for pi, (pkey, _) in enumerate(periods):
+            m = means_by_period[pkey]
+            s = sems_by_period[pkey]
+            for xi, ck in enumerate(conds):
+                cond_s = stats_by_condition.get(ck, {})
+                # support nested {period: {...}} structure
+                ps = cond_s.get(pkey) if isinstance(cond_s.get(pkey), dict) else (
+                    cond_s if pkey == 'delay' else None)
+                if ps is None:
+                    continue
+                p_use = ps.get('p_w') if ps.get('p_w') is not None else ps.get('p_t')
+                bar_top = abs(m[xi]) + s[xi] + ylim1 * 0.04
+                y_star = np.sign(m[xi] + 1e-12) * bar_top
+                ax.text(xi + offsets[pi], y_star, _stars(p_use),
+                        ha='center', va='bottom', fontsize=8, fontweight='bold', color='black')
 
-    legend_txt = "vs. 0 (delay):\n*** p<0.001\n ** p<0.01\n  * p<0.05\nn.s. p≥0.05"
+    legend_txt = "vs. 0:\n*** p<0.001\n ** p<0.01\n  * p<0.05\nn.s. p≥0.05"
     ax.text(0.98, 0.98, legend_txt, transform=ax.transAxes,
             ha='right', va='top', fontsize=7, family='monospace',
             bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
 
-    # --- Panel 2: fraction with rightward asymmetry ---
-    ax = axes[1]
-    for pi, (pkey, _) in enumerate(periods):
-        fracs = np.array([np.mean(data_by_condition[k][pkey] > 0) for k in conds])
-        ax.bar(x + offsets[pi], fracs, width=bar_w,
-               color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
-               alpha=period_alphas[pi], edgecolor='black', linewidth=0.8,
-               hatch=period_hatches[pi])
-    ax.axhline(0.5, color='gray', ls='--', lw=1.2, label='50 % (balanced)')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
-    ax.set_ylabel("Fraction of trials")
-    ax.set_title("Left / Right balance\n(0.5 = equal)")
-    ax.set_ylim(0, 1)
-    ax.legend(fontsize=8)
-
-    # --- Panel 3: mean absolute asymmetry ± SEM with pairwise brackets ---
-    ax = axes[2]
-    all_abs_tops = []
-    for pi, (pkey, _) in enumerate(periods):
-        abs_means = np.array([np.mean(np.abs(data_by_condition[k][pkey])) for k in conds])
-        abs_sems = np.array([
-            np.std(np.abs(data_by_condition[k][pkey]), ddof=1)
-            / np.sqrt(len(data_by_condition[k][pkey]))
-            for k in conds
-        ])
-        all_abs_tops.append((abs_means + abs_sems).max())
-        ax.bar(x + offsets[pi], abs_means, width=bar_w, yerr=abs_sems, capsize=4,
-               color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
-               alpha=period_alphas[pi], edgecolor='black', linewidth=0.8,
-               hatch=period_hatches[pi])
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
-    ax.set_ylabel("Mean |asymmetry| ± SEM")
-    ax.set_title("Asymmetry magnitude\n(pairwise comparisons, delay)")
-    base_ylim3 = max(max(all_abs_tops) * 1.6, 0.005)
-    ax.set_ylim(0, base_ylim3)
-
-    # Pairwise significance brackets on the delay bars
-    if pairwise_stats:
-        sig_pairs = [
-            (pw['cond_a'], pw['cond_b'], pw['p_u'])
-            for pw in pairwise_stats
-            if pw['p_u'] < 0.05
-            and pw['cond_a'] in conds and pw['cond_b'] in conds
-        ]
-        sig_pairs.sort(key=lambda t: abs(conds.index(t[1]) - conds.index(t[0])))
-
-        bracket_unit = base_ylim3 * 0.10
-        occupied: dict = {}
-        brackets_drawn = []
-        for ca, cb, p_val in sig_pairs:
-            xi_a = conds.index(ca)
-            xi_b = conds.index(cb)
-            lo, hi = min(xi_a, xi_b), max(xi_a, xi_b)
-            level = max((occupied.get(xi, 0) for xi in range(lo, hi + 1)), default=0) + 1
-            for xi in range(lo, hi + 1):
-                occupied[xi] = max(occupied.get(xi, 0), level)
-            y_bot = base_ylim3 * 1.02 + (level - 1) * bracket_unit * 1.5
-            # Bracket spans the delay bars (right-offset) of both conditions
-            _draw_bracket(ax, lo + offsets[1], hi + offsets[1], y_bot, bracket_unit * 0.6, _stars(p_val))
-            brackets_drawn.append(level)
-
-        if brackets_drawn:
-            new_top = base_ylim3 * 1.02 + max(brackets_drawn) * bracket_unit * 1.5 + bracket_unit
-            ax.set_ylim(0, new_top)
-        elif pairwise_stats:
-            ax.text(0.5, 0.92, 'No significant\npairwise differences',
-                    transform=ax.transAxes, ha='center', va='top',
-                    fontsize=8, color='gray', style='italic')
-
-        legend_txt3 = "pairwise (MWU):\n*** p<0.001\n ** p<0.01\n  * p<0.05"
-        ax.text(0.98, 0.98, legend_txt3, transform=ax.transAxes,
-                ha='right', va='top', fontsize=7, family='monospace',
-                bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
-
-    # --- Shared legend distinguishing pre-cue vs delay ---
+    # Pre-cue / Delay legend
     legend_patches = [
         Patch(fc='gray', alpha=0.55, hatch='///', ec='black', label='Pre-cue'),
         Patch(fc='gray', alpha=1.0, ec='black', label='Delay'),
     ]
-    fig.legend(handles=legend_patches, loc='upper center', ncol=2,
-               fontsize=10, frameon=True, bbox_to_anchor=(0.5, 1.02))
+    ax.legend(handles=legend_patches, fontsize=8, loc='upper left', frameon=True)
 
-    fig.suptitle(f"L/R Asymmetry Summary{title_suffix}", fontsize=13, fontweight='bold', y=1.07)
+    # --- Panel 2: |asymmetry| Delay with all pairwise brackets ---
+    ax2 = axes[1]
+    abs_d = np.array([np.mean(np.abs(data_by_condition[k]['delay'])) for k in conds])
+    sem_d = np.array([
+        np.std(np.abs(data_by_condition[k]['delay']), ddof=1)
+        / np.sqrt(len(data_by_condition[k]['delay']))
+        for k in conds
+    ])
+    ax2.bar(x, abs_d, yerr=sem_d, capsize=5,
+            color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
+            alpha=1.0, edgecolor='black', linewidth=0.8)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
+    ax2.set_ylabel("Mean |asymmetry| ± SEM")
+    ax2.set_title("Magnitude — Delay\n(all pairwise comparisons)")
+    base_d = max((abs_d + sem_d).max() * 1.6, 0.005)
+    ax2.set_ylim(0, base_d)
+    _add_all_pairwise_brackets(ax2, 'delay', base_d)
+
+    legend_pw = "pairwise (MWU):\n■ black = p<0.05\n■ gray  = n.s."
+    ax2.text(0.98, 0.98, legend_pw, transform=ax2.transAxes,
+             ha='right', va='top', fontsize=7, family='monospace',
+             bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
+
+    # --- Panel 3: |asymmetry| Pre-cue with all pairwise brackets ---
+    ax3 = axes[2]
+    abs_p = np.array([np.mean(np.abs(data_by_condition[k]['pre_cue'])) for k in conds])
+    sem_p = np.array([
+        np.std(np.abs(data_by_condition[k]['pre_cue']), ddof=1)
+        / np.sqrt(len(data_by_condition[k]['pre_cue']))
+        for k in conds
+    ])
+    ax3.bar(x, abs_p, yerr=sem_p, capsize=5,
+            color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
+            alpha=0.55, edgecolor='black', linewidth=0.8, hatch='///')
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
+    ax3.set_ylabel("Mean |asymmetry| ± SEM")
+    ax3.set_title("Magnitude — Pre-cue\n(all pairwise comparisons)")
+    base_p = max((abs_p + sem_p).max() * 1.6, 0.005)
+    ax3.set_ylim(0, base_p)
+    _add_all_pairwise_brackets(ax3, 'pre_cue', base_p)
+    ax3.text(0.98, 0.98, legend_pw, transform=ax3.transAxes,
+             ha='right', va='top', fontsize=7, family='monospace',
+             bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
+
+    fig.suptitle(f"L/R Asymmetry Summary{title_suffix}", fontsize=13, fontweight='bold')
     fig.tight_layout()
 
     if save_path:

@@ -1063,6 +1063,14 @@ Examples:
              "which for even N lands exactly on a node and creates a one-node structural "
              "pre-cue bias of -1/(N-1).",
     )
+    ring_asym_parser.add_argument(
+        "--correct_asymmetry", dest="correct_asymmetry", action="store_true", default=True,
+        help="Enable asymmetry correction by bump amplitude at each time step (default: on).",
+    )
+    ring_asym_parser.add_argument(
+        "--no_correct_asymmetry", dest="correct_asymmetry", action="store_false",
+        help="Disable asymmetry correction by bump amplitude.",
+    )
 
     # Parse arguments
     args = parser.parse_args()
