@@ -254,20 +254,19 @@ python -m circuit_model ring-run [options]
 | `--no_show` | flag | `False` | Don't display plots |
 | `--total_time_ms` | float | `None` | Total simulation time (overrides automatic timing) |
 | `--record_dt_ms` | float | `1.0` | Recording time step (ms). Only every record_dt_ms the state is stored. Lower values use more memory |
+| `--snapshot_anim_fps` | int | `30` | FPS for snapshot evolution animation |
+| `--snapshot_anim_step_ms` | float | `2.0` | Time step between animation frames (ms) |
+| `--quality_high` | flag | `False` | Use moderately higher-quality animation rendering (higher DPI + AV1 quality; up to ~2× slower encoding) |
 
 #### Connectivity Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--pyr_profile` | str | `"gaussian"` | PYR→PYR connectivity profile: `gaussian` or `compte` |
-| `--J_plus` | float | `1.6` | Compte profile J+ parameter (local excitation). Only with `--pyr_profile compte` |
 | `--sigma_pyr_deg` | float | `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pyr_pyr_inter` | float | `4.0` | Total PYR→PYR coupling for Gaussian profile. Not used with Compte |
-| `--w_pv_global` | float | `4.0` | Total PV→PYR global inhibition strength |
+| `--w_pyr_pyr_inter` | float | `4.0` | Total PYR→PYR coupling strength |
+| `--w_pv_global` | float | `4.0` | Total PV→PYR global inhibition strength (uniform) |
 
-**Gaussian profile** (default): Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.
-
-**Compte et al. (2000) profile**: Local excitation + surround inhibition (Mexican hat). `J_plus` controls excitation peak; `J_-` is computed from normalization. Matrix scaled by 1/N for network-size invariance.
+**PYR→PYR**: Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.
 
 #### Response Transient Options
 
@@ -282,12 +281,11 @@ python -m circuit_model ring-run [options]
 
 Generates in `figs/ring/<n_nodes>/<params_stem>/<conn_label>/amp<N>/<condition>/`:
 - `dashboard.png` -- Activity heatmap, snapshots, firing rate traces
+- `snapshot_evolution.mp4` -- Ring snapshot animation (requires ffmpeg)
 - `bump_metrics.png` -- Four-panel figure: bump center, width, amplitude, and left/right asymmetry over time. The asymmetry panel uses a diverging colormap (blue = left-biased, black = symmetric, yellow = right-biased)
 - `connectome.png` -- PYR-PYR and PV-PYR connectivity matrices
 
-The `<conn_label>` encodes both excitatory and inhibitory connectivity:
-- Gaussian: `gauss_w<w>_s<sigma>-pv_unif_<w_pv>` (e.g. `gauss_w4_s30-pv_unif_2`)
-- Compte: `compte_J<J+>_s<sigma>-pv_unif_<w_pv>` (e.g. `compte_J1.6_s30-pv_unif_2`)
+The `<conn_label>` encodes the connectivity: `gauss_w<w>_s<sigma>-pv_unif_<w_pv>` (e.g. `gauss_w4_s30-pv_unif_2`)
 
 ### Examples
 
@@ -909,6 +907,8 @@ python -m circuit_model ring-asymmetry [options]
 | `--n_workers` | int | `None` | Number of parallel workers (default: auto) |
 | `--random_cue_location` | flag | off | Draw a uniformly random cue angle in [0°, 360°) per trial (inherently balanced, skips balance correction) |
 | `--no_cue_balance` | flag | off | Disable the automatic balance correction (even N → between nodes; odd N → on nearest node). Leaves the cue at raw 180°, which for even N creates a structural bias of −1/(N−1). |
+| `--correct_asymmetry` | flag | on | Multiply asymmetry by bump amplitude at each time step before averaging (bias correction for weaker bumps) |
+| `--no_correct_asymmetry` | flag | off | Disable amplitude-based asymmetry correction and use raw asymmetry index |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 
@@ -919,6 +919,12 @@ The asymmetry index is defined as:
 $$\text{asymmetry} = \frac{\sum_{\text{right}} r_i - \sum_{\text{left}} r_i}{\sum_{\text{right}} r_i + \sum_{\text{left}} r_i} \in [-1, 1]$$
 
 where "left" and "right" are nodes with signed angular offset < 0 or > 0 relative to the cue location. A value of −1 means all activity is on the left; +1 means all activity is on the right; 0 means perfectly symmetric.
+
+With the default correction enabled, the reported signal is:
+
+$$\text{asymmetry}_{\text{corr}}(t) = \text{asymmetry}(t) \times \text{bump\_amplitude}(t)$$
+
+This down-weights time points where the bump is weak and therefore more noise-sensitive.
 
 **Trial design** — each trial is fully independent:
 1. **Per-trial burn-in**: each trial starts from zero initial conditions and runs `ASYM_SETTLING_MS` (6000 ms) of noisy spontaneous activity with its own unique seed, producing fully uncorrelated pre-cue states across trials
@@ -942,9 +948,9 @@ A diagnostic is printed whenever N is even. Use `--no_cue_balance` to revert to 
 
 ### Outputs
 
-Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>/`:
+Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>_<mode>/` where `<mode>` is `corrected` or `uncorrected`:
 
-**Summary figures** (title includes cue mode, e.g. `cue@180°` or `cue@random`):
+**Summary figures** (title includes cue mode and asymmetry mode, e.g. `cue@180°`, `cue@random`, `asymmetry corrected`):
 - `asymmetry_distribution.png` -- Violin + jittered strip plots of pre-cue and delay asymmetry per condition
 - `asymmetry_correlation.png` -- Scatter plot of pre-cue vs delay asymmetry per condition with Pearson *r* annotated
 - `asymmetry_summary.png` -- Three-panel bar chart: mean delay asymmetry ± SEM, fraction of rightward trials, mean |asymmetry| ± SEM
@@ -955,7 +961,7 @@ Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>/`:
 - `animation.mp4` -- Ring snapshot animation (if ffmpeg is available)
 
 **Data:**
-- `asymmetry_trials.csv` -- Per-trial raw data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1)
+- `asymmetry_trials.csv` -- Per-trial raw data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1), `correct_asymmetry` (0/1)
 
 ### Examples
 
@@ -965,6 +971,9 @@ python -m circuit_model ring-asymmetry --no_show
 
 # Disable balance correction (raw 180°, reintroduces structural bias for even N)
 python -m circuit_model ring-asymmetry --no_cue_balance --no_show
+
+# Disable amplitude correction (legacy raw asymmetry index)
+python -m circuit_model ring-asymmetry --no_correct_asymmetry --no_show
 
 # Random cue location (inherently balanced, useful for comparison)
 python -m circuit_model ring-asymmetry --random_cue_location --no_show

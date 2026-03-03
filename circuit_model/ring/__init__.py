@@ -59,7 +59,6 @@ from .connectivity import (
     angular_distance,
     gaussian_profile,
     build_pyr_pyr_weights,
-    build_pyr_pyr_weights_compte,
     build_pv_pyr_weights,
     RingConnectivity,
 )
@@ -117,7 +116,6 @@ __all__ = [
     "angular_distance",
     "gaussian_profile",
     "build_pyr_pyr_weights",
-    "build_pyr_pyr_weights_compte",
     "build_pv_pyr_weights",
     "RingConnectivity",
     # Stimulus

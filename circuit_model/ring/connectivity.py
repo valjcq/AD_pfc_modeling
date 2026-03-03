@@ -44,11 +44,7 @@ def gaussian_profile(distance: np.ndarray, sigma: float) -> np.ndarray:
 
 def build_pyr_pyr_weights(ring_params: RingParams) -> np.ndarray:
     """
-    Build inter-node PYR→PYR weight matrix.
-
-    Dispatches based on ring_params.pyr_profile_type:
-    - "gaussian": Row-sum normalized Gaussian (original)
-    - "compte": Compte et al. (2000) with surround inhibition
+    Build inter-node PYR→PYR weight matrix with row-sum normalized Gaussian profile.
 
     Parameters:
         ring_params: RingParams configuration
@@ -56,20 +52,6 @@ def build_pyr_pyr_weights(ring_params: RingParams) -> np.ndarray:
     Returns:
         W: Shape (n_nodes, n_nodes), W[i,j] = weight from j to i
     """
-    if ring_params.pyr_profile_type == "gaussian":
-        return _build_pyr_pyr_weights_gaussian(ring_params)
-    elif ring_params.pyr_profile_type == "compte":
-        return build_pyr_pyr_weights_compte(ring_params)
-    else:
-        raise ValueError(
-            f"Unknown pyr_profile_type: {ring_params.pyr_profile_type!r}. "
-            f"Valid: 'gaussian', 'compte'"
-        )
-
-
-def _build_pyr_pyr_weights_gaussian(ring_params: RingParams) -> np.ndarray:
-    """Build PYR→PYR weights with row-sum normalized Gaussian profile."""
-    n = ring_params.n_nodes
     angles = ring_params.node_angles_rad
 
     dist = angular_distance(angles[:, None], angles[None, :])
@@ -82,69 +64,13 @@ def _build_pyr_pyr_weights_gaussian(ring_params: RingParams) -> np.ndarray:
     return W
 
 
-def build_pyr_pyr_weights_compte(ring_params: RingParams) -> np.ndarray:
-    """
-    Build inter-node PYR→PYR weight matrix using Compte et al. (2000) profile.
-
-    W_ij = J_- + (J_+ - J_-) * exp(-d(theta_i, theta_j)^2 / (2*sigma^2))
-
-    J_- is determined by the normalization constraint sum_{j!=i} W_ij = 1:
-        J_- = (1 - J_+ * S) / (N - 1 - S)
-    where S = sum_{j!=i} exp(-d_ij^2 / (2*sigma^2)).
-
-    When J_- < 0, distant weights become negative (surround inhibition).
-    Final matrix scaled by 1/N to preserve total input across network sizes.
-
-    Reference:
-        Compte, A., Brunel, N., Goldman-Rakic, P. S., & Wang, X.-J. (2000).
-        Synaptic mechanisms and network dynamics underlying spatial working
-        memory in a cortical network model. Cerebral Cortex, 10(9), 910-923.
-
-    Parameters:
-        ring_params: RingParams configuration (uses J_plus, sigma_pyr_rad)
-
-    Returns:
-        W: Shape (n_nodes, n_nodes), rows sum to 1/N (off-diagonal)
-    """
-    n = ring_params.n_nodes
-    J_plus = ring_params.J_plus
-    sigma = ring_params.sigma_pyr_rad
-    angles = ring_params.node_angles_rad
-
-    dist = angular_distance(angles[:, None], angles[None, :])
-    G = np.exp(-dist**2 / (2 * sigma**2))
-    np.fill_diagonal(G, 0.0)
-
-    # S = off-diagonal Gaussian row sum (same for all rows by symmetry)
-    S = G[0].sum()
-
-    denom = n - 1 - S
-    if abs(denom) < 1e-12:
-        raise ValueError(
-            f"Compte profile degenerate: N-1-S = {denom:.2e}. "
-            f"sigma is too large relative to N."
-        )
-    J_minus = (1.0 - J_plus * S) / denom
-
-    # W_ij = J_- + (J_+ - J_-) * G_ij
-    W = J_minus + (J_plus - J_minus) * G
-    np.fill_diagonal(W, 0.0)
-
-    # Scale by 1/N to preserve total synaptic input across network sizes
-    W /= n
-
-    return W
-
-
 def build_pv_pyr_weights(ring_params: RingParams) -> np.ndarray:
     """
-    Build inter-node PV→PYR global inhibition weight matrix.
+    Build inter-node PV→PYR global inhibition weight matrix (uniform all-to-all).
 
     PV from all nodes inhibits PYR at each node. Combined with local
     PYR→PV excitation (w_ep), this creates the E→I→E loop:
     local PYR excites local PV, then PV globally inhibits PYR.
-
-    Can be uniform (all-to-all equal) or Gaussian (distance-dependent).
 
     Parameters:
         ring_params: RingParams configuration
@@ -154,22 +80,8 @@ def build_pv_pyr_weights(ring_params: RingParams) -> np.ndarray:
     """
     n = ring_params.n_nodes
 
-    if ring_params.pv_global_type == "uniform":
-        # All-to-all with equal weights (excluding self)
-        W = np.ones((n, n)) * ring_params.w_pv_global / (n - 1)
-        np.fill_diagonal(W, 0.0)
-
-    elif ring_params.pv_global_type == "gaussian":
-        angles = ring_params.node_angles_rad
-        dist = angular_distance(angles[:, None], angles[None, :])
-        W = gaussian_profile(dist, ring_params.sigma_pv_rad)
-        np.fill_diagonal(W, 0.0)
-        # Normalize rows (consistent with uniform case where row sum = w_pv_global)
-        row_sum = W.sum(axis=1, keepdims=True)
-        W = ring_params.w_pv_global * W / np.maximum(row_sum, 1e-12)
-
-    else:
-        raise ValueError(f"Unknown pv_global_type: {ring_params.pv_global_type}")
+    W = np.ones((n, n)) * ring_params.w_pv_global / (n - 1)
+    np.fill_diagonal(W, 0.0)
 
     return W
 
