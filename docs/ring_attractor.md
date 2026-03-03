@@ -1435,21 +1435,25 @@ The unique per-trial seed drives both the burn-in and the delay, so each trial p
 
 #### Cue location and structural pre-cue bias
 
-By default all trials use `STIM_CENTER_DEG = 180°`. Because nodes are placed at exactly `k × 360/N` degrees, the default cue at 180° falls **exactly on a node** for any even $N$. This creates a structural asymmetry in the index formula: the node at the cue position is excluded (offset = 0) while the node at the antipodal position (0°, offset = −180°) is always counted as "left". Consequently, for $N$ nodes the left count is $N/2$ and the right count is $N/2 - 1$, producing a systematic pre-cue bias of approximately $-1/(N-1)$:
+The asymmetry index excludes the node exactly at the cue (offset = 0) and always counts the antipodal node (offset = −180°) as "left". For even $N$ with the cue on a node this gives left = $N/2$, right = $N/2 - 1$, and a structural pre-cue bias of $-1/(N-1)$. For odd $N$, the antipodal position is never on a node so snapping to a node already produces left = right = $(N-1)/2$ — no bias.
 
-| $N$ | Structural bias ($-1/(N-1)$) |
-|-----|-----------------------------|
-| 128 | ≈ −0.008 |
-| 256 | ≈ −0.004 |
-| 512 | ≈ −0.002 |
+| $N$ parity | Cue placement | Left count | Right count | Structural bias |
+|------------|--------------|-----------|------------|----------------|
+| Even | On node | $N/2$ | $N/2 - 1$ | $-1/(N-1)$ ≈ −0.008 (N=128), −0.004 (N=256) |
+| Even | Between nodes | $N/2$ | $N/2$ | **0** |
+| Odd | On node | $(N-1)/2$ | $(N-1)/2$ | **0** |
 
-Two flags control this behaviour:
+**Balance correction (on by default, disable with `--no_cue_balance`)**:
+- **Even N** — cue placed at `nearest_node_angle + step/2` (halfway between two adjacent nodes), guaranteeing left = right = $N/2$.
+- **Odd N** — cue snapped to the nearest node (already balanced by parity).
 
-**`--random_cue_location`** (default: off) — each trial draws a uniformly random cue angle in $[0°, 360°)$ using a separate RNG seeded from `seed ⊕ 0xA5A5A5A5`. Because the random angle is never exactly on a node, the left and right node counts are always equal ($N/2$ each) and the structural bias disappears. The cue location is stored per trial in the CSV.
+A diagnostic line is always printed when $N$ is even:
+- Balance on: `[N=128 is even] Cue placed at 181.4063° (half-step between nodes) to balance left/right counts.`
+- `--no_cue_balance`: `WARNING: N=128 is even … structural pre-cue bias ≈ -0.0079.`
 
-**`--snap_cue_to_node`** (default: off) — rounds the cue angle to the nearest node before creating the stimulus. For the fixed default (180°) and even $N$ this has no effect. When combined with `--random_cue_location` it snaps each random angle to the nearest node, which reintroduces the one-node structural imbalance.
+**`--random_cue_location`** (default: off) — each trial draws a uniformly random cue angle in $[0°, 360°)$ using a separate RNG seeded from `seed ⊕ 0xA5A5A5A5`. A continuous random angle is never exactly on a node, so left = right = $N/2$ naturally; the balance correction is not applied.
 
-> **Interpretation**: if the observed pre-cue bias disappears when `--random_cue_location` is enabled, the bias is entirely structural (node-count imbalance), not a genuine spontaneous asymmetry. If the bias persists, there may be an additional source (e.g. numerical artefacts of the connectivity matrix).
+> **Interpretation**: if the pre-cue bias disappears with the balance correction, it was entirely structural. If it persists, there may be an additional source (e.g. numerical asymmetry of the connectivity matrix).
 
 ### 20.4 Measured Quantities
 
@@ -1487,7 +1491,7 @@ figs/asymmetry/{N}/{params_label}/{connectivity_label}/amp{amp}/
 
 | File | Description |
 |------|-------------|
-| `asymmetry_trials.csv` | Per-trial data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `snap_cue` (0/1) |
+| `asymmetry_trials.csv` | Per-trial data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1) |
 | `asymmetry_distribution.png` | Violin + jittered strip plots of pre-cue and delay asymmetry per condition. Each point is coloured by asymmetry value (blue → right, yellow → left). The delay violin is annotated with the p-value and significance stars from §20.5. |
 | `asymmetry_correlation.png` | Scatter plot of pre-cue vs. delay asymmetry per condition, with Pearson $r$ annotated. |
 | `asymmetry_summary.png` | Three-panel bar chart: (1) mean delay asymmetry ± SEM with significance stars, (2) fraction of rightward trials, (3) mean absolute asymmetry ± SEM. |
@@ -1501,11 +1505,11 @@ The trial CSV is used as a cache on subsequent runs. Before launching simulation
 - `delay_ms` matches the current `--delay_ms` argument
 - `amplitude` matches the current `--amplitude` argument
 - `random_cue` (0/1) matches the current `--random_cue_location` flag
-- `snap_cue` (0/1) matches the current `--snap_cue_to_node` flag
+- `balance_cue` (0/1) matches whether `--no_cue_balance` is absent (1) or present (0)
 
 If validation passes, already-computed trial indices are loaded and only the **missing trials** are simulated (top-up logic). This allows incremental runs: e.g. running with `--n_trials 50` after a previous `--n_trials 20` will run only 30 additional trials and merge them into the CSV. If any parameter does not match, all trials are rerun from scratch and the CSV is overwritten.
 
-Old-format CSVs (written before the `delay_ms`/`amplitude` columns were added) are treated as invalid and trigger a full rerun. CSVs that predate `cue_deg`/`random_cue`/`snap_cue` load `cue_deg` defaulting to `STIM_CENTER_DEG` and skip flag validation.
+Old-format CSVs (written before the `delay_ms`/`amplitude` columns were added) are treated as invalid and trigger a full rerun. CSVs that predate `cue_deg`/`random_cue`/`balance_cue` load `cue_deg` defaulting to `STIM_CENTER_DEG` and skip flag validation (defaulting `balance_cue=1`).
 
 ---
 

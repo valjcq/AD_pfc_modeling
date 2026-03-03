@@ -907,8 +907,8 @@ python -m circuit_model ring-asymmetry [options]
 | `--conditions` | str (list) | `WT WT_APP a7_KO_APP` | Conditions to analyse (space-separated) |
 | `--n_trials` | int | `100` | Number of trials per condition |
 | `--n_workers` | int | `None` | Number of parallel workers (default: auto) |
-| `--random_cue_location` | flag | off | Draw a uniformly random cue angle in [0°, 360°) per trial (removes structural pre-cue bias; see below) |
-| `--snap_cue_to_node` | flag | off | Snap the cue angle to the nearest node before stimulation |
+| `--random_cue_location` | flag | off | Draw a uniformly random cue angle in [0°, 360°) per trial (inherently balanced, skips balance correction) |
+| `--no_cue_balance` | flag | off | Disable the automatic balance correction (even N → between nodes; odd N → on nearest node). Leaves the cue at raw 180°, which for even N creates a structural bias of −1/(N−1). |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 
@@ -928,13 +928,17 @@ where "left" and "right" are nodes with signed angular offset < 0 or > 0 relativ
 
 All trials are run in parallel using `ProcessPoolExecutor`.
 
-#### Structural pre-cue bias and cue placement
+#### Balance correction and structural pre-cue bias
 
-When the cue is fixed at 180° (the default) and N is even, the cue falls exactly on a node. The asymmetry formula then has one extra node on the left (the antipodal node at 0° has offset = −180°, which satisfies `< 0`), so the left count is always $N/2$ and the right count is $N/2 - 1$. This creates a systematic pre-cue bias of $\approx -1/(N-1)$ (about −0.008 for N=128, −0.004 for N=256, −0.002 for N=512).
+The asymmetry index excludes the node at offset = 0 (cue position) and counts offset = −180° (antipodal) as "left". For even N with the cue on a node, left has one more node than right → bias = −1/(N−1).
 
-**`--random_cue_location`**: Using a continuous random angle ensures that no node falls exactly at the cue position (offset = 0) or its antipode (offset = ±180°), so left and right node counts are always equal and the structural bias vanishes. Each trial's cue angle is stored in the CSV as `cue_deg`. Plot titles show `cue@random`; without the flag they show `cue@180°`.
+The **balance correction** (on by default) fixes this:
+- **Even N**: cue placed at `nearest_node + step/2` (halfway between two nodes) → left = right = N/2.
+- **Odd N**: cue snapped to nearest node (antipodal never on a node → always balanced).
 
-**`--snap_cue_to_node`**: rounds the cue angle to the nearest node. For the default fixed cue this has no effect (already on a node). Combined with `--random_cue_location` it reintroduces the one-node imbalance.
+A diagnostic is printed whenever N is even. Use `--no_cue_balance` to revert to raw 180° (e.g. for comparison with old results).
+
+**`--random_cue_location`**: continuous random angle per trial → inherently balanced (left = right = N/2), balance correction skipped. Plot titles show `cue@random` vs `cue@181.41° (balanced)` for the default.
 
 ### Outputs
 
@@ -951,19 +955,19 @@ Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>/`:
 - `animation.mp4` -- Ring snapshot animation (if ffmpeg is available)
 
 **Data:**
-- `asymmetry_trials.csv` -- Per-trial raw data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `snap_cue` (0/1)
+- `asymmetry_trials.csv` -- Per-trial raw data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1)
 
 ### Examples
 
 ```bash
-# Default: WT vs WT_APP vs a7_KO_APP, 100 trials each, fixed cue@180°
+# Default: WT vs WT_APP vs a7_KO_APP, 100 trials each, balanced cue (on by default)
 python -m circuit_model ring-asymmetry --no_show
 
-# Random cue location to eliminate structural pre-cue bias
-python -m circuit_model ring-asymmetry --random_cue_location --no_show
+# Disable balance correction (raw 180°, reintroduces structural bias for even N)
+python -m circuit_model ring-asymmetry --no_cue_balance --no_show
 
-# Snap random cue to nearest node (reintroduces one-node imbalance)
-python -m circuit_model ring-asymmetry --random_cue_location --snap_cue_to_node --no_show
+# Random cue location (inherently balanced, useful for comparison)
+python -m circuit_model ring-asymmetry --random_cue_location --no_show
 
 # Subset of conditions with fewer trials
 python -m circuit_model ring-asymmetry --conditions WT WT_APP --n_trials 50 --no_show
