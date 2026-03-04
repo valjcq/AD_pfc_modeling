@@ -274,6 +274,7 @@ def animate_ring_snapshot_evolution(
     dpi: int = 100,
     av1_crf: int = 35,
     av1_preset: int = 8,
+    rate_ylim: float = 25.0,
 ):
     """Animate ring snapshot evolution over time and save to MP4.
 
@@ -458,8 +459,8 @@ def animate_ring_snapshot_evolution(
 
     r_max = float(np.max(result.r[:, :, population]))
     ax.set_ylim(0, max(1.0, r_max * 1.05))
-    ax_profile.set_ylim(0, max(1.0, r_max * 1.05))
-    ax_nodes.set_ylim(0, max(1.0, r_max * 1.05))
+    ax_profile.set_ylim(0, rate_ylim)
+    ax_nodes.set_ylim(0, rate_ylim)
     if ax_diff is not None and has_distractor and dist_trace is not None:
         diff_abs = float(np.max(np.abs(cue_trace - dist_trace)))
         ax_diff.set_ylim(-max(1.0, diff_abs * 1.1), max(1.0, diff_abs * 1.1))
@@ -3889,7 +3890,11 @@ def _new_metric_bar(ax, conds, data_by_condition, key, title, ylabel,
     ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    base = max(float(np.nanmax(vals + sems)) * 1.6, 1e-6)
+    peak = float(np.nanmax(vals + sems)) if not np.all(np.isnan(vals)) else np.nan
+    if np.isnan(peak) or np.isinf(peak):
+        ax.set_visible(False)
+        return
+    base = max(peak * 1.6, 1e-6)
     ax.set_ylim(0, base)
     if pairwise_stats:
         _draw_pairwise_brackets(ax, conds, pairwise_stats, key, base)
@@ -3907,25 +3912,29 @@ def plot_asymmetry_summary(
     stats_by_condition: Optional[dict] = None,
     pairwise_stats: Optional[list] = None,
 ):
-    """Summary bar chart of asymmetry statistics across conditions.
+    """Summary bar chart of asymmetry statistics across conditions (2×3 grid).
 
-    Three panels:
-    1. Mean asymmetry ± SEM for both pre-cue and delay, annotated with vs-0 stars
-    2. Mean |asymmetry| ± SEM — Delay period, with all pairwise brackets
-    3. Mean |asymmetry| ± SEM — Pre-cue period, with all pairwise brackets
+    Row 0 — Delay period:
+        1. Mean |asymmetry| ± SEM
+        2. Mean |A(t)| ± SEM (temporal, does not cancel)
+        3. Std(A(t)) ± SEM
+    Row 1 — Pre-cue period:
+        4. Mean |asymmetry| ± SEM
+        5. Mean |A(t)| ± SEM (temporal, does not cancel)
+        6. Std(A(t)) ± SEM
 
     Parameters:
-        data_by_condition: {cond_key: {'pre_cue': np.ndarray, 'delay': np.ndarray}}
+        data_by_condition: {cond_key: {'pre_cue', 'delay', 'mean_abs_asym', 'asym_std',
+                                        'mean_abs_asym_precue', 'asym_std_precue'}}
         condition_order: Condition keys to display
         save_path: If provided, save figure here
-        stats_by_condition: {cond_key: {'pre_cue': {...}, 'delay': {...}}} one-sample stats
+        stats_by_condition: Unused, kept for API compatibility
         pairwise_stats: List of {period, cond_a, cond_b, p_u, ...} dicts
 
     Returns:
         fig: Matplotlib figure
     """
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
     from ..study import STUDY_CONDITIONS
 
     conds = [k for k in condition_order if k in data_by_condition]
@@ -3933,145 +3942,84 @@ def plot_asymmetry_summary(
     if n_conds == 0:
         return None
 
-    cmap, norm = _asym_cmap_norm()
     x = np.arange(n_conds)
     labels = [STUDY_CONDITIONS[k].name for k in conds]
-
-    periods = [('pre_cue', 'Pre-cue'), ('delay', 'Delay')]
-    bar_w = 0.35
-    offsets = np.array([-bar_w / 2, bar_w / 2])
-    period_alphas = [0.55, 1.0]
-    period_hatches = ['///', None]
-
-    def _stars(p):
-        return _pairwise_bracket_stars(p)
 
     def _add_all_pairwise_brackets(ax, period_key, base_ylim):
         _draw_pairwise_brackets(ax, conds, pairwise_stats, period_key, base_ylim)
 
+    legend_pw = "pairwise (MWU):\n* p<0.05\n** p<0.01\n*** p<0.001\nn.s. = not significant"
+
     fig, axes_2d = plt.subplots(2, 3, figsize=(14, 10))
-    axes = axes_2d[0]           # top row: existing three panels
-    axes_new = axes_2d[1]       # bottom row: two new temporal panels + one empty
+    # Row 0 = Delay period, Row 1 = Pre-cue period
 
-    # --- Panel 1: mean asymmetry ± SEM (both periods, both annotated vs 0) ---
-    ax = axes[0]
-    means_by_period: dict = {}
-    sems_by_period: dict = {}
-    all_peak_tops = []
-    for pi, (pkey, _) in enumerate(periods):
-        means = np.array([np.mean(data_by_condition[k][pkey]) for k in conds])
-        sems = np.array([
-            np.std(data_by_condition[k][pkey], ddof=1)
-            / np.sqrt(len(data_by_condition[k][pkey]))
-            for k in conds
-        ])
-        means_by_period[pkey] = means
-        sems_by_period[pkey] = sems
-        all_peak_tops.append((np.abs(means) + sems).max())
-        ax.bar(x + offsets[pi], means, width=bar_w, yerr=sems, capsize=4,
-               color=[cmap(norm(m)) for m in means],
-               edgecolor='black', linewidth=0.8,
-               alpha=period_alphas[pi], hatch=period_hatches[pi])
-
-    ax.axhline(0, color='black', ls='-', lw=1.0)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
-    ax.set_ylabel("Mean asymmetry ± SEM")
-    ax.set_title("Average asymmetry\n(0 = perfectly balanced)")
-    ylim1 = max(max(all_peak_tops) * 2.5, 0.005)
-    ax.set_ylim(-ylim1, ylim1)
-
-    # Stars vs 0 for both periods
-    if stats_by_condition:
-        for pi, (pkey, _) in enumerate(periods):
-            m = means_by_period[pkey]
-            s = sems_by_period[pkey]
-            for xi, ck in enumerate(conds):
-                cond_s = stats_by_condition.get(ck, {})
-                # support nested {period: {...}} structure
-                ps = cond_s.get(pkey) if isinstance(cond_s.get(pkey), dict) else (
-                    cond_s if pkey == 'delay' else None)
-                if ps is None:
-                    continue
-                p_use = ps.get('p_w') if ps.get('p_w') is not None else ps.get('p_t')
-                bar_top = abs(m[xi]) + s[xi] + ylim1 * 0.04
-                y_star = np.sign(m[xi] + 1e-12) * bar_top
-                ax.text(xi + offsets[pi], y_star, _stars(p_use),
-                        ha='center', va='bottom', fontsize=8, fontweight='bold', color='black')
-
-    legend_txt = "vs. 0:\n*** p<0.001\n ** p<0.01\n  * p<0.05\nn.s. p≥0.05"
-    ax.text(0.98, 0.98, legend_txt, transform=ax.transAxes,
-            ha='right', va='top', fontsize=7, family='monospace',
-            bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
-
-    # Pre-cue / Delay legend
-    legend_patches = [
-        Patch(fc='gray', alpha=0.55, hatch='///', ec='black', label='Pre-cue'),
-        Patch(fc='gray', alpha=1.0, ec='black', label='Delay'),
-    ]
-    ax.legend(handles=legend_patches, fontsize=8, loc='upper left', frameon=True)
-
-    # --- Panel 2: |asymmetry| Delay with all pairwise brackets ---
-    ax2 = axes[1]
+    # --- Row 0 / Panel 1: Mean |asymmetry| — Delay ---
+    ax1 = axes_2d[0, 0]
     abs_d = np.array([np.mean(np.abs(data_by_condition[k]['delay'])) for k in conds])
     sem_d = np.array([
         np.std(np.abs(data_by_condition[k]['delay']), ddof=1)
         / np.sqrt(len(data_by_condition[k]['delay']))
         for k in conds
     ])
-    ax2.bar(x, abs_d, yerr=sem_d, capsize=5,
+    ax1.bar(x, abs_d, yerr=sem_d, capsize=5,
             color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
             alpha=1.0, edgecolor='black', linewidth=0.8)
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
-    ax2.set_ylabel("Mean |asymmetry| ± SEM")
-    ax2.set_title("Magnitude — Delay")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
+    ax1.set_ylabel("Mean |asymmetry| ± SEM")
+    ax1.set_title("Magnitude — Delay")
     base_d = max((abs_d + sem_d).max() * 1.6, 0.005)
-    ax2.set_ylim(0, base_d)
-    _add_all_pairwise_brackets(ax2, 'delay', base_d)
-
-    legend_pw = "pairwise (MWU):\n* p<0.05\n** p<0.01\n*** p<0.001\nn.s. = not significant"
-    ax2.text(0.98, 0.98, legend_pw, transform=ax2.transAxes,
+    ax1.set_ylim(0, base_d)
+    _add_all_pairwise_brackets(ax1, 'delay', base_d)
+    ax1.text(0.98, 0.98, legend_pw, transform=ax1.transAxes,
              ha='right', va='top', fontsize=7, family='monospace',
              bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
 
-    # --- Panel 3: |asymmetry| Pre-cue with all pairwise brackets ---
-    ax3 = axes[2]
+    # --- Row 0 / Panel 2: Mean |A(t)| — Delay (temporal, does not cancel) ---
+    _new_metric_bar(axes_2d[0, 1], conds, data_by_condition, 'mean_abs_asym',
+                    "Mean |A(t)| — Delay\n(magnitude, does not cancel)",
+                    "Mean |A(t)| ± SEM",
+                    pairwise_stats=pairwise_stats)
+
+    # --- Row 0 / Panel 3: Std(A(t)) — Delay ---
+    _new_metric_bar(axes_2d[0, 2], conds, data_by_condition, 'asym_std',
+                    "Std(A(t)) — Delay\n(amplitude + side variability)",
+                    "Std(A(t)) ± SEM",
+                    pairwise_stats=pairwise_stats)
+
+    # --- Row 1 / Panel 4: Mean |asymmetry| — Pre-cue ---
+    ax4 = axes_2d[1, 0]
     abs_p = np.array([np.mean(np.abs(data_by_condition[k]['pre_cue'])) for k in conds])
     sem_p = np.array([
         np.std(np.abs(data_by_condition[k]['pre_cue']), ddof=1)
         / np.sqrt(len(data_by_condition[k]['pre_cue']))
         for k in conds
     ])
-    ax3.bar(x, abs_p, yerr=sem_p, capsize=5,
+    ax4.bar(x, abs_p, yerr=sem_p, capsize=5,
             color=[CONDITION_COLORS.get(k, '#888888') for k in conds],
             alpha=0.55, edgecolor='black', linewidth=0.8, hatch='///')
-    ax3.set_xticks(x)
-    ax3.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
-    ax3.set_ylabel("Mean |asymmetry| ± SEM")
-    ax3.set_title("Magnitude — Pre-cue")
+    ax4.set_xticks(x)
+    ax4.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
+    ax4.set_ylabel("Mean |asymmetry| ± SEM")
+    ax4.set_title("Magnitude — Pre-cue")
     base_p = max((abs_p + sem_p).max() * 1.6, 0.005)
-    ax3.set_ylim(0, base_p)
-    _add_all_pairwise_brackets(ax3, 'pre_cue', base_p)
-    ax3.text(0.98, 0.98, legend_pw, transform=ax3.transAxes,
+    ax4.set_ylim(0, base_p)
+    _add_all_pairwise_brackets(ax4, 'pre_cue', base_p)
+    ax4.text(0.98, 0.98, legend_pw, transform=ax4.transAxes,
              ha='right', va='top', fontsize=7, family='monospace',
              bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='gray', alpha=0.85))
 
-    # --- Panel 4: Mean |A(t)| per trial (temporal, does not cancel) ---
-    ax4 = axes_new[0]
-    _new_metric_bar(ax4, conds, data_by_condition, 'mean_abs_asym',
-                    "Mean |A(t)| — Delay\n(magnitude, does not cancel)",
+    # --- Row 1 / Panel 5: Mean |A(t)| — Pre-cue ---
+    _new_metric_bar(axes_2d[1, 1], conds, data_by_condition, 'mean_abs_asym_precue',
+                    "Mean |A(t)| — Pre-cue\n(magnitude, does not cancel)",
                     "Mean |A(t)| ± SEM",
                     pairwise_stats=pairwise_stats)
 
-    # --- Panel 5: Std of A(t) (amplitude + side variability) ---
-    ax5 = axes_new[1]
-    _new_metric_bar(ax5, conds, data_by_condition, 'asym_std',
-                    "Std(A(t)) — Delay\n(amplitude + side variability)",
+    # --- Row 1 / Panel 6: Std(A(t)) — Pre-cue ---
+    _new_metric_bar(axes_2d[1, 2], conds, data_by_condition, 'asym_std_precue',
+                    "Std(A(t)) — Pre-cue\n(amplitude + side variability)",
                     "Std(A(t)) ± SEM",
                     pairwise_stats=pairwise_stats)
-
-    axes_new[2].set_visible(False)
 
     fig.suptitle(f"L/R Asymmetry Summary{title_suffix}", fontsize=13, fontweight='bold')
     fig.tight_layout()
@@ -4079,4 +4027,108 @@ def plot_asymmetry_summary(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
 
+    return fig
+
+
+def plot_burnin_stability(
+    amp_matrix: np.ndarray,
+    asym_matrix: np.ndarray,
+    period_ms: float,
+    cond_key: str,
+    p_amp: float,
+    p_asym: float,
+    pairwise_mwu: Optional[list] = None,
+) -> 'plt.Figure':
+    """Box plots of per-window amplitude and |asymmetry| across trials.
+
+    Parameters
+    ----------
+    amp_matrix : (n_trials, n_periods) array of mean amplitude per window
+    asym_matrix : (n_trials, n_periods) array of mean |A(t)| per window
+    period_ms : duration of each window in ms
+    cond_key : condition label for the title
+    p_amp, p_asym : Kruskal-Wallis p-values for amplitude and |asymmetry|
+    pairwise_mwu : list of dicts with keys window_a, window_b, p_amp, p_asym
+                   (adjacent-window Mann-Whitney U results)
+    """
+    import matplotlib.pyplot as plt
+
+    n_periods = amp_matrix.shape[1]
+
+    def _sig(p: float) -> str:
+        if np.isnan(p): return ''
+        if p < 0.001: return '***'
+        if p < 0.01:  return '**'
+        if p < 0.05:  return '*'
+        return 'n.s.'
+
+    x_labels = [
+        f"{int(w * period_ms)}–{int((w + 1) * period_ms)}"
+        for w in range(n_periods)
+    ]
+    positions = list(range(n_periods))  # 0-indexed positions to match bracket drawing
+
+    fig_width = max(8, n_periods * 0.7 + 4)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(fig_width, 5))
+
+    bp_kw = dict(
+        patch_artist=True,
+        boxprops=dict(facecolor='steelblue', alpha=0.55),
+        medianprops=dict(color='black', linewidth=1.5),
+        whiskerprops=dict(linewidth=0.8),
+        capprops=dict(linewidth=0.8),
+        flierprops=dict(marker='o', markersize=2, alpha=0.4, markerfacecolor='steelblue'),
+    )
+
+    for ax, matrix, ylabel, p_val, metric_label, p_key in [
+        (ax1, amp_matrix,  "Mean amplitude",  p_amp,  "Amplitude",  'p_amp'),
+        (ax2, asym_matrix, "Mean |A(t)|",     p_asym, "|Asymmetry|", 'p_asym'),
+    ]:
+        data = [matrix[:, w][~np.isnan(matrix[:, w])] for w in range(n_periods)]
+        ax.boxplot(data, positions=positions, labels=x_labels, **bp_kw)
+        ax.set_xlim(-0.5, n_periods - 0.5)
+        ax.set_xlabel("Window (ms)")
+        ax.set_ylabel(ylabel)
+        sig = _sig(p_val)
+        p_str = f"p={p_val:.4f}" if not np.isnan(p_val) else "p=n/a"
+        ax.set_title(f"{metric_label}  [KW: {p_str}  {sig}]")
+        ax.tick_params(axis='x', rotation=45)
+
+        # Draw pairwise Mann-Whitney U brackets between adjacent windows
+        if pairwise_mwu:
+            ymax = ax.get_ylim()[1]
+            bracket_unit = ymax * 0.10
+            occupied: dict = {}
+            max_level = 0
+            for pw in pairwise_mwu:
+                lo = pw['window_a']
+                hi = pw['window_b']
+                p_val_pw = pw[p_key]
+                level = max(
+                    (occupied.get(xi, 0) for xi in range(lo, hi + 1)),
+                    default=0,
+                ) + 1
+                for xi in range(lo, hi + 1):
+                    occupied[xi] = max(occupied.get(xi, 0), level)
+                y_bot = ymax * 1.02 + (level - 1) * bracket_unit * 1.5
+                color = 'black' if p_val_pw < 0.05 else '#999999'
+                label = _sig(p_val_pw) if p_val_pw < 0.05 else 'n.s.'
+                ax.plot(
+                    [lo, lo, hi, hi],
+                    [y_bot, y_bot + bracket_unit * 0.6,
+                     y_bot + bracket_unit * 0.6, y_bot],
+                    lw=0.9, c=color, clip_on=False,
+                )
+                ax.text(
+                    (lo + hi) / 2, y_bot + bracket_unit * 0.6, label,
+                    ha='center', va='bottom', fontsize=7.5, fontweight='bold',
+                    color=color, clip_on=False,
+                )
+                max_level = max(max_level, level)
+            if max_level > 0:
+                new_top = ymax * 1.02 + max_level * bracket_unit * 1.5 + bracket_unit
+                ax.set_ylim(0, max(ax.get_ylim()[1], new_top))
+
+    fig.suptitle(f"Burn-in stationarity — {cond_key}", fontsize=12, fontweight='bold')
+    fig.tight_layout()
     return fig

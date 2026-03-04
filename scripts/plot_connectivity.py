@@ -76,9 +76,9 @@ def plot_connectivity_matrices(
 def main():
     parser = argparse.ArgumentParser(description="Plot ring connectivity matrices")
     parser.add_argument("--n_nodes", type=int, default=128)
-    parser.add_argument("--w_pyr_pyr_inter", type=float, default=4.0)
+    parser.add_argument("--w_pyr_pyr_inter", type=float, required=True)
     parser.add_argument("--sigma_pyr_deg", type=float, default=30.0)
-    parser.add_argument("--w_pv_global", type=float, default=4.0)
+    parser.add_argument("--w_pv_global", type=float, required=True)
     parser.add_argument("--save", type=str, default=None, help="Save path for the figure")
     args = parser.parse_args()
 
