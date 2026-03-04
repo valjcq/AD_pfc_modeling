@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-diffusion,ring-drift-field,ring-distractor-sweep,ring-noise-floor,ring-calibrate,ring-lesion,ring-tau-sweep,ring-phase-plane,ring-temporal-dissection,ring-asymmetry} [options]
+python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-diffusion,ring-drift-field,ring-distractor-sweep,ring-noise-floor,ring-calibrate,ring-lesion,ring-tau-sweep,ring-phase-plane,ring-temporal-dissection,ring-asymmetry,ring-burnin-stability} [options]
 ```
 
 ---
@@ -25,6 +25,7 @@ python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-diffusion,r
 13. [ring-phase-plane](#ring-phase-plane) -- Phase plane bifurcation analysis
 14. [ring-temporal-dissection](#ring-temporal-dissection) -- Single-trial temporal dissection at 3 ring locations
 15. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
+16. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
 
 ---
 
@@ -989,6 +990,62 @@ python -m circuit_model ring-asymmetry \
     --conditions WT WT_APP a7_KO a7_KO_APP b2_KO b2_KO_APP \
     --n_trials 100 --n_workers 8 \
     --w_pyr_pyr_inter 7 --sigma_pyr_deg 30 --w_pv_global 10 --no_show
+```
+
+---
+
+## `ring-burnin-stability`
+
+Test whether a noisy spontaneous burn-in period has reached stationarity. Runs `n_trials` independent simulations from zero initial conditions, divides each into windows of `period_ms`, and compares window distributions with Kruskal-Wallis and pairwise Mann-Whitney U tests. See [§20 of ring_experiments.md](ring_experiments.md#20-burn-in-stationarity-analysis) for full details.
+
+```
+python -m circuit_model ring-burnin-stability [options]
+```
+
+### Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--n_trials` | 100 | Number of independent noisy trials |
+| `--burnin_ms` | 10000.0 | Total burn-in duration in ms |
+| `--period_ms` | 1000.0 | Duration of each comparison window in ms |
+| `--ref_deg` | 0.0 | Fixed reference angle (degrees) for asymmetry |
+| `--conditions` | `WT` | Conditions to test (space-separated) |
+| `--n_workers` | auto | Number of parallel worker processes |
+| `--seed` | 42 | Base random seed |
+| `--no_show` | — | Suppress interactive plot display |
+| `--n_nodes` | 128 | Number of ring nodes |
+| `--w_pyr_pyr_inter` | 4.0 | PYR→PYR inter-node coupling |
+| `--sigma_pyr_deg` | 30.0 | PYR→PYR connectivity width (degrees) |
+| `--w_pv_global` | 4.0 | PV→PYR global inhibition strength |
+| `--params_json` | — | Load local circuit parameters from JSON |
+
+### Outputs
+
+```
+figs/burnin_stability/{n_nodes}/{connectivity_label}/
+├── burnin_stability_trials.csv      # per-trial, per-window metrics
+├── burnin_stability_summary.csv     # Kruskal-Wallis H and p per condition/metric
+└── burnin_stability_{cond}.png      # box plots + adjacent-window MWU brackets
+```
+
+### Examples
+
+```bash
+# Default: WT, 100 trials, 10 s burn-in split into 10 × 1000 ms windows
+python -m circuit_model ring-burnin-stability --no_show
+
+# Quick smoke test: 10 trials, 3 s burn-in
+python -m circuit_model ring-burnin-stability --n_trials 10 --burnin_ms 3000 --no_show
+
+# Multiple conditions, custom window size
+python -m circuit_model ring-burnin-stability \
+    --conditions WT WT_APP a7_KO_APP \
+    --burnin_ms 10000 --period_ms 500 \
+    --n_trials 100 --n_workers 8 --no_show
+
+# Different asymmetry reference angle
+python -m circuit_model ring-burnin-stability --ref_deg 180 --no_show
 ```
 
 ---

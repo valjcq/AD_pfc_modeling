@@ -178,7 +178,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.save_plot:
         save_path = args.save_plot
     else:
-        out_dir = _output_dir("figs/runs", args.params_json)
+        out_dir = _output_dir("figs/single_node/runs", args.params_json)
         save_path = os.path.join(out_dir, f"circuit_simulation_{args.noise_type}.png")
 
     plot_simulation_dashboard(
@@ -251,7 +251,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     if args.save_plot:
         save_path = args.save_plot
     else:
-        out_dir = _output_dir("figs/boxplot", args.params_json)
+        out_dir = _output_dir("figs/single_node/boxplot", args.params_json)
         save_path = os.path.join(out_dir, f"study_boxplots_{cfg.noise_type}.png")
 
     # Generate box plot
@@ -1038,6 +1038,7 @@ Examples:
         help="Conditions to analyse (default: WT WT_APP a7_KO_APP). "
              "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
     )
+
     ring_asym_parser.add_argument(
         "--n_trials", type=int, default=100,
         help="Number of trials per condition (default: 100)",
@@ -1072,6 +1073,48 @@ Examples:
         help="Disable asymmetry correction by bump amplitude.",
     )
 
+    # =========================================================================
+    # RING-BURNIN-STABILITY subcommand
+    # =========================================================================
+    ring_burnin_parser = subparsers.add_parser(
+        "ring-burnin-stability",
+        help="Assess burn-in stationarity by comparing 1000ms windows across noisy trials",
+        description=(
+            "Runs n_trials independent noisy simulations from zero initial conditions "
+            "for burnin_ms.  Divides each run into windows of period_ms and computes "
+            "per-window mean amplitude and mean |A(t)| (asymmetry relative to a fixed "
+            "reference angle).  A Kruskal-Wallis test across windows checks whether "
+            "the network has reached stationarity — p not significant means the metric "
+            "is stationary across the burn-in."
+        ),
+    )
+    _add_ring_common(ring_burnin_parser)
+    ring_burnin_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to analyse (default: WT). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_burnin_parser.add_argument(
+        "--n_trials", type=int, default=100,
+        help="Number of independent noisy trials (default: 100)",
+    )
+    ring_burnin_parser.add_argument(
+        "--burnin_ms", type=float, default=10000.0,
+        help="Total burn-in duration in ms (default: 10000)",
+    )
+    ring_burnin_parser.add_argument(
+        "--period_ms", type=float, default=1000.0,
+        help="Duration of each comparison window in ms (default: 1000)",
+    )
+    ring_burnin_parser.add_argument(
+        "--ref_deg", type=float, default=0.0,
+        help="Fixed reference angle in degrees for asymmetry computation (default: 0.0)",
+    )
+    ring_burnin_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto)",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -1081,7 +1124,8 @@ Examples:
               "'ring-run', 'ring-study', 'ring-diffusion', 'ring-drift-field', "
               "'ring-distractor-sweep', 'ring-noise-floor', 'ring-calibrate', "
               "'ring-lesion', 'ring-tau-sweep', 'ring-phase-plane', "
-              "'ring-temporal-dissection', or 'ring-asymmetry'.")
+              "'ring-temporal-dissection', 'ring-asymmetry', "
+              "or 'ring-burnin-stability'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -1124,6 +1168,9 @@ Examples:
         _cmd(args)
     elif args.command == "ring-asymmetry":
         from .ring.cli import cmd_asymmetry as _cmd
+        _cmd(args)
+    elif args.command == "ring-burnin-stability":
+        from .ring.cli import cmd_burnin_stability as _cmd
         _cmd(args)
     else:
         parser.print_help()

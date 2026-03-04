@@ -250,14 +250,12 @@ def _start_mp4_progress(
     return pbar
 
 
-def _connectivity_label(rp: RingParams) -> str:
-    """Build a directory-safe label encoding connectivity parameters.
+def _network_label(rp: RingParams) -> str:
+    """Build a directory-safe label encoding n_nodes and connectivity weights.
 
-    Example: gauss_w4_s30-pv_unif_2.0
+    Example: 128_inhib_10_excit_7
     """
-    exc = f"gauss_w{_fmt(rp.w_pyr_pyr_inter)}_s{_fmt(rp.sigma_pyr_deg)}"
-    inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
-    return f"{exc}-{inh}"
+    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_excit_{_fmt(rp.w_pyr_pyr_inter)}"
 
 
 def _stim_label(amp_factor: float) -> str:
@@ -297,9 +295,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         help="Load local circuit parameters from JSON file")
     parser.add_argument("--n_nodes", type=int, default=128,
                         help="Number of nodes on the ring (default: 128)")
-    parser.add_argument("--amplitude", type=float, default=30.0,
+    parser.add_argument("--amplitude", type=float,
                         help="Stimulus amplitude as factor of I_ext_pyr baseline "
-                             "(default: 30, i.e. 30× baseline current)")
+                             "(e.g. 30 = 30× baseline current)")
     parser.add_argument("--delay_ms", type=float, default=5000.0,
                         help="Delay period duration in ms (default: 5000)")
     parser.add_argument("--seed", type=_parse_seed, default=42,
@@ -325,10 +323,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     # Connectivity parameters
     parser.add_argument("--sigma_pyr_deg", type=float, default=30.0,
                         help="PYR→PYR connectivity width in degrees (default: 30.0)")
-    parser.add_argument("--w_pyr_pyr_inter", type=float, default=4.0,
-                        help="Total PYR→PYR coupling strength (default: 4.0)")
-    parser.add_argument("--w_pv_global", type=float, default=4.0,
-                        help="Total PV→PYR global inhibition strength (default: 4.0)")
+    parser.add_argument("--w_pyr_pyr_inter", type=float, required=True,
+                        help="Total PYR→PYR coupling strength")
+    parser.add_argument("--w_pv_global", type=float, required=True,
+                        help="Total PV→PYR global inhibition strength")
     # Noise parameters
     parser.add_argument("--sigma_noise", type=float, default=None,
                         help="Noise amplitude sigma_s (overrides params_json value). "
@@ -376,9 +374,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     local_params = _apply_response_transient(local_params, args, delay_end_ms)
 
     amp_dir = f"amp{_fmt(amp)}"
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/ring/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/run", args.params_json),
         conn_label, amp_dir, cond_key,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -449,16 +447,24 @@ def _compute_burnin_state(
     local_params: CircuitParams,
     ring_params: RingParams,
     connectivity: RingConnectivity,
+    noise_type: str = "white",
+    seed: Optional[int] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run a deterministic burn-in simulation and return the final state.
+    """Run a burn-in simulation and return the final state.
 
     Uses record_dt_ms=BURN_IN_MS so only the final snapshot is stored,
-    reducing GPU→CPU memory transfer from ~20 MB to ~12 KB per call.
+    reducing memory usage.
+
+    Parameters:
+        noise_type: "white" (default) to include noise and match ring-run
+                    dynamics. Pass "none" only for explicitly noiseless
+                    experiments (e.g. temporal_dissection).
+        seed: RNG seed for the burn-in noise.
     """
     result = simulate_ring(
         local_params, ring_params, T_ms=BURN_IN_MS,
         stimuli=None, r0=None, I_adapt0=None,
-        seed=None, noise_type="none",
+        seed=seed, noise_type=noise_type,
         connectivity=connectivity,
         record_dt_ms=BURN_IN_MS,
     )
@@ -792,9 +798,9 @@ def cmd_study(args: argparse.Namespace) -> None:
     no_cache = getattr(args, 'no_cache', False)
     error_band = getattr(args, 'error_band', 'sem')
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/ring/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/run", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -821,7 +827,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         condition = STUDY_CONDITIONS[cond_key]
         local_params = apply_condition(base_params, condition)
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, connectivity,
+            local_params, ring_params, connectivity, seed=args.seed,
         )
 
     # --- Trial seeds ---
@@ -1253,10 +1259,10 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
 
     _, _, T_ms_full, _, amp_factor = _build_common(args)
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     amp_label = f"amp{_fmt(amp_factor)}"
     out_dir = os.path.join(
-        _output_dir(f"figs/diffusion/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/diffusion", args.params_json),
         conn_label,
         amp_label,
     )
@@ -1278,7 +1284,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
         condition = STUDY_CONDITIONS[cond_key]
         local_params = apply_condition(base_params, condition)
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, connectivity,
+            local_params, ring_params, connectivity, seed=args.seed,
         )
 
     # --- Trial seeds ---
@@ -1414,9 +1420,9 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
                 all_results.append(_diffusion_run_single(job))
 
         # --- Auto-detect noise threshold from calibration ---
-        cal_conn_label = _calibration_conn_label(ring_params)
+        cal_conn_label = _calibration_network_label(ring_params)
         cal_csv = os.path.join(
-            _output_dir(f"figs/calibration/{ring_params.n_nodes}", args.params_json),
+            _output_dir("figs/ring/calibration", args.params_json),
             cal_conn_label, "calibration_summary.csv",
         )
         noise_thresholds: dict[str, Optional[float]] = {}
@@ -1856,9 +1862,9 @@ def cmd_drift_field(args: argparse.Namespace) -> None:
     distractor_step = args.distractor_steps
     n_workers = _resolve_workers(args)
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/drift_field/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/drift_field", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -1903,7 +1909,7 @@ def cmd_drift_field(args: argparse.Namespace) -> None:
         condition = STUDY_CONDITIONS[cond_key]
         local_params = apply_condition(base_params, condition)
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, connectivity,
+            local_params, ring_params, connectivity, seed=args.seed,
         )
 
     # --- Trial seeds ---
@@ -2100,15 +2106,13 @@ def cmd_drift_field(args: argparse.Namespace) -> None:
 # CALIBRATE: HELPERS
 # ============================================================================
 
-def _calibration_conn_label(rp: RingParams) -> str:
+def _calibration_network_label(rp: RingParams) -> str:
     """Build a directory-safe label for calibration output.
 
-    Like _connectivity_label but omits the w_pyr_pyr_inter component since
-    that parameter is swept during calibration.
+    Omits the excit weight since that parameter is swept during calibration.
+    Example: 128_inhib_10
     """
-    exc = f"gauss_s{_fmt(rp.sigma_pyr_deg)}"
-    inh = f"pv_unif_{_fmt(rp.w_pv_global)}"
-    return f"{exc}-{inh}"
+    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}"
 
 
 # ============================================================================
@@ -2567,7 +2571,7 @@ def _run_noise_floor_for_conditions(
                        for ck in conds_for_w]
         batch_results = simulate_ring_batch(
             params_list, rp, T_ms=BURN_IN_MS,
-            noise_type="none", record_dt_ms=1000.0,
+            noise_type="white", record_dt_ms=1000.0,
             connectivity=conn,
         )
         for ck, res in zip(conds_for_w, batch_results):
@@ -2767,9 +2771,9 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
               f"{mem_available / 1e9:.1f} GB available)")
         n_workers = safe_workers
 
-    conn_label = _calibration_conn_label(ring_params_base)
+    conn_label = _calibration_network_label(ring_params_base)
     out_dir = os.path.join(
-        _output_dir(f"figs/calibration/{ring_params_base.n_nodes}", args.params_json),
+        _output_dir("figs/ring/calibration", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -2838,7 +2842,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                            for ck in conditions_to_run]
             batch_results = simulate_ring_batch(
                 params_list, rp, T_ms=BURN_IN_MS,
-                noise_type="none", record_dt_ms=1000.0,
+                noise_type="white", record_dt_ms=1000.0,
                 connectivity=conn,
             )
             for ck, res in zip(conditions_to_run, batch_results):
@@ -3238,9 +3242,9 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
     batch_chunk_size = getattr(args, 'batch_chunk_size', 50)
     n_workers = _resolve_workers(args)
 
-    conn_label = _calibration_conn_label(ring_params_base)
+    conn_label = _calibration_network_label(ring_params_base)
     out_dir = os.path.join(
-        _output_dir(f"figs/calibration/{ring_params_base.n_nodes}", args.params_json),
+        _output_dir("figs/ring/calibration", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -3524,7 +3528,7 @@ _distractor_sweep_sim_args: Optional[dict] = None
 
 
 def _distractor_sweep_init_worker(
-    base_params: "CircuitParams",
+    local_params: "CircuitParams",
     ring_params: "RingParams",
     connectivity: "RingConnectivity",
     burnin_state: tuple,
@@ -3539,7 +3543,7 @@ def _distractor_sweep_init_worker(
     """Initialize worker process for the 2-D distractor sweep."""
     global _distractor_sweep_sim_args
     _distractor_sweep_sim_args = {
-        'base_params': base_params,
+        'local_params': local_params,
         'ring_params': ring_params,
         'connectivity': connectivity,
         'burnin_state': burnin_state,
@@ -3562,7 +3566,7 @@ def _distractor_sweep_run_single(job: tuple) -> dict:
     cfg = _distractor_sweep_sim_args
     offset_deg, amp_factor, trial_idx, seed = job
 
-    base_params = cfg['base_params']
+    local_params = cfg['local_params']
     ring_params = cfg['ring_params']
     connectivity = cfg['connectivity']
     r0, I_adapt0 = cfg['burnin_state']
@@ -3572,7 +3576,7 @@ def _distractor_sweep_run_single(job: tuple) -> dict:
     distractor_duration_ms = cfg['distractor_duration_ms']
     record_dt_ms = cfg['record_dt_ms']
 
-    cue_current = cue_amp_factor * base_params.I_ext_pyr()
+    cue_current = cue_amp_factor * local_params.I_ext_pyr()
     distractor_current = amp_factor * cue_current
 
     # Timing relative to post-burn-in simulation start
@@ -3597,7 +3601,7 @@ def _distractor_sweep_run_single(job: tuple) -> dict:
     )
 
     result = simulate_ring(
-        base_params, ring_params, T_ms=T_ms_short,
+        local_params, ring_params, T_ms=T_ms_short,
         stimuli=[cue_stim, dist_stim],
         r0=r0, I_adapt0=I_adapt0,
         seed=seed, connectivity=connectivity,
@@ -3690,9 +3694,9 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
         print(f"Collapse threshold: {collapse_threshold:.4f} (manual override)")
     else:
         import warnings
-        cal_conn_label = _calibration_conn_label(ring_params)
+        cal_conn_label = _calibration_network_label(ring_params)
         cal_csv = os.path.join(
-            _output_dir(f"figs/calibration/{ring_params.n_nodes}", args.params_json),
+            _output_dir("figs/ring/calibration", args.params_json),
             cal_conn_label, "calibration_summary.csv",
         )
         threshold = _lookup_noise_threshold(
@@ -3728,10 +3732,10 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
     cue_offset_abs = STIM_ONSET_MS + STIM_DURATION_MS
 
     # Output directory
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     amp_label = f"amp{_fmt(cue_amp_factor)}"
     out_dir = os.path.join(
-        _output_dir(f"figs/distractor_sweep/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/distractor_sweep", args.params_json),
         conn_label,
         cond_key,
         amp_label,
@@ -3751,7 +3755,9 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
     # --- Burn-in ---
     connectivity = RingConnectivity.from_params(ring_params)
     print("\nComputing burn-in state...")
-    burnin_state = _compute_burnin_state(local_params, ring_params, connectivity)
+    burnin_state = _compute_burnin_state(
+        local_params, ring_params, connectivity, seed=args.seed,
+    )
 
     # --- Trial seeds ---
     trial_seeds = _generate_trial_seeds(args.seed, n_trials)
@@ -3759,7 +3765,7 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
     # Shared worker init args (used for both full simulations and
     # representative-cell timecourse reruns)
     init_args = (
-        base_params, ring_params, connectivity, burnin_state,
+        local_params, ring_params, connectivity, burnin_state,
         T_ms_short, cue_amp_factor, delay1_ms,
         distractor_duration_ms, delay2_ms,
         collapse_threshold, record_dt_ms,
@@ -4217,9 +4223,9 @@ def cmd_lesion(args: argparse.Namespace) -> None:
     T_ms_short = T_ms_full - BURN_IN_MS
 
     noise_floor = args.noise_floor
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/lesion/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/lesion", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -4241,7 +4247,8 @@ def cmd_lesion(args: argparse.Namespace) -> None:
     connectivity_base = RingConnectivity.from_params(ring_params)
 
     print("\nComputing burn-in state (WT)...")
-    r0_bi, I_adapt0_bi = _compute_burnin_state(local_params_wt, ring_params, connectivity_base)
+    r0_bi, I_adapt0_bi = _compute_burnin_state(local_params_wt, ring_params, connectivity_base,
+                                                seed=args.seed)
 
     stimuli_short = [
         RingStimulus(
@@ -4433,9 +4440,9 @@ def cmd_tau_sweep(args: argparse.Namespace) -> None:
     trial_seeds = _generate_trial_seeds(args.seed, n_trials)
     n_workers = _resolve_workers(args)
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/tau_sweep/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/tau_sweep", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -4447,7 +4454,8 @@ def cmd_tau_sweep(args: argparse.Namespace) -> None:
     local_params_wt = apply_condition(base_params, condition_wt)
 
     print("\nComputing burn-in state (WT)...")
-    r0_bi, I_adapt0_bi = _compute_burnin_state(local_params_wt, ring_params, connectivity)
+    r0_bi, I_adapt0_bi = _compute_burnin_state(local_params_wt, ring_params, connectivity,
+                                                seed=args.seed)
 
     stimuli_short = [
         RingStimulus(
@@ -4609,9 +4617,9 @@ def cmd_phase_plane(args: argparse.Namespace) -> None:
         w_pv_global=args.w_pv_global,
 
     )
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir("figs/phase_plane", args.params_json),
+        _output_dir("figs/ring/phase_plane", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
@@ -4708,17 +4716,18 @@ def cmd_temporal_dissection(args: argparse.Namespace) -> None:
     T_ms_short = T_ms_full - BURN_IN_MS
     noise_floor = args.noise_floor
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     out_dir = os.path.join(
-        _output_dir(f"figs/temporal_dissection/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/temporal_dissection", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
 
-    # Burn-in (deterministic, noise=none)
+    # Burn-in: explicitly noiseless — this command is a "clean single trial" dissection.
     connectivity = RingConnectivity.from_params(ring_params)
     print("Computing burn-in state (no noise)...")
-    r0, I_adapt0 = _compute_burnin_state(local_params, ring_params, connectivity)
+    r0, I_adapt0 = _compute_burnin_state(local_params, ring_params, connectivity,
+                                          noise_type="none")
 
     stimuli_short = [
         RingStimulus(
@@ -4896,6 +4905,7 @@ def _asym_run_single(job: tuple) -> dict:
 
     # Temporal metrics on the raw (uncorrected) asymmetry timecourse
     temporal = compute_asymmetry_temporal_metrics(asym[delay_mask], result.t_ms[delay_mask])
+    temporal_precue = compute_asymmetry_temporal_metrics(asym[pre_mask], result.t_ms[pre_mask])
 
     del result
 
@@ -4910,6 +4920,8 @@ def _asym_run_single(job: tuple) -> dict:
         'correct_asymmetry': bool(cfg.get('correct_asymmetry', True)),
         'mean_abs_asym': temporal['mean_abs_asym'],
         'asym_std': temporal['asym_std'],
+        'mean_abs_asym_precue': temporal_precue['mean_abs_asym'],
+        'asym_std_precue': temporal_precue['asym_std'],
     }
 
 
@@ -4969,11 +4981,11 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     balance_cue: bool = not getattr(args, 'no_cue_balance', False)
     correct_asymmetry: bool = getattr(args, 'correct_asymmetry', True)
 
-    conn_label = _connectivity_label(ring_params)
+    conn_label = _network_label(ring_params)
     asym_mode_label = "corrected" if correct_asymmetry else "uncorrected"
     amp_label = f"amp{amp:g}_{asym_mode_label}"
     out_dir = os.path.join(
-        _output_dir(f"figs/asymmetry/{ring_params.n_nodes}", args.params_json),
+        _output_dir("figs/ring/asymmetry", args.params_json),
         conn_label,
         amp_label,
     )
@@ -5091,6 +5103,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                         'delay_asym': float(r['delay_asym']),
                         'mean_abs_asym': float(r['mean_abs_asym']) if r.get('mean_abs_asym', '') != '' else float('nan'),
                         'asym_std': float(r['asym_std']) if r.get('asym_std', '') != '' else float('nan'),
+                        'mean_abs_asym_precue': float(r['mean_abs_asym_precue']) if r.get('mean_abs_asym_precue', '') != '' else float('nan'),
+                        'asym_std_precue': float(r['asym_std_precue']) if r.get('asym_std_precue', '') != '' else float('nan'),
                     })
                     cached_indices[ck].add(int(r['trial_idx']))
                 n_cached = sum(len(v) for v in cached_indices.values())
@@ -5158,6 +5172,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
             'delay': delay,
             'mean_abs_asym': np.array([t.get('mean_abs_asym', float('nan')) for t in trials]),
             'asym_std': np.array([t.get('asym_std', float('nan')) for t in trials]),
+            'mean_abs_asym_precue': np.array([t.get('mean_abs_asym_precue', float('nan')) for t in trials]),
+            'asym_std_precue': np.array([t.get('asym_std_precue', float('nan')) for t in trials]),
         }
 
         worst_idx = int(np.argmax(np.abs(delay)))
@@ -5171,6 +5187,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                 'pre_cue_asym', 'last_pre_cue_asym', 'delay_asym', 'delay_ms', 'amplitude',
                 'random_cue', 'balance_cue', 'correct_asymmetry',
                 'mean_abs_asym', 'asym_std',
+                'mean_abs_asym_precue', 'asym_std_precue',
             ])
             writer.writeheader()
             for r in sorted(all_results, key=lambda r: (r['cond_key'], r['trial_idx'])):
@@ -5189,6 +5206,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     'correct_asymmetry': int(correct_asymmetry),
                     'mean_abs_asym': r.get('mean_abs_asym', float('nan')),
                     'asym_std': r.get('asym_std', float('nan')),
+                    'mean_abs_asym_precue': r.get('mean_abs_asym_precue', float('nan')),
+                    'asym_std_precue': r.get('asym_std_precue', float('nan')),
                 })
         print(f"\nTrial data → {csv_path}")
 
@@ -5260,8 +5279,13 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                     })
             print("  (* p<0.05  ** p<0.01  *** p<0.001)")
 
-        # Pairwise tests for the two new temporal metrics
-        for metric_key, metric_label in [('mean_abs_asym', 'Mean|A(t)|'), ('asym_std', 'Std(A(t))')]:
+        # Pairwise tests for the temporal metrics (delay and pre-cue)
+        for metric_key, metric_label in [
+            ('mean_abs_asym', 'Mean|A(t)| — Delay'),
+            ('asym_std', 'Std(A(t)) — Delay'),
+            ('mean_abs_asym_precue', 'Mean|A(t)| — Pre-cue'),
+            ('asym_std_precue', 'Std(A(t)) — Pre-cue'),
+        ]:
             vals_by_cond = {ck: data_by_condition[ck].get(metric_key, np.array([]))
                             for ck in condition_keys}
             # Skip if all NaN (old CSV without these columns)
@@ -5468,3 +5492,382 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
 
     print(f"\nAll outputs saved to {out_dir}/")
     print(f"\nFigure saved to {out_dir}/temporal_dissection.png")
+
+
+# ============================================================================
+# BURN-IN STABILITY: PARALLEL WORKER
+# ============================================================================
+
+_burnin_stability_sim_args: Optional[dict] = None
+
+
+def _burnin_stability_init_worker(
+    base_params: CircuitParams,
+    ring_params: RingParams,
+    connectivity: RingConnectivity,
+    burnin_ms: float,
+    period_ms: float,
+    n_periods: int,
+    ref_deg: float,
+    record_dt_ms: float,
+) -> None:
+    """Initialise worker process for burn-in stability trials."""
+    global _burnin_stability_sim_args
+    _burnin_stability_sim_args = {
+        'base_params': base_params,
+        'ring_params': ring_params,
+        'connectivity': connectivity,
+        'burnin_ms': burnin_ms,
+        'period_ms': period_ms,
+        'n_periods': n_periods,
+        'ref_deg': ref_deg,
+        'record_dt_ms': record_dt_ms,
+    }
+
+
+def _burnin_stability_run_single(job: tuple) -> list[dict]:
+    """Run one burn-in stability trial: noisy spontaneous activity from zero IC.
+
+    Returns a list of per-window metric dicts (one entry per 1000ms window).
+    """
+    global _burnin_stability_sim_args
+    from .analysis import compute_bump_asymmetry, population_vector_decode
+
+    cfg = _burnin_stability_sim_args
+    cond_key, trial_idx, seed = job
+
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(cfg['base_params'], condition)
+
+    result = simulate_ring(
+        local_params, cfg['ring_params'],
+        T_ms=cfg['burnin_ms'],
+        stimuli=None, r0=None, I_adapt0=None,
+        seed=seed, noise_type='white',
+        connectivity=cfg['connectivity'],
+        record_dt_ms=cfg['record_dt_ms'],
+    )
+
+    # Set fixed reference angle for asymmetry (no stimulus → manual reference)
+    result.stim_angle_deg = cfg['ref_deg']
+
+    asym = compute_bump_asymmetry(result, population=0)  # (n_steps,)
+    angles_rad = np.deg2rad(cfg['ring_params'].node_angles_deg)
+
+    rows = []
+    for w in range(cfg['n_periods']):
+        t_start = w * cfg['period_ms']
+        t_end = (w + 1) * cfg['period_ms']
+        mask = (result.t_ms >= t_start) & (result.t_ms < t_end)
+        if not mask.any():
+            continue
+        r_window = result.r[mask, :, 0]  # PYR population: (T_w, n_nodes)
+        _, amp = population_vector_decode(r_window, angles_rad)  # (T_w,)
+        asym_w = asym[mask]
+        rows.append({
+            'cond_key': cond_key,
+            'trial_idx': trial_idx,
+            'seed': seed,
+            'window_idx': w,
+            'window_start_ms': t_start,
+            'window_end_ms': t_end,
+            'amp_mean': float(amp.mean()),
+            'abs_asym_mean': float(np.abs(asym_w).mean()),
+        })
+
+    del result
+    return rows
+
+
+# ============================================================================
+# BURN-IN STABILITY SUBCOMMAND
+# ============================================================================
+
+def cmd_burnin_stability(args: argparse.Namespace) -> None:
+    """Assess whether the burn-in period reaches stationarity.
+
+    Runs n_trials independent noisy simulations from zero initial conditions
+    for burnin_ms.  Divides each run into windows of period_ms and computes
+    per-window mean amplitude and mean |A(t)| (asymmetry relative to a fixed
+    reference angle, default 0°).  A Kruskal-Wallis test across windows checks
+    whether the network has reached stationarity.
+
+    Outputs:
+        burnin_stability_trials.csv   – per-trial, per-window raw metrics
+        burnin_stability_summary.csv  – Kruskal-Wallis H and p per condition/metric
+        burnin_stability_{cond}.png   – box plots per window (one per condition)
+    """
+    _resolve_seed(args)
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # --- Setup ---
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    if getattr(args, 'sigma_noise', None) is not None:
+        base_params = replace(base_params, sigma_s=args.sigma_noise)
+        print(f"Noise amplitude overridden: sigma_s = {args.sigma_noise}")
+
+    ring_params = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+
+    burnin_ms: float = args.burnin_ms
+    period_ms: float = args.period_ms
+    n_periods: int = int(round(burnin_ms / period_ms))
+    ref_deg: float = args.ref_deg
+    n_trials: int = args.n_trials
+    n_workers = _resolve_workers(args)
+    record_dt_ms: float = getattr(args, 'record_dt_ms', 1.0)
+
+    condition_keys = args.conditions if args.conditions else ['WT']
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'. "
+                  f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+            sys.exit(1)
+
+    conn_label = _network_label(ring_params)
+    out_dir = os.path.join(
+        _output_dir("figs/ring/burnin_stability", args.params_json),
+        conn_label,
+    )
+    os.makedirs(out_dir, exist_ok=True)
+
+    print(f"\nBurn-in stability experiment:")
+    print(f"  Conditions: {', '.join(condition_keys)}")
+    print(f"  Trials: {n_trials},  workers: {n_workers}")
+    print(f"  Burn-in: {burnin_ms:.0f} ms  →  {n_periods} windows of {period_ms:.0f} ms")
+    print(f"  Asymmetry reference: {ref_deg:.1f}°")
+
+    connectivity = RingConnectivity.from_params(ring_params)
+
+    # --- CSV cache: load existing rows if parameters match ---
+    csv_path = os.path.join(out_dir, "burnin_stability_trials.csv")
+    all_rows: list[dict] = []
+    cached_trial_ids: dict[str, set] = {ck: set() for ck in condition_keys}
+
+    if os.path.exists(csv_path):
+        try:
+            with open(csv_path, newline='') as _f:
+                cached = list(csv.DictReader(_f))
+            if cached and 'burnin_ms' in cached[0]:
+                params_ok = all(
+                    abs(float(r.get('burnin_ms', 0)) - burnin_ms) < 1e-6
+                    and abs(float(r.get('period_ms', 0)) - period_ms) < 1e-6
+                    and abs(float(r.get('ref_deg', 0)) - ref_deg) < 1e-6
+                    for r in cached
+                )
+                if params_ok:
+                    for r in cached:
+                        ck = r['condition']
+                        if ck not in condition_keys:
+                            continue
+                        all_rows.append({
+                            'cond_key': ck,
+                            'trial_idx': int(r['trial_idx']),
+                            'seed': int(r['seed']),
+                            'window_idx': int(r['window_idx']),
+                            'window_start_ms': float(r['window_start_ms']),
+                            'window_end_ms': float(r['window_end_ms']),
+                            'amp_mean': float(r['amp_mean']),
+                            'abs_asym_mean': float(r['abs_asym_mean']),
+                        })
+                        cached_trial_ids[ck].add(int(r['trial_idx']))
+                    n_cached = sum(len(v) for v in cached_trial_ids.values())
+                    if n_cached > 0:
+                        print(f"\nLoaded {n_cached} cached trial(s) from {csv_path}")
+                        for ck in condition_keys:
+                            print(f"  {ck}: {len(cached_trial_ids[ck])} / {n_trials}")
+                else:
+                    print("\nCache parameter mismatch — rerunning all trials.")
+            else:
+                print("\nOld cache format — rerunning all trials.")
+        except Exception as _e:
+            print(f"\nCache read failed ({_e}) — rerunning all trials.")
+            all_rows = []
+            cached_trial_ids = {ck: set() for ck in condition_keys}
+
+    # --- Build remaining trial jobs (skip already cached) ---
+    trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+    jobs = [
+        (cond_key, trial_idx, seed)
+        for cond_key in condition_keys
+        for trial_idx, seed in enumerate(trial_seeds)
+        if trial_idx not in cached_trial_ids[cond_key]
+    ]
+
+    # --- Run new trials (parallel or sequential) ---
+    new_rows: list[dict] = []
+    if jobs:
+        init_args = (
+            base_params, ring_params, connectivity,
+            burnin_ms, period_ms, n_periods, ref_deg, record_dt_ms,
+        )
+        if n_workers > 1 and len(jobs) > 1:
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                initializer=_burnin_stability_init_worker,
+                initargs=init_args,
+            ) as executor:
+                futures = {
+                    executor.submit(_burnin_stability_run_single, job): job
+                    for job in jobs
+                }
+                with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
+                    for future in as_completed(futures):
+                        new_rows.extend(future.result())
+                        pbar.update()
+        else:
+            _burnin_stability_init_worker(*init_args)
+            for job in tqdm(jobs, desc="Simulations", unit="sim"):
+                new_rows.extend(_burnin_stability_run_single(job))
+        all_rows.extend(new_rows)
+    else:
+        print("\nAll trials already cached — skipping simulations.")
+
+    # --- Save / update CSV ---
+    if new_rows:
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                'condition', 'trial_idx', 'seed',
+                'window_idx', 'window_start_ms', 'window_end_ms',
+                'amp_mean', 'abs_asym_mean',
+                'burnin_ms', 'period_ms', 'ref_deg',
+            ])
+            writer.writeheader()
+            for r in sorted(all_rows, key=lambda r: (r['cond_key'], r['trial_idx'], r['window_idx'])):
+                writer.writerow({
+                    'condition': r['cond_key'],
+                    'trial_idx': r['trial_idx'],
+                    'seed': r['seed'],
+                    'window_idx': r['window_idx'],
+                    'window_start_ms': r['window_start_ms'],
+                    'window_end_ms': r['window_end_ms'],
+                    'amp_mean': r['amp_mean'],
+                    'abs_asym_mean': r['abs_asym_mean'],
+                    'burnin_ms': burnin_ms,
+                    'period_ms': period_ms,
+                    'ref_deg': ref_deg,
+                })
+        print(f"\nTrial data → {csv_path}")
+
+    # --- Statistical tests: Kruskal-Wallis + pairwise Mann-Whitney U ---
+    from scipy.stats import kruskal as _kruskal, mannwhitneyu as _mwu
+
+    def _sig_label(p: float) -> str:
+        if np.isnan(p): return ''
+        if p < 0.001: return '***'
+        if p < 0.01:  return '**'
+        if p < 0.05:  return '*'
+        return 'n.s.'
+
+    summary_rows: list[dict] = []
+
+    for cond_key in condition_keys:
+        cond_rows = [r for r in all_rows if r['cond_key'] == cond_key]
+
+        # Build (n_trials × n_periods) arrays
+        amp_matrix = np.full((n_trials, n_periods), np.nan)
+        asym_matrix = np.full((n_trials, n_periods), np.nan)
+        for r in cond_rows:
+            ti, wi = r['trial_idx'], r['window_idx']
+            if ti < n_trials and wi < n_periods:
+                amp_matrix[ti, wi] = r['amp_mean']
+                asym_matrix[ti, wi] = r['abs_asym_mean']
+
+        # Kruskal-Wallis: each group = one window across all trials
+        amp_groups = [amp_matrix[:, w][~np.isnan(amp_matrix[:, w])] for w in range(n_periods)]
+        asym_groups = [asym_matrix[:, w][~np.isnan(asym_matrix[:, w])] for w in range(n_periods)]
+
+        valid_amp = [g for g in amp_groups if len(g) > 0]
+        valid_asym = [g for g in asym_groups if len(g) > 0]
+
+        if len(valid_amp) >= 2:
+            h_amp, p_amp = _kruskal(*valid_amp)
+        else:
+            h_amp, p_amp = np.nan, np.nan
+
+        if len(valid_asym) >= 2:
+            h_asym, p_asym = _kruskal(*valid_asym)
+        else:
+            h_asym, p_asym = np.nan, np.nan
+
+        print(f"\nKruskal-Wallis across windows — {cond_key}:")
+        print(f"  Amplitude:   H={h_amp:.3f},  p={p_amp:.4f} {_sig_label(p_amp)}")
+        print(f"  |Asymmetry|: H={h_asym:.3f},  p={p_asym:.4f} {_sig_label(p_asym)}")
+        print("  (n.s. = windows are statistically indistinguishable → stationarity reached)")
+
+        # Pairwise Mann-Whitney U: adjacent windows only
+        print(f"\n  Pairwise Mann-Whitney U (adjacent windows) — {cond_key}:")
+        print(f"  {'Window A':>12}  {'Window B':>12}  {'U':>8}  {'p':>8}  sig")
+        pairwise_mwu: list[dict] = []
+        for w in range(n_periods - 1):
+            ga = amp_groups[w]
+            gb = amp_groups[w + 1]
+            ga_asym = asym_groups[w]
+            gb_asym = asym_groups[w + 1]
+            if len(ga) >= 2 and len(gb) >= 2:
+                u_amp, p_mwu_amp = _mwu(ga, gb, alternative='two-sided')
+            else:
+                u_amp, p_mwu_amp = np.nan, np.nan
+            if len(ga_asym) >= 2 and len(gb_asym) >= 2:
+                u_asym, p_mwu_asym = _mwu(ga_asym, gb_asym, alternative='two-sided')
+            else:
+                u_asym, p_mwu_asym = np.nan, np.nan
+            w_start_a = int(w * period_ms)
+            w_start_b = int((w + 1) * period_ms)
+            print(f"  {w_start_a:>5}–{int((w+1)*period_ms):>5} ms  "
+                  f"{w_start_b:>5}–{int((w+2)*period_ms):>5} ms  "
+                  f"amp: U={u_amp:.0f} p={p_mwu_amp:.4f} {_sig_label(p_mwu_amp)}  "
+                  f"|asym|: U={u_asym:.0f} p={p_mwu_asym:.4f} {_sig_label(p_mwu_asym)}")
+            pairwise_mwu.append({
+                'window_a': w, 'window_b': w + 1,
+                'p_amp': float(p_mwu_amp),
+                'p_asym': float(p_mwu_asym),
+            })
+
+        summary_rows.append({'condition': cond_key, 'metric': 'amplitude',
+                              'H': h_amp, 'p': p_amp})
+        summary_rows.append({'condition': cond_key, 'metric': 'abs_asymmetry',
+                              'H': h_asym, 'p': p_asym})
+
+        # --- Plot per condition ---
+        from .plotting import plot_burnin_stability
+        plot_path = os.path.join(out_dir, f"burnin_stability_{cond_key}.png")
+        fig = plot_burnin_stability(
+            amp_matrix=amp_matrix,
+            asym_matrix=asym_matrix,
+            period_ms=period_ms,
+            cond_key=cond_key,
+            p_amp=p_amp,
+            p_asym=p_asym,
+            pairwise_mwu=pairwise_mwu,
+        )
+        fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Plot → {plot_path}")
+
+    # --- Save summary CSV ---
+    summary_path = os.path.join(out_dir, "burnin_stability_summary.csv")
+    with open(summary_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['condition', 'metric', 'H', 'p'])
+        writer.writeheader()
+        for r in summary_rows:
+            writer.writerow(r)
+    print(f"\nSummary → {summary_path}")
+    print(f"\nAll outputs saved to {out_dir}/")
+
+    if not args.no_show:
+        plt.show()
