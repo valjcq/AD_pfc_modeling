@@ -71,7 +71,14 @@ This document describes the experimental analysis commands and protocols for the
     - [19.5 Statistical Tests](#195-statistical-tests)
     - [19.6 Outputs](#196-outputs)
     - [19.7 Caching](#197-caching)
-20. [References](#20-references)
+20. [Burn-in Stationarity Analysis](#20-burn-in-stationarity-analysis)
+    - [20.1 Purpose](#201-purpose)
+    - [20.2 Protocol](#202-protocol)
+    - [20.3 Measured Quantities](#203-measured-quantities)
+    - [20.4 Statistical Tests](#204-statistical-tests)
+    - [20.5 Outputs](#205-outputs)
+    - [20.6 Caching](#206-caching)
+21. [References](#21-references)
 
 ---
 
@@ -1022,17 +1029,30 @@ A diagnostic line is always printed when $N$ is even:
 
 ### 19.4 Measured Quantities
 
-For each trial two scalar values are extracted from either the corrected weighted metric (default) or the raw mean of $A(t)$ (with `--no_correct_asymmetry`):
+For each trial the following scalar values are extracted:
 
-**Pre-cue asymmetry** — mean of $A(t)$ over the last 500 ms of the burn-in period (before cue onset). This serves as a per-trial baseline: in the absence of any stimulus the ring should be approximately symmetric, so any pre-existing asymmetry in the spontaneous state can be tracked and correlated with the delay outcome.
+**Pre-cue asymmetry** (`pre_cue_asym`) — amplitude-weighted mean of $A(t)$ over the last 500 ms of the burn-in period (before cue onset). This serves as a per-trial baseline: in the absence of any stimulus the ring should be approximately symmetric, so any pre-existing asymmetry in the spontaneous state can be tracked and correlated with the delay outcome.
 
-**Delay asymmetry** — mean of $A(t)$ from cue offset + 400 ms to the end of the delay. The 400 ms skip discards the large SOM/PYR transient that follows stimulus offset (see [§9.1](ring_attractor.md#91-mechanism)).
+**Last pre-cue asymmetry** (`last_pre_cue_asym`) — instantaneous $A(t)$ at the single time step immediately before cue onset. Captures the network state without any time-averaging.
+
+**Delay asymmetry** (`delay_asym`) — amplitude-weighted mean of $A(t)$ from cue offset + 400 ms to the end of the delay. The 400 ms skip discards the large SOM/PYR transient that follows stimulus offset (see [§9.1](ring_attractor.md#91-mechanism)).
 
 $$a_{\text{pre,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{pre}}} A(t)\,\text{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{pre}}} \text{Amp}(t)}, \qquad \mathcal{T}_{\text{pre}} = [t_{\text{cue}} - 500\,\text{ms},\; t_{\text{cue}})$$
 
 $$a_{\text{delay,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{delay}}} A(t)\,\text{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{delay}}} \text{Amp}(t)}, \qquad \mathcal{T}_{\text{delay}} = [t_{\text{off}} + 400\,\text{ms},\; T]$$
 
 With `--no_correct_asymmetry`, the code uses the raw unweighted means over each window.
+
+**Temporal magnitude metrics** — two non-cancelling metrics are computed on the raw (unweighted) $A(t)$ timecourse within each window. Unlike the signed weighted mean, these cannot be cancelled by oscillations that alternate between R and L:
+
+| Metric | CSV column | Formula | Interpretation |
+|--------|-----------|---------|----------------|
+| Mean absolute asymmetry — delay | `mean_abs_asym` | $\langle|A(t)|\rangle_{\mathcal{T}_{\text{delay}}}$ | Average magnitude of L/R imbalance during the delay, regardless of side |
+| Std of asymmetry — delay | `asym_std` | $\sigma(A(t))_{\mathcal{T}_{\text{delay}}}$ | Trial-level variability of $A(t)$ during the delay; large for oscillating conditions |
+| Mean absolute asymmetry — pre-cue | `mean_abs_asym_precue` | $\langle|A(t)|\rangle_{\mathcal{T}_{\text{pre}}}$ | Average magnitude of spontaneous L/R imbalance before cue onset |
+| Std of asymmetry — pre-cue | `asym_std_precue` | $\sigma(A(t))_{\mathcal{T}_{\text{pre}}}$ | Trial-level variability of spontaneous $A(t)$ before cue onset |
+
+These are computed by `compute_asymmetry_temporal_metrics()` in `analysis.py`.
 
 ### 19.5 Statistical Tests
 
@@ -1048,6 +1068,8 @@ Results are printed in a table with significance markers ($* p < 0.05$, $** p < 
 
 The p-value displayed on plots uses the Wilcoxon result when available (more robust), falling back to the t-test p-value otherwise.
 
+**Pairwise Mann-Whitney U tests** are also run for the four temporal magnitude metrics (`mean_abs_asym`, `asym_std`, `mean_abs_asym_precue`, `asym_std_precue`) across all condition pairs. Results are stored in `pairwise_stats` and displayed as significance brackets on the corresponding panels of `asymmetry_summary.png`.
+
 ### 19.6 Outputs
 
 All outputs are written to:
@@ -1059,10 +1081,10 @@ figs/asymmetry/{N}/{params_label}/{connectivity_label}/amp{amp}_{mode}/
 | File | Description |
 |------|-------------|
 | *(path mode)* | `{mode} = corrected` when `--correct_asymmetry` is enabled (default), else `uncorrected` |
-| `asymmetry_trials.csv` | Per-trial data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1), `correct_asymmetry` (0/1) |
+| `asymmetry_trials.csv` | Per-trial data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `last_pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1), `correct_asymmetry` (0/1), `mean_abs_asym`, `asym_std`, `mean_abs_asym_precue`, `asym_std_precue` |
 | `asymmetry_distribution.png` | Violin + jittered strip plots of pre-cue and delay asymmetry per condition. Each point is coloured by asymmetry value (blue → right, yellow → left). The delay violin is annotated with the p-value and significance stars from [§19.5](#195-statistical-tests). Plot title indicates cue mode and whether asymmetry is corrected. |
-| `asymmetry_correlation.png` | Scatter plot of pre-cue vs. delay asymmetry per condition, with Pearson $r$ annotated. |
-| `asymmetry_summary.png` | Three-panel bar chart: (1) mean delay asymmetry ± SEM with significance stars, (2) fraction of rightward trials, (3) mean absolute asymmetry ± SEM. |
+| `asymmetry_correlation.png` | Two-row scatter plot: top row shows mean pre-cue (500 ms window) vs. delay asymmetry; bottom row shows instantaneous last pre-cue step vs. delay asymmetry. Each panel is annotated with Pearson $r$ and significance stars. |
+| `asymmetry_summary.png` | 2×3 bar chart grouped by period. **Row 0 — Delay**: (1) mean \|asymmetry\| ± SEM, (2) mean \|A(t)\| ± SEM, (3) std(A(t)) ± SEM. **Row 1 — Pre-cue**: (4) mean \|asymmetry\| ± SEM, (5) mean \|A(t)\| ± SEM, (6) std(A(t)) ± SEM. All panels with pairwise MWU brackets. |
 | `worst_case/{cond}/dashboard.png` | Ring attractor dashboard for the trial with the largest $|a_{\text{delay}}|$ per condition. |
 | `worst_case/{cond}/bump_metrics.png` | Bump metrics over time (including asymmetry panel) for the worst-case trial. |
 | `worst_case/{cond}/snapshot_evolution.mp4` | Animated ring snapshot evolution for the worst-case trial. |
@@ -1082,7 +1104,101 @@ CSVs missing `correct_asymmetry` are treated as legacy caches: mode is inferred 
 
 ---
 
-## 20. References
+## 20. Burn-in Stationarity Analysis
+
+**Command**: `ring-burnin-stability`
+
+### 20.1 Purpose
+
+Verify that a spontaneous burn-in period of a given duration is sufficient for the ring attractor to reach stationarity. The experiment divides the burn-in into equal windows and tests whether successive windows are statistically indistinguishable. If the last windows do not differ significantly, the network has settled into its equilibrium distribution and the burn-in length is adequate.
+
+This is complementary to `ring-study`, which uses a single shared *deterministic* (noiseless) burn-in state. Here, the burn-in is **noisy** (white noise, different seed per trial), so the question is whether the *distribution* of spontaneous states has converged, not just a single trajectory.
+
+### 20.2 Protocol
+
+```
+Zero initial conditions
+        │
+        ▼
+  Noisy burn-in  ──────────────────────────────────────────────────►
+  (T = burnin_ms, default 10 000 ms)
+  │         │         │         │         │         │    ...
+  │  win 0  │  win 1  │  win 2  │  win 3  │  win 4  │
+  0      1000 ms   2000 ms   3000 ms   4000 ms   5000 ms ...
+```
+
+- **100 independent trials** (default `--n_trials 100`), each starting from zero initial conditions with a unique noise seed.
+- **No stimulus** — purely spontaneous dynamics throughout.
+- Total duration: `burnin_ms` (default 10 000 ms) divided into `n_periods = burnin_ms / period_ms` windows (default 10 windows of 1 000 ms).
+- Asymmetry is measured relative to a fixed reference angle (`--ref_deg`, default 0°) rather than a stimulus location.
+
+| Phase | Duration | Noise |
+|-------|----------|-------|
+| Spontaneous activity | `burnin_ms` (default 10 000 ms) | White noise, trial-unique seed |
+
+Key constants:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--n_trials` | 100 | Independent noisy trials |
+| `--burnin_ms` | 10 000 ms | Total duration per trial |
+| `--period_ms` | 1 000 ms | Duration of each comparison window |
+| `--ref_deg` | 0.0° | Fixed reference angle for asymmetry |
+
+### 20.3 Measured Quantities
+
+For each trial and each window $w$ covering $[w \cdot T_p,\, (w+1) \cdot T_p)$:
+
+| Metric | Symbol | Definition |
+|--------|--------|------------|
+| Mean amplitude | $\bar{A}_w$ | $\langle \text{Amp}(t) \rangle_{t \in w}$ — mean of the population-vector amplitude over the window |
+| Mean absolute asymmetry | $\overline{|A|}_w$ | $\langle |A(t)| \rangle_{t \in w}$ — mean of $|A(t)|$ where $A(t)$ is computed relative to `--ref_deg` |
+
+Amplitude is computed by `population_vector_decode()` (PYR population, `analysis.py`). Asymmetry uses `compute_bump_asymmetry()` with `stim_angle_deg` set to `ref_deg`.
+
+### 20.4 Statistical Tests
+
+Two complementary tests are run per condition per metric.
+
+**Kruskal-Wallis test** (global, `scipy.stats.kruskal`): tests whether the $K$ window distributions all share the same median. Each group is the set of $n_{\text{trials}}$ per-window values for one window index.
+
+$$H_0: \text{all } K \text{ window distributions are identical}$$
+
+A non-significant result ($p \geq 0.05$) indicates that no window differs from the others — the metric is stationary across the burn-in.
+
+**Pairwise Mann-Whitney U tests** (`scipy.stats.mannwhitneyu`, two-sided): run for every pair of **adjacent** windows $(w, w+1)$. This shows *where* in the burn-in the dynamics transition from non-stationary to stationary. Results are displayed as significance brackets above the box plots.
+
+| Symbol | Threshold |
+|--------|-----------|
+| `***` | $p < 0.001$ |
+| `**` | $p < 0.01$ |
+| `*` | $p < 0.05$ |
+| `n.s.` | $p \geq 0.05$ |
+
+Brackets between adjacent boxes are drawn in black when significant and grey when not.
+
+### 20.5 Outputs
+
+```
+figs/burnin_stability/{N}/{connectivity_label}/
+├── burnin_stability_trials.csv
+├── burnin_stability_summary.csv
+└── burnin_stability_{cond}.png   (one per condition)
+```
+
+| File | Contents |
+|------|----------|
+| `burnin_stability_trials.csv` | Per-trial, per-window data: `condition`, `trial_idx`, `seed`, `window_idx`, `window_start_ms`, `window_end_ms`, `amp_mean`, `abs_asym_mean`, `burnin_ms`, `period_ms`, `ref_deg` |
+| `burnin_stability_summary.csv` | Per-condition Kruskal-Wallis results: `condition`, `metric` (`amplitude` or `abs_asymmetry`), `H`, `p` |
+| `burnin_stability_{cond}.png` | Two-panel figure: left panel = amplitude box plots per window; right panel = $\|A(t)\|$ box plots per window. Title shows KW p-value; adjacent-window MWU brackets overlaid. |
+
+### 20.6 Caching
+
+The trial CSV is used as a cache on subsequent runs. Before launching simulations the command reads `burnin_stability_trials.csv` and validates that `burnin_ms`, `period_ms`, and `ref_deg` match the current arguments. If validation passes, already-computed trial indices are skipped and only missing trials are run (top-up logic). If any parameter does not match, all trials are rerun from scratch.
+
+---
+
+## 21. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.
 

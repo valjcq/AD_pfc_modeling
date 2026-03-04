@@ -35,15 +35,15 @@ class RingParams:
             (uniform all-to-all, independent of n_nodes)
     """
 
+    # === Required inter-node connectivity (no defaults) ===
+    w_pyr_pyr_inter: float  # Total coupling strength (Gaussian profile)
+    w_pv_global: float  # Total global PV→PYR inhibition strength (uniform)
+
     # === Network geometry ===
     n_nodes: int = 64  # Number of nodes on ring (power of 2 recommended)
 
     # === Inter-node PYR→PYR excitation ===
-    w_pyr_pyr_inter: float = 18.55  # Total coupling strength (Gaussian profile)
     sigma_pyr_deg: float = 30.0  # Width of Gaussian (degrees), ~30-60 typical
-
-    # === Inter-node PV→PYR global inhibition ===
-    w_pv_global: float = 0.3  # Total global PV→PYR inhibition strength (uniform)
 
     # === Derived properties ===
     @property
