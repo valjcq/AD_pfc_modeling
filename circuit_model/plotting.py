@@ -275,7 +275,7 @@ def plot_simulation_dashboard(
     plot_adaptation(result, ax=ax_adapt, title="Adaptation Currents", time_range=time_range)
 
     # Main title
-    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    fig.suptitle(title, fontsize=14, fontweight="bold")
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")

@@ -791,6 +791,12 @@ Examples:
                     "ring-noise-floor with default parameters if it is missing.",
     )
     _add_ring_common(ring_cal_parser)
+    # w_pyr_pyr_inter is swept via --w_inter_values; make the base value optional
+    for _action in ring_cal_parser._actions:
+        if _action.dest == "w_pyr_pyr_inter":
+            _action.required = False
+            _action.default = 0.0
+            break
     ring_cal_parser.add_argument(
         "--conditions", type=str, nargs="+", default=None,
         help="Conditions to calibrate (default: WT only).",
@@ -844,6 +850,12 @@ Examples:
                     "Run this first for custom baseline parameters (n_baseline, percentile).",
     )
     _add_ring_common(ring_nf_parser)
+    # w_pyr_pyr_inter is swept via --w_inter_values; make the base value optional
+    for _action in ring_nf_parser._actions:
+        if _action.dest == "w_pyr_pyr_inter":
+            _action.required = False
+            _action.default = 0.0
+            break
     ring_nf_parser.add_argument(
         "--conditions", type=str, nargs="+", default=None,
         help="Conditions to run (default: WT only).",
@@ -1115,6 +1127,56 @@ Examples:
         help="Number of parallel workers (default: auto)",
     )
 
+    # =========================================================================
+    # RING-ASYMMETRY-AMP-SWEEP subcommand
+    # =========================================================================
+    ring_asym_amp_parser = subparsers.add_parser(
+        "ring-asymmetry-amp-sweep",
+        help="Sweep cue amplitude and compare delay asymmetry across conditions",
+        description=(
+            "Runs N trials per (condition, amplitude) using a shared per-condition "
+            "burn-in followed by a short per-trial secondary burn-in, then measures "
+            "delay-period asymmetry (mean|A(t)| and std(A)) at each amplitude. "
+            "Results are saved in the same per-amplitude cache directories as "
+            "ring-asymmetry, so data from either command is interchangeable. "
+            "A cross-amplitude summary figure and violin plot compare the "
+            "amplitude–asymmetry relationship between conditions."
+        ),
+    )
+    _add_ring_common(ring_asym_amp_parser)
+    ring_asym_amp_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to analyse (default: WT WT_APP). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--amplitudes", type=float, nargs="+",
+        default=[20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0],
+        help="List of amplitude multipliers to sweep (default: 20 25 30 35 40 45 50 55 60)",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per (condition, amplitude) (default: 50)",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto)",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--no_cue_balance", action="store_true", default=False,
+        help="Disable automatic cue-placement balance correction (default: on). "
+             "When enabled (default), for even N the cue is placed at a half-step "
+             "between two nodes so left and right node counts are exactly equal.",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--correct_asymmetry", dest="correct_asymmetry", action="store_true", default=True,
+        help="Enable asymmetry correction by bump amplitude (default: on).",
+    )
+    ring_asym_amp_parser.add_argument(
+        "--no_correct_asymmetry", dest="correct_asymmetry", action="store_false",
+        help="Disable asymmetry correction by bump amplitude.",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -1125,7 +1187,7 @@ Examples:
               "'ring-distractor-sweep', 'ring-noise-floor', 'ring-calibrate', "
               "'ring-lesion', 'ring-tau-sweep', 'ring-phase-plane', "
               "'ring-temporal-dissection', 'ring-asymmetry', "
-              "or 'ring-burnin-stability'.")
+              "'ring-burnin-stability', or 'ring-asymmetry-amp-sweep'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -1171,6 +1233,9 @@ Examples:
         _cmd(args)
     elif args.command == "ring-burnin-stability":
         from .ring.cli import cmd_burnin_stability as _cmd
+        _cmd(args)
+    elif args.command == "ring-asymmetry-amp-sweep":
+        from .ring.cli import cmd_asymmetry_amp_sweep as _cmd
         _cmd(args)
     else:
         parser.print_help()

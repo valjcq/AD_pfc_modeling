@@ -80,3 +80,35 @@ This distinction matters for model fitting and evaluation:
 - **Decaying bump**: Focus on amplitude and stability metrics, and how conditions affect them
 
 Our model currently exhibits decaying bump behavior with oscillations, suggesting the latter interpretation is more appropriate. But it's important to explore the litterature to see if i should be aiming for a more bistable model instead.
+
+---
+
+### Noise floor without noise
+
+Due to a miss in the burn-in of the noise, the noise floor experiment without noise was not correctly implemented. There was no noise during the burn-in, and probably the delay of the noise floor ratio ? Not sure
+But what we observe is that the weight at which the network tend to have bigger noise floor value as been shifted to higher weight value. Does that mean that the noise participate to the network stability ? That a noise will help the network to be more stable without cue ? That can be interesting to explore, and it can be related to the fact that the network is in the edge of the change of state, and that the noise can help the network to be more stable in this state. It's probably du to the adaptative current that might be low in the absence of noise, and that can make the network more excitable and less stable.
+
+---
+
+### Asymmetry × Amplitude Sweep (`ring-asymmetry-amp-sweep`)
+
+**Motivation**: The single-amplitude asymmetry experiment (at amp=45×) shows non-zero mean|A(t)| and std(A) in both WT and WT_APP. The question is whether these metrics grow with cue amplitude and whether the growth rate (slope) differs between conditions — if WT_APP has a steeper slope, it suggests the disease condition is more sensitive to stimulus drive in terms of spatial instability during the delay.
+
+**Design**:
+- Sweep amplitudes (e.g. 20–60× I_ext_pyr) while keeping all other parameters fixed.
+- One 6000 ms shared burn-in per condition (from zero state, computed once per sweep run), then a 1000 ms per-trial secondary burn-in with a unique seed. This efficiently samples diverse pre-cue states without repeating the expensive long burn-in for each amplitude.
+- Same simulation noise seed for a given trial index across all amplitudes → amplitude is the only variable that changes along that axis.
+- Cache is shared with `ring-asymmetry`: per-amplitude `asymmetry_trials.csv` directories are identical in format, so the two commands are interoperable.
+
+**Metrics**:
+- `mean_abs_asym` = mean|A(t)| over the delay (after 400 ms transient skip) — captures spatial instability regardless of direction.
+- `asym_std` = std(A(t)) over the delay — captures the amplitude of asymmetry fluctuations.
+
+**Expected findings**:
+- If both metrics increase with amplitude in a roughly linear fashion, the slope per condition can be extracted (OLS fit with R²) and compared.
+- WT_APP should in principle show stronger asymmetry at a given amplitude if the loss of α7 nAChR reduces the inhibitory damping that keeps the bump symmetric.
+- A steeper slope in WT_APP vs WT would indicate that the disease condition amplifies how strongly the stimulus drive converts into spatial instability — a possible mechanistic link between nAChR dysfunction and WM precision loss.
+
+**Statistical outputs** (printed to console):
+- OLS slope, intercept, R² per condition.
+- Mann-Whitney U at each amplitude comparing conditions (to see where the difference becomes significant along the amplitude axis).
