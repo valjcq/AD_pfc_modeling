@@ -767,6 +767,60 @@ def compute_noise_floor(A_hat_values: np.ndarray, percentile: float = 95.0) -> f
     return float(np.percentile(valid, percentile))
 
 
+# A_hat values below this indicate all nodes hit the firing-rate ceiling.
+SATURATION_A_HAT_THRESHOLD: float = 1e-6
+
+
+def detect_saturated_w_values(
+    baseline_data: dict[float, np.ndarray],
+    saturation_threshold: float = SATURATION_A_HAT_THRESHOLD,
+    min_saturated_trials: int = 5,
+) -> set[float]:
+    """Detect w_inter values where network saturation corrupts A_hat.
+
+    When all nodes hit the firing-rate ceiling (~200 Hz) the population-vector
+    amplitude collapses to zero even though the network is maximally active.
+    These near-zero values look like a low noise floor but are artefacts.
+
+    Two-stage detection:
+    1. Primary: if *all* A_hat values for a w_inter are below
+       ``saturation_threshold`` (i.e. max < threshold), the w is fully
+       saturated and excluded.  This distinguishes saturation from the
+       phase-transition regime where some trials form bumps (high A_hat) and
+       some do not (near-zero A_hat, but max > 0.1).
+    2. Secondary guard: if the count of near-zero values (per-w) is less
+       than ``min_saturated_trials``, the w is *not* flagged even if it
+       passes the max-based test (catches accidental precision edge cases).
+
+    Parameters
+    ----------
+    baseline_data:
+        Flat A_hat arrays keyed by w_inter (as returned by
+        ``_load_calibrate_baseline``).
+    saturation_threshold:
+        A_hat values below this are treated as saturation artefacts.
+    min_saturated_trials:
+        Minimum number of near-zero values required before a w_inter is
+        excluded (guards against false positives from a few numerical zeros).
+
+    Returns
+    -------
+    set of saturated w_inter float values.
+    """
+    saturated: set[float] = set()
+    for w, vals in baseline_data.items():
+        arr = np.asarray(vals).ravel()
+        if arr.size == 0:
+            continue
+        # Flag when ≥99% of values are below threshold AND at least
+        # min_saturated_trials near-zero values exist (guard against
+        # accidental zeros in otherwise normal distributions).
+        if np.percentile(arr, 99) < saturation_threshold:
+            if int(np.sum(arr < saturation_threshold)) >= min_saturated_trials:
+                saturated.add(w)
+    return saturated
+
+
 def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
     """Aggregate single-timepoint metric dicts (one per trial) into mean ± SD/SEM.
 
