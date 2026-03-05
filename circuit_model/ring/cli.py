@@ -39,6 +39,8 @@ from .analysis import (
 
     compute_drift_field,
     compute_noise_floor,
+    detect_saturated_w_values,
+    SATURATION_A_HAT_THRESHOLD,
 
     # New: battery-of-experiments functions
     compute_bump_survival_time,
@@ -50,6 +52,7 @@ from .plotting import (
     plot_ring_dashboard,
     animate_ring_snapshot_evolution,
     plot_ring_connectome,
+    plot_connectivity_matrices,
     plot_bump_metrics_over_time,
     plot_population_activity,
     extract_comparison_data,
@@ -60,7 +63,6 @@ from .plotting import (
     plot_noise_floor_histogram,
     plot_calibration_heatmap,
     plot_calibration_timecourses,
-    plot_calibration_scatter,
     plot_noise_summary,
     plot_distractor_sweep_heatmaps,
     plot_distractor_sweep_timecourses,
@@ -263,6 +265,11 @@ def _stim_label(amp_factor: float) -> str:
     return f"amp={_fmt(amp_factor)}×"
 
 
+def _weights_label(rp: RingParams) -> str:
+    """Short label for PYR and PV weights, used in plot titles."""
+    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}"
+
+
 def _parse_seed(value: str) -> int | None:
     """Parse --seed argument: integer or 'rdm' for a truly random seed."""
     if value == "rdm":
@@ -375,11 +382,14 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     amp_dir = f"amp{_fmt(amp)}"
     conn_label = _network_label(ring_params)
-    out_dir = os.path.join(
-        _output_dir("figs/ring/run", args.params_json),
-        conn_label, amp_dir, cond_key,
-    )
+    conn_dir = os.path.join(_output_dir("figs/ring/run", args.params_json), conn_label)
+    out_dir = os.path.join(conn_dir, amp_dir, cond_key)
     os.makedirs(out_dir, exist_ok=True)
+
+    connectivity_path = os.path.join(conn_dir, "connectivity.png")
+    if not os.path.exists(connectivity_path):
+        plot_connectivity_matrices(ring_params, save_path=connectivity_path)
+        plt.close()
 
     print(f"\nSimulating: {condition.label} ({cond_key})")
     print(f"  T = {T_ms:.0f} ms, delay = {args.delay_ms:.0f} ms")
@@ -933,7 +943,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         for amp in amplitudes:
             amp_out = os.path.join(out_dir, f"amp{_fmt(amp)}")
             os.makedirs(amp_out, exist_ok=True)
-            suptitle = _stim_label(amp)
+            suptitle = f"{_stim_label(amp)}, {_weights_label(ring_params)}"
 
             metrics_over_delay_agg: dict[str, list[dict]] = {}
             delay_end_metrics_agg: dict[str, dict] = {}
@@ -1037,7 +1047,7 @@ def cmd_study(args: argparse.Namespace) -> None:
             all_delay_metrics_agg,
             amplitude_values=amplitudes,
             save_path=os.path.join(out_dir, f"metrics_vs_amplitude_{error_band}.png"),
-            suptitle=f"Metrics vs Amplitude (full delay){band_tag}",
+            suptitle=f"Metrics vs Amplitude (full delay){band_tag}  [{_weights_label(ring_params)}]",
             error_band=error_band,
             separate_app=False,  # all conditions on same plot for amplitude comparison
         )
@@ -1103,7 +1113,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                 timed_metrics,
                 amplitude_values=amplitudes,
                 save_path=os.path.join(out_dir, f"metrics_vs_amplitude_at_{label}_{error_band}.png"),
-                suptitle=f"Metrics vs Amplitude at delay = {label}{band_tag}",
+                suptitle=f"Metrics vs Amplitude at delay = {label}{band_tag}  [{_weights_label(ring_params)}]",
                 error_band=error_band,
                 separate_app=False,  # all conditions on same plot for amplitude comparison
             )
@@ -1381,6 +1391,45 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
                                 print(f"  Loaded cached amplitude data from {amplitude_csv}")
                         except Exception as _ea:
                             print(f"  Amplitude cache read failed ({_ea}), skipping.")
+
+                    # Re-run one sample trial per condition for ring snapshot visualization
+                    print("  Re-running sample trials for ring snapshot visualization...")
+                    rng_snapshot = np.random.default_rng(args.seed)
+                    stim_offset_ms_local = STIM_ONSET_MS + STIM_DURATION_MS
+                    for ck in condition_keys:
+                        valid_rows = [
+                            r for r in trials_by_cond.get(ck, [])
+                            if r.get('valid', '1') == '1'
+                        ]
+                        if not valid_rows:
+                            disp_data[ck]['sample_result'] = None
+                            disp_data[ck]['sample_displacement_deg'] = None
+                            continue
+                        sample_row = valid_rows[int(rng_snapshot.integers(len(valid_rows)))]
+                        sample_seed = trial_seeds[int(sample_row['trial_idx'])]
+                        local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+                        r0, I_adapt0 = burnin_states[ck]
+                        actual_current = amp_factor * base_params.I_ext_pyr()
+                        T_ms_short = T_ms_full - BURN_IN_MS
+                        stimuli_short = [
+                            RingStimulus(
+                                center_deg=STIM_CENTER_DEG, amplitude=actual_current,
+                                sigma_deg=STIM_SIGMA_DEG,
+                                onset_ms=STIM_ONSET_MS - BURN_IN_MS,
+                                duration_ms=STIM_DURATION_MS,
+                            ),
+                        ]
+                        sample_result = simulate_ring(
+                            local_params, ring_params, T_ms=T_ms_short,
+                            stimuli=stimuli_short, r0=r0, I_adapt0=I_adapt0,
+                            seed=sample_seed, connectivity=connectivity,
+                            record_dt_ms=5.0,
+                        )
+                        sample_result.t_ms += BURN_IN_MS
+                        disp_data[ck]['sample_result'] = sample_result
+                        disp_data[ck]['sample_displacement_deg'] = float(sample_row['displacement_deg'])
+                        disp_data[ck]['delay_start_ms'] = stim_offset_ms_local + TRANSIENT_SKIP_TIME_MS
+                        disp_data[ck]['delay_end_ms'] = stim_offset_ms_local + args.delay_ms
         except Exception as _e:
             print(f"  Cache read failed ({_e}), rerunning simulations.")
             disp_data = {}
@@ -1676,7 +1725,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
     plot_displacement_distribution(
         disp_data,
         save_path=disp_save,
-        suptitle=f"Final Bump Displacement from Cue{band_tag}",
+        suptitle=f"Final Bump Displacement from Cue{band_tag}  [{_weights_label(ring_params)}]",
     )
     plt.close()
     print(f"Figure saved to {disp_save}")
@@ -1690,7 +1739,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
         plot_diffusion_ring_snapshot(
             disp_data,
             save_path=snap_save,
-            suptitle=f"Ring Activity During Delay Across Conditions{band_tag}",
+            suptitle=f"Ring Activity During Delay Across Conditions{band_tag}  [{_weights_label(ring_params)}]",
         )
         plt.close()
         print(f"Figure saved to {snap_save}")
@@ -2115,6 +2164,19 @@ def _calibration_network_label(rp: RingParams) -> str:
     return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}"
 
 
+def _unique_path(path: str) -> str:
+    """Return path if it does not exist, else append _1, _2, ... before extension."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    i = 1
+    while True:
+        candidate = f"{base}_{i}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        i += 1
+
+
 # ============================================================================
 # CALIBRATE: PARALLEL WORKER
 # ============================================================================
@@ -2395,7 +2457,7 @@ def _load_calibrate_baseline(
     cond_key: str,
     w_inter_values: list[float],
     noise_percentile: float,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, set]:
     """Load noise thresholds and baseline A_hat distributions.
 
     Primary source: baseline_A_hat.csv (full distribution, written by new runs).
@@ -2404,9 +2466,14 @@ def _load_calibrate_baseline(
     Returns:
         noise_thresholds:   {(cond_key, w): float}
         baseline_A_hat_data: {(cond_key, w): np.ndarray}  (empty array if only summary available)
+        saturated_w_values: set of w_inter values excluded due to node saturation
+
+    w_inter values where saturation is detected (nodes hit firing-rate ceiling,
+    producing near-zero A_hat artefacts) are excluded from both dicts.
     """
     noise_thresholds: dict = {}
     baseline_A_hat_data: dict = {}
+    saturated_w: set[float] = set()
 
     baseline_csv = os.path.join(cond_dir, "baseline_A_hat.csv")
     if os.path.exists(baseline_csv):
@@ -2421,13 +2488,26 @@ def _load_calibrate_baseline(
             all_A = np.array(vals)
             baseline_A_hat_data[key] = all_A
             noise_thresholds[key] = compute_noise_floor(all_A, noise_percentile)
-        if set(w_inter_values) <= {w for (_, w) in noise_thresholds}:
-            return noise_thresholds, baseline_A_hat_data
+
+        # Detect and remove saturated w_inter values
+        flat_by_w = {w: baseline_A_hat_data[(cond_key, w)]
+                     for (ck, w) in baseline_A_hat_data if ck == cond_key}
+        saturated_w = detect_saturated_w_values(flat_by_w)
+        if saturated_w:
+            print(f"  [saturation] Excluding w_inter values where all nodes hit "
+                  f"firing-rate ceiling: {sorted(saturated_w)}")
+            for w in saturated_w:
+                baseline_A_hat_data.pop((cond_key, w), None)
+                noise_thresholds.pop((cond_key, w), None)
+
+        non_saturated = {w for (_, w) in noise_thresholds}
+        if set(w_inter_values) - saturated_w <= non_saturated:
+            return noise_thresholds, baseline_A_hat_data, saturated_w
 
     # Fallback: read pre-computed noise_threshold from calibration_summary.csv
     summary_csv = os.path.join(cond_dir, "calibration_summary.csv")
     if not os.path.exists(summary_csv):
-        return noise_thresholds, baseline_A_hat_data
+        return noise_thresholds, baseline_A_hat_data, saturated_w
     with open(summary_csv) as f:
         for row in csv.DictReader(f):
             if row.get('condition_key', '') != cond_key:
@@ -2437,7 +2517,7 @@ def _load_calibrate_baseline(
             if key not in noise_thresholds and row.get('noise_threshold', ''):
                 noise_thresholds[key] = float(row['noise_threshold'])
                 baseline_A_hat_data[key] = np.array([])  # no distribution available
-    return noise_thresholds, baseline_A_hat_data
+    return noise_thresholds, baseline_A_hat_data, saturated_w
 
 
 def _load_baseline_trial_counts(
@@ -2677,7 +2757,7 @@ def _run_noise_floor_for_conditions(
                         })
 
         # Recompute thresholds from merged cache (existing + newly appended data)
-        merged_nt, merged_base = _load_calibrate_baseline(
+        merged_nt, merged_base, _ = _load_calibrate_baseline(
             cond_dir_save, ck, w_inter_values, noise_percentile,
         )
         for w in cond_w_values:
@@ -2863,7 +2943,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         # Preload cached baselines for all conditions to run
         for ck in conditions_to_run:
             cond_dir_load = os.path.join(out_dir, ck)
-            cached_nt, cached_base = _load_calibrate_baseline(
+            cached_nt, cached_base, _ = _load_calibrate_baseline(
                 cond_dir_load, ck, w_inter_values, noise_percentile)
             noise_thresholds.update(cached_nt)
             baseline_A_hat_data.update(cached_base)
@@ -3002,7 +3082,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         cond_dir_load = os.path.join(out_dir, ck)
         cached_rows = _load_calibrate_grid_results(cond_dir_load, ck)
         grid_results.extend(cached_rows)
-        cached_nt, cached_base = _load_calibrate_baseline(
+        cached_nt, cached_base, _ = _load_calibrate_baseline(
             cond_dir_load, ck, w_inter_values, noise_percentile)
         noise_thresholds.update(cached_nt)
         baseline_A_hat_data.update(cached_base)
@@ -3019,7 +3099,6 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     error_band = getattr(args, 'error_band', 'sem')
 
     # Collected across conditions for cross-condition summary plots
-    all_cond_grid_data: dict[str, dict] = {}
     all_cond_noise_data: dict[str, dict] = {}
 
     for ck in condition_keys:
@@ -3070,8 +3149,8 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                     }
 
         # Collect for cross-condition summary
-        all_cond_grid_data[ck] = grid_data
-        all_cond_noise_data[ck] = {w: noise_thresholds[(ck, w)] for w in w_inter_values}
+        all_cond_noise_data[ck] = {w: noise_thresholds[(ck, w)]
+                                   for w in w_inter_values if (ck, w) in noise_thresholds}
 
         # --- Save CSVs (in per-condition subdir; skip for cached conditions) ---
         if ck not in cached_conditions:
@@ -3121,16 +3200,19 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 })
 
         # --- Per-condition plots (in cond_dir) ---
+        saturated_w_cond = [w for w in w_inter_values if (ck, w) not in noise_thresholds]
         baseline_for_plot = {w: baseline_A_hat_data.get((ck, w), np.array([]))
-                             for w in w_inter_values}
-        thresholds_for_plot = {w: noise_thresholds[(ck, w)] for w in w_inter_values}
+                             for w in w_inter_values if (ck, w) in noise_thresholds}
+        thresholds_for_plot = {w: noise_thresholds[(ck, w)]
+                               for w in w_inter_values if (ck, w) in noise_thresholds}
         # Noise floor histogram requires the full A_hat distribution (not available from old CSVs)
         if any(len(v) > 0 for v in baseline_for_plot.values()):
             baseline_n_samples = int(sum(len(v) for v in baseline_for_plot.values()))
             plot_noise_floor_histogram(
                 baseline_for_plot, thresholds_for_plot,
-                save_path=os.path.join(cond_dir, "noise_floor.png"),
+                save_path=_unique_path(os.path.join(cond_dir, "noise_floor.png")),
                 suptitle=f"Noise Floor ({cond_label}, n={baseline_n_samples} samples, p{noise_percentile:.0f})",
+                skipped_w_values=saturated_w_cond if saturated_w_cond else None,
             )
             plt.close()
         else:
@@ -3139,7 +3221,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         plot_calibration_heatmap(
             grid_data, "success_rate", amplitudes, w_inter_values,
             cmap="RdYlGn", vmin=0, vmax=1,
-            save_path=os.path.join(cond_dir, "heatmap_success_rate.png"),
+            save_path=_unique_path(os.path.join(cond_dir, "heatmap_success_rate.png")),
             suptitle=f"Success Rate ({cond_label}, {n_trials} trials)",
         )
         plt.close()
@@ -3147,7 +3229,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         plot_calibration_heatmap(
             grid_data, "mean_A_hat", amplitudes, w_inter_values,
             cmap="viridis", vmin=0, vmax=1,
-            save_path=os.path.join(cond_dir, "heatmap_A_hat.png"),
+            save_path=_unique_path(os.path.join(cond_dir, "heatmap_A_hat.png")),
             suptitle=f"Mean A_hat ({cond_label}, {n_trials} trials)",
         )
         plt.close()
@@ -3155,7 +3237,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         plot_calibration_heatmap(
             grid_data, "peak_pyr_rate", amplitudes, w_inter_values,
             cmap="hot",
-            save_path=os.path.join(cond_dir, "heatmap_peak_pyr.png"),
+            save_path=_unique_path(os.path.join(cond_dir, "heatmap_peak_pyr.png")),
             suptitle=f"Peak PYR Rate ({cond_label}, {n_trials} trials)",
         )
         plt.close()
@@ -3169,7 +3251,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             band_tag = f"+/-{error_band.upper()}" if n_trials > 1 else ""
             plot_calibration_timecourses(
                 tc_subset, eval_times_s, error_band=error_band,
-                save_path=os.path.join(cond_dir, f"timecourses_{error_band}.png"),
+                save_path=_unique_path(os.path.join(cond_dir, f"timecourses_{error_band}.png")),
                 suptitle=f"A_hat Time Courses — success ≥ 90% ({cond_label}, {n_trials} trials, {band_tag})",
             )
             plt.close()
@@ -3178,16 +3260,9 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     # --- Cross-condition summary plots (in parent out_dir) ---
     n_cond_label = f"{len(condition_keys)} condition{'s' if len(condition_keys) > 1 else ''}"
-    plot_calibration_scatter(
-        all_cond_grid_data,
-        save_path=os.path.join(out_dir, "scatter_summary.png"),
-        suptitle=f"Calibration Summary ({n_cond_label}, {n_trials} trials)",
-    )
-    plt.close()
-
     plot_noise_summary(
         all_cond_noise_data,
-        save_path=os.path.join(out_dir, "noise_summary.png"),
+        save_path=_unique_path(os.path.join(out_dir, "noise_summary.png")),
         suptitle=f"Noise Floor ({n_cond_label}, p{noise_percentile:.0f})",
     )
     plt.close()
@@ -3257,24 +3332,28 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
             cond_label = STUDY_CONDITIONS[ck].name
             cond_dir = os.path.join(out_dir, ck)
 
-            cached_nt, cached_base = _load_calibrate_baseline(
+            cached_nt, cached_base, saturated_w = _load_calibrate_baseline(
                 cond_dir, ck, w_inter_values, noise_percentile,
             )
-            missing_w = [w for w in w_inter_values if (ck, w) not in cached_nt]
+            missing_w = [w for w in w_inter_values
+                         if (ck, w) not in cached_nt and w not in saturated_w]
             if missing_w:
                 print(f"  Incomplete noise thresholds for {cond_label}: "
                       f"missing w_inter={', '.join(_fmt(w) for w in missing_w)}")
                 continue
 
-            thresholds_for_plot = {w: cached_nt[(ck, w)] for w in w_inter_values}
+            thresholds_for_plot = {w: cached_nt[(ck, w)]
+                                   for w in w_inter_values if (ck, w) in cached_nt}
             baseline_for_plot = {
-                w: cached_base.get((ck, w), np.array([])) for w in w_inter_values
+                w: cached_base.get((ck, w), np.array([]))
+                for w in w_inter_values if (ck, w) in cached_nt
             }
             if any(len(v) > 0 for v in baseline_for_plot.values()):
                 plot_noise_floor_histogram(
                     baseline_for_plot, thresholds_for_plot,
                     save_path=os.path.join(cond_dir, "noise_floor.png"),
                     suptitle=f"Noise Floor ({cond_label}, {n_baseline} trials, p{noise_percentile:.0f})",
+                    skipped_w_values=sorted(saturated_w) if saturated_w else None,
                 )
                 plt.close()
                 print(f"  Replotted per-condition noise floor: {cond_label}")
@@ -3311,7 +3390,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
     if not no_cache:
         for ck in condition_keys:
             cond_dir_check = os.path.join(out_dir, ck)
-            cached_nt, cached_base = _load_calibrate_baseline(
+            cached_nt, cached_base, _ = _load_calibrate_baseline(
                 cond_dir_check, ck, w_inter_values, noise_percentile,
             )
             cached_noise_thresholds.update(cached_nt)
@@ -3434,16 +3513,18 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
         cond_dir = os.path.join(out_dir, ck)
         os.makedirs(cond_dir, exist_ok=True)
 
+        saturated_w_cond = [w for w in w_inter_values if (ck, w) not in noise_thresholds]
         baseline_for_plot = {w: baseline_A_hat_data.get((ck, w), np.array([]))
-                             for w in w_inter_values}
-        thresholds_for_plot = {w: noise_thresholds.get((ck, w), float('nan'))
-                               for w in w_inter_values}
+                             for w in w_inter_values if (ck, w) in noise_thresholds}
+        thresholds_for_plot = {w: noise_thresholds[(ck, w)]
+                               for w in w_inter_values if (ck, w) in noise_thresholds}
 
         if any(len(v) > 0 for v in baseline_for_plot.values()):
             plot_noise_floor_histogram(
                 baseline_for_plot, thresholds_for_plot,
                 save_path=os.path.join(cond_dir, "noise_floor.png"),
                 suptitle=f"Noise Floor ({cond_label}, {n_baseline} trials, p{noise_percentile:.0f})",
+                skipped_w_values=saturated_w_cond if saturated_w_cond else None,
             )
             plt.close()
         else:
@@ -4113,15 +4194,10 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
             if entry is not None:
                 mp4_jobs.append((off, entry))
 
-        sample_time_range = None
-        if mp4_jobs:
-            sample_time_range = (BURN_IN_MS, mp4_jobs[0][1]['full_result'].t_ms[-1])
-
         mp4_pbar = _start_mp4_progress(
             total_videos=len(mp4_jobs),
             frame_step_ms=args.snapshot_anim_step_ms,
             fps=args.snapshot_anim_fps,
-            sample_time_range=sample_time_range,
         )
         try:
             for off, entry in mp4_jobs:
@@ -4147,7 +4223,6 @@ def cmd_distractor_sweep(args: argparse.Namespace) -> None:
                 )
                 plt.close(fig_anim)
                 mp4_pbar.update(1)
-                print(f"  snapshot_evolution_amp1/offset_{_fmt(off)}deg.mp4")
         finally:
             mp4_pbar.close()
 
@@ -5868,6 +5943,516 @@ def cmd_burnin_stability(args: argparse.Namespace) -> None:
             writer.writerow(r)
     print(f"\nSummary → {summary_path}")
     print(f"\nAll outputs saved to {out_dir}/")
+
+    if not args.no_show:
+        plt.show()
+
+
+# ============================================================================
+# ASYMMETRY × AMPLITUDE SWEEP: PARALLEL WORKER
+# ============================================================================
+
+#: Short secondary burn-in run from the shared state, giving per-trial
+#: pre-cue variation without repeating the expensive long burn-in.
+ASYM_AMP_SWEEP_SECONDARY_BURNIN_MS: float = 1000.0
+
+_asym_amp_sweep_sim_args: Optional[dict] = None
+
+
+def _asym_amp_sweep_init_worker(
+    base_params: CircuitParams,
+    ring_params: RingParams,
+    connectivity: RingConnectivity,
+    delay_ms: float,
+    record_dt_ms: float,
+    balance_cue: bool,
+    correct_asymmetry: bool,
+    shared_r0: dict,
+    shared_Ia: dict,
+) -> None:
+    """Initialise worker process for asymmetry–amplitude-sweep trials."""
+    global _asym_amp_sweep_sim_args
+    _asym_amp_sweep_sim_args = {
+        'base_params':    base_params,
+        'ring_params':    ring_params,
+        'connectivity':   connectivity,
+        'delay_ms':       delay_ms,
+        'record_dt_ms':   record_dt_ms,
+        'balance_cue':    balance_cue,
+        'correct_asymmetry': correct_asymmetry,
+        'shared_r0':      shared_r0,
+        'shared_Ia':      shared_Ia,
+    }
+
+
+def _asym_amp_sweep_run_single(job: tuple) -> dict:
+    """Run one amplitude-sweep trial: secondary burn-in → cue → delay.
+
+    The secondary burn-in starts from the shared condition state
+    (pre-computed outside the pool), giving each trial a distinct
+    but cheap pre-cue state without re-running the full long burn-in.
+
+    job = (cond_key, trial_idx, seed, amplitude)
+    """
+    global _asym_amp_sweep_sim_args
+    from .analysis import (
+        compute_bump_asymmetry,
+        decode_bump_center,
+        compute_asymmetry_temporal_metrics,
+    )
+
+    cfg = _asym_amp_sweep_sim_args
+    cond_key, trial_idx, seed, amplitude = job
+
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(cfg['base_params'], condition)
+
+    # ── Secondary burn-in from shared state ──────────────────────────────────
+    sec_result = simulate_ring(
+        local_params, cfg['ring_params'],
+        T_ms=ASYM_AMP_SWEEP_SECONDARY_BURNIN_MS,
+        stimuli=None,
+        r0=cfg['shared_r0'][cond_key],
+        I_adapt0=cfg['shared_Ia'][cond_key],
+        seed=seed,
+        connectivity=cfg['connectivity'],
+        record_dt_ms=ASYM_AMP_SWEEP_SECONDARY_BURNIN_MS,
+    )
+    r0_trial = sec_result.r[-1].copy()
+    Ia_trial  = sec_result.I_adapt_final.copy()
+    del sec_result
+
+    # ── Cue + delay ──────────────────────────────────────────────────────────
+    stim_onset  = 0.0
+    stim_offset = STIM_DURATION_MS
+    T_ms        = stim_offset + cfg['delay_ms']
+    actual_current = amplitude * cfg['base_params'].I_ext_pyr()
+
+    if cfg['balance_cue']:
+        center_deg = _balance_cue_location(STIM_CENTER_DEG, cfg['ring_params'])
+    else:
+        center_deg = STIM_CENTER_DEG
+
+    stimuli = [RingStimulus(
+        center_deg=center_deg, amplitude=actual_current,
+        sigma_deg=STIM_SIGMA_DEG,
+        onset_ms=stim_onset, duration_ms=STIM_DURATION_MS,
+    )]
+
+    # Derive a distinct seed for the cue-delay noise so secondary burn-in and
+    # stimulus noise are independent random streams.
+    cue_seed = int(seed) ^ 0xC0FFEE42
+
+    result = simulate_ring(
+        local_params, cfg['ring_params'], T_ms=T_ms,
+        stimuli=stimuli, r0=r0_trial, I_adapt0=Ia_trial,
+        seed=cue_seed,
+        connectivity=cfg['connectivity'],
+        record_dt_ms=cfg['record_dt_ms'],
+    )
+
+    asym = compute_bump_asymmetry(result)
+    _, bump_amplitude = decode_bump_center(result, population=0)
+
+    def _window_metric(mask: np.ndarray) -> float:
+        if not mask.any():
+            return 0.0
+        asym_w = asym[mask]
+        if not cfg['correct_asymmetry']:
+            return float(asym_w.mean())
+        amp_w = bump_amplitude[mask]
+        denom = float(amp_w.sum())
+        if denom <= 1e-10:
+            return 0.0
+        return float((asym_w * amp_w).sum() / denom)
+
+    # Pre-cue window: last ASYM_PRE_CUE_WINDOW_MS of secondary burn-in
+    # (recorded time runs from 0 to T_ms with stim onset at 0)
+    # Since we start from the secondary state (no burn-in recorded), there is
+    # no pre-cue window to show — report NaN for compatibility.
+    pre_cue_asym      = float('nan')
+    last_pre_cue_asym = float('nan')
+
+    # Delay: after stim offset + transient skip
+    delay_start = stim_offset + TRANSIENT_SKIP_TIME_MS
+    delay_mask  = (result.t_ms >= delay_start) & (result.t_ms <= T_ms)
+    delay_asym  = _window_metric(delay_mask)
+
+    temporal = compute_asymmetry_temporal_metrics(asym[delay_mask], result.t_ms[delay_mask])
+
+    del result
+
+    return {
+        'cond_key':             cond_key,
+        'trial_idx':            trial_idx,
+        'seed':                 seed,
+        'amplitude':            amplitude,
+        'cue_deg':              center_deg,
+        'pre_cue_asym':         pre_cue_asym,
+        'last_pre_cue_asym':    last_pre_cue_asym,
+        'delay_asym':           delay_asym,
+        'correct_asymmetry':    bool(cfg['correct_asymmetry']),
+        'mean_abs_asym':        temporal['mean_abs_asym'],
+        'asym_std':             temporal['asym_std'],
+        'mean_abs_asym_precue': float('nan'),
+        'asym_std_precue':      float('nan'),
+    }
+
+
+# ============================================================================
+# ASYMMETRY × AMPLITUDE SWEEP SUBCOMMAND
+# ============================================================================
+
+def cmd_asymmetry_amp_sweep(args: argparse.Namespace) -> None:
+    """Sweep cue amplitude and measure how delay asymmetry evolves.
+
+    For each amplitude in ``--amplitudes``:
+      * Uses the **same cache directory** as ``ring-asymmetry`` for that
+        amplitude and correction mode, so data from either command is
+        interchangeable.
+      * Runs any missing trials (secondary burn-in from a shared per-condition
+        state, then cue + delay) and writes them to the per-amplitude
+        ``asymmetry_trials.csv``.
+
+    After all amplitudes are processed a cross-amplitude summary figure
+    (``asymmetry_amp_sweep.png``) and violin figure
+    (``asymmetry_amp_sweep_violin.png``) are saved one level above the
+    per-amplitude directories.
+
+    Outputs per amplitude (shared with ring-asymmetry):
+        {conn_label}/amp{X}_{mode}/asymmetry_trials.csv
+    Cross-amplitude outputs:
+        {conn_label}/asymmetry_amp_sweep.png
+        {conn_label}/asymmetry_amp_sweep_violin.png
+        {conn_label}/asymmetry_amp_sweep.csv   (aggregated per-amp summary)
+    """
+    _resolve_seed(args)
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # ── Setup ─────────────────────────────────────────────────────────────────
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    ring_params = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+
+    condition_keys: list[str] = args.conditions if args.conditions else ['WT', 'WT_APP']
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'. "
+                  f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+            sys.exit(1)
+
+    amp_values: list[float] = sorted(set(args.amplitudes))
+    n_trials   = args.n_trials
+    n_workers  = _resolve_workers(args)
+    balance_cue: bool = not getattr(args, 'no_cue_balance', False)
+    correct_asymmetry: bool = getattr(args, 'correct_asymmetry', True)
+    delay_ms: float = args.delay_ms
+    record_dt_ms: float = getattr(args, 'record_dt_ms', 5.0)
+
+    asym_mode_label = "corrected" if correct_asymmetry else "uncorrected"
+    conn_label      = _network_label(ring_params)
+
+    # Top-level output dir (cross-amplitude figures go here)
+    sweep_out_dir = os.path.join(
+        _output_dir("figs/ring/asymmetry", args.params_json),
+        conn_label,
+    )
+    os.makedirs(sweep_out_dir, exist_ok=True)
+
+    _print_config(args, amp_values[0], base_params, 0.0, ring_params)
+    print(f"\nAsymmetry × amplitude sweep:")
+    print(f"  Conditions : {', '.join(condition_keys)}")
+    print(f"  Amplitudes : {amp_values}")
+    print(f"  Trials     : {n_trials}   workers: {n_workers}")
+    print(f"  Shared burn-in   : {ASYM_SETTLING_MS:.0f} ms  (once per condition)")
+    print(f"  Secondary burn-in: {ASYM_AMP_SWEEP_SECONDARY_BURNIN_MS:.0f} ms  (per trial)")
+    print(f"  Delay            : {delay_ms:.0f} ms")
+    print(f"  Asymmetry correction: {'on' if correct_asymmetry else 'off'}")
+
+    connectivity = RingConnectivity.from_params(ring_params)
+
+    # ── Shared burn-in per condition ──────────────────────────────────────────
+    print(f"\nComputing shared burn-in states ({ASYM_SETTLING_MS:.0f} ms per condition) …")
+    shared_r0: dict[str, np.ndarray] = {}
+    shared_Ia: dict[str, np.ndarray] = {}
+    burnin_rng = np.random.default_rng(args.seed)
+
+    for cond_key in condition_keys:
+        local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
+        burnin_seed  = int(burnin_rng.integers(0, 2**31 - 1))
+        r0, Ia = _compute_burnin_state(
+            local_params, ring_params, connectivity, seed=burnin_seed
+        )
+        shared_r0[cond_key] = r0
+        shared_Ia[cond_key] = Ia
+        print(f"  {cond_key}  (seed={burnin_seed})")
+
+    # Trial seeds — deterministic, same for all amplitudes so each trial_idx
+    # always maps to the same secondary-burn-in + noise realization.
+    trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+
+    # ── Per-amplitude loop ────────────────────────────────────────────────────
+    # Collect all trial results indexed by amplitude for the summary figure.
+    sweep_data: dict[str, dict[float, dict]] = {ck: {} for ck in condition_keys}
+
+    for amp in amp_values:
+        amp_label = f"amp{amp:g}_{asym_mode_label}"
+        amp_out_dir = os.path.join(sweep_out_dir, amp_label)
+        os.makedirs(amp_out_dir, exist_ok=True)
+        csv_path = os.path.join(amp_out_dir, "asymmetry_trials.csv")
+
+        print(f"\n── Amplitude {amp:g}× ─────────────────────────────────────────────")
+
+        # Load existing cache (same format / validation as ring-asymmetry)
+        all_results: list[dict] = []
+        cached_indices: dict[str, set] = {ck: set() for ck in condition_keys}
+
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, newline='') as _f:
+                    cached_rows = list(csv.DictReader(_f))
+                if cached_rows and 'delay_ms' in cached_rows[0]:
+                    params_ok = all(
+                        abs(float(r.get('delay_ms',    0)) - delay_ms) < 1e-6
+                        and abs(float(r.get('amplitude', 0)) - amp)    < 1e-9
+                        for r in cached_rows
+                    )
+                    if params_ok and 'correct_asymmetry' in cached_rows[0]:
+                        cached_correct = bool(int(cached_rows[0].get('correct_asymmetry', 1)))
+                        if cached_correct != correct_asymmetry:
+                            params_ok = False
+                    if params_ok:
+                        for r in cached_rows:
+                            ck = r['condition']
+                            if ck not in condition_keys:
+                                continue
+                            all_results.append({
+                                'cond_key':             ck,
+                                'trial_idx':            int(r['trial_idx']),
+                                'seed':                 int(r['seed']),
+                                'amplitude':            float(r['amplitude']),
+                                'cue_deg':              float(r.get('cue_deg', STIM_CENTER_DEG)),
+                                'pre_cue_asym':         float(r.get('pre_cue_asym', 'nan') or 'nan'),
+                                'last_pre_cue_asym':    float(r.get('last_pre_cue_asym', 'nan') or 'nan'),
+                                'delay_asym':           float(r['delay_asym']),
+                                'correct_asymmetry':    bool(int(r.get('correct_asymmetry', 1))),
+                                'mean_abs_asym':        float(r.get('mean_abs_asym', 'nan') or 'nan'),
+                                'asym_std':             float(r.get('asym_std', 'nan') or 'nan'),
+                                'mean_abs_asym_precue': float(r.get('mean_abs_asym_precue', 'nan') or 'nan'),
+                                'asym_std_precue':      float(r.get('asym_std_precue', 'nan') or 'nan'),
+                            })
+                            cached_indices[ck].add(int(r['trial_idx']))
+                        n_cached = sum(len(v) for v in cached_indices.values())
+                        if n_cached > 0:
+                            print(f"  Loaded {n_cached} cached trial(s) from {csv_path}")
+                            for ck in condition_keys:
+                                print(f"    {ck}: {len(cached_indices[ck])} / {n_trials}")
+                    else:
+                        print("  Cache parameter mismatch — rerunning all trials.")
+                else:
+                    print("  Old cache format — rerunning all trials.")
+            except Exception as _e:
+                print(f"  Cache read failed ({_e}) — rerunning all trials.")
+
+        # Build job list (skip cached trials)
+        jobs = [
+            (cond_key, trial_idx, seed, amp)
+            for cond_key in condition_keys
+            for trial_idx, seed in enumerate(trial_seeds)
+            if trial_idx not in cached_indices[cond_key]
+        ]
+
+        # Run new trials
+        new_results: list[dict] = []
+        if jobs:
+            init_args = (
+                base_params, ring_params, connectivity,
+                delay_ms, record_dt_ms,
+                balance_cue, correct_asymmetry,
+                shared_r0, shared_Ia,
+            )
+            if n_workers > 1 and len(jobs) > 1:
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    initializer=_asym_amp_sweep_init_worker,
+                    initargs=init_args,
+                ) as executor:
+                    futures = {
+                        executor.submit(_asym_amp_sweep_run_single, job): job
+                        for job in jobs
+                    }
+                    with tqdm(
+                        total=len(jobs), desc=f"  amp={amp:g}", unit="sim", smoothing=0
+                    ) as pbar:
+                        for future in as_completed(futures):
+                            new_results.append(future.result())
+                            pbar.update()
+            else:
+                _asym_amp_sweep_init_worker(*init_args)
+                for job in tqdm(jobs, desc=f"  amp={amp:g}", unit="sim"):
+                    new_results.append(_asym_amp_sweep_run_single(job))
+
+            all_results.extend(new_results)
+        else:
+            print("  All trials cached — skipping simulations.")
+
+        # Save / update CSV (same format as ring-asymmetry)
+        if new_results:
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'condition', 'trial_idx', 'seed', 'cue_deg',
+                    'pre_cue_asym', 'last_pre_cue_asym', 'delay_asym',
+                    'delay_ms', 'amplitude',
+                    'random_cue', 'balance_cue', 'correct_asymmetry',
+                    'mean_abs_asym', 'asym_std',
+                    'mean_abs_asym_precue', 'asym_std_precue',
+                ])
+                writer.writeheader()
+                for r in sorted(all_results, key=lambda r: (r['cond_key'], r['trial_idx'])):
+                    writer.writerow({
+                        'condition':            r['cond_key'],
+                        'trial_idx':            r['trial_idx'],
+                        'seed':                 r['seed'],
+                        'cue_deg':              r.get('cue_deg', STIM_CENTER_DEG),
+                        'pre_cue_asym':         r.get('pre_cue_asym', float('nan')),
+                        'last_pre_cue_asym':    r.get('last_pre_cue_asym', float('nan')),
+                        'delay_asym':           r['delay_asym'],
+                        'delay_ms':             delay_ms,
+                        'amplitude':            amp,
+                        'random_cue':           0,
+                        'balance_cue':          int(balance_cue),
+                        'correct_asymmetry':    int(correct_asymmetry),
+                        'mean_abs_asym':        r.get('mean_abs_asym', float('nan')),
+                        'asym_std':             r.get('asym_std', float('nan')),
+                        'mean_abs_asym_precue': r.get('mean_abs_asym_precue', float('nan')),
+                        'asym_std_precue':      r.get('asym_std_precue', float('nan')),
+                    })
+            print(f"  Trial data → {csv_path}")
+
+        # Aggregate per condition for summary figure
+        for cond_key in condition_keys:
+            trials = [r for r in all_results if r['cond_key'] == cond_key]
+            sweep_data[cond_key][amp] = {
+                'mean_abs_asym': [t['mean_abs_asym'] for t in trials
+                                  if not np.isnan(t['mean_abs_asym'])],
+                'asym_std':      [t['asym_std']      for t in trials
+                                  if not np.isnan(t['asym_std'])],
+                'delay_asym':    [t['delay_asym']    for t in trials],
+            }
+
+    # ── Summary statistics ────────────────────────────────────────────────────
+    from scipy import stats as _scipy_stats
+
+    def _sig(p) -> str:
+        if p is None or np.isnan(p): return ''
+        if p < 0.001: return '***'
+        if p < 0.01:  return '**'
+        if p < 0.05:  return '*'
+        return 'n.s.'
+
+    print("\n" + "=" * 68)
+    print("Linear regression — Mean |A(t)| vs amplitude")
+    print("=" * 68)
+    from .plotting import _ols_fit
+    for cond_key in condition_keys:
+        amps_sorted = sorted(amp_values)
+        means = np.array([
+            np.mean(sweep_data[cond_key][a]['mean_abs_asym'])
+            if sweep_data[cond_key].get(a, {}).get('mean_abs_asym') else np.nan
+            for a in amps_sorted
+        ])
+        slope, intercept, r2 = _ols_fit(np.array(amps_sorted), means)
+        print(f"  {cond_key:<12}  slope={slope:+.6f}  intercept={intercept:.4f}  R²={r2:.4f}")
+
+    # Pairwise Mann-Whitney U at each amplitude
+    if len(condition_keys) >= 2:
+        print(f"\n{'Amplitude':>10}  {'Pair':<28}  {'U':>8}  {'p(U)':>10}  sig")
+        print("-" * 65)
+        for amp in amp_values:
+            for i, ck_a in enumerate(condition_keys):
+                for j, ck_b in enumerate(condition_keys):
+                    if j <= i:
+                        continue
+                    va = np.array(sweep_data[ck_a].get(amp, {}).get('mean_abs_asym', []))
+                    vb = np.array(sweep_data[ck_b].get(amp, {}).get('mean_abs_asym', []))
+                    va, vb = va[~np.isnan(va)], vb[~np.isnan(vb)]
+                    if len(va) < 2 or len(vb) < 2:
+                        continue
+                    u_stat, p_u = _scipy_stats.mannwhitneyu(va, vb, alternative='two-sided')
+                    print(f"  {amp:>8g}  {ck_a:<12} vs {ck_b:<12}  "
+                          f"{u_stat:>8.0f}  {p_u:.4f}      {_sig(p_u)}")
+
+    # ── Save cross-amplitude summary CSV ──────────────────────────────────────
+    sweep_csv_path = os.path.join(sweep_out_dir, "asymmetry_amp_sweep.csv")
+    with open(sweep_csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'condition', 'amplitude',
+            'n', 'mean_abs_asym_mean', 'mean_abs_asym_sem',
+            'asym_std_mean', 'asym_std_sem',
+        ])
+        writer.writeheader()
+        for amp in amp_values:
+            for cond_key in condition_keys:
+                d = sweep_data[cond_key].get(amp, {})
+                vals_m = np.asarray(d.get('mean_abs_asym', []), float)
+                vals_s = np.asarray(d.get('asym_std',      []), float)
+                vals_m, vals_s = vals_m[~np.isnan(vals_m)], vals_s[~np.isnan(vals_s)]
+                n = len(vals_m)
+                writer.writerow({
+                    'condition':         cond_key,
+                    'amplitude':         amp,
+                    'n':                 n,
+                    'mean_abs_asym_mean': float(vals_m.mean()) if n else float('nan'),
+                    'mean_abs_asym_sem':  float(vals_m.std(ddof=1) / np.sqrt(n)) if n > 1 else float('nan'),
+                    'asym_std_mean':      float(vals_s.mean()) if n else float('nan'),
+                    'asym_std_sem':       float(vals_s.std(ddof=1) / np.sqrt(n)) if n > 1 else float('nan'),
+                })
+    print(f"\nSummary CSV → {sweep_csv_path}")
+
+    # ── Figures ───────────────────────────────────────────────────────────────
+    from .plotting import plot_asymmetry_amp_sweep, plot_asymmetry_amp_sweep_violin
+
+    title_suffix = (
+        f"N={ring_params.n_nodes}, "
+        f"w_inter={ring_params.w_pyr_pyr_inter}, "
+        f"σ={ring_params.sigma_pyr_deg}°, "
+        f"w_pv={ring_params.w_pv_global}, "
+        f"{asym_mode_label}"
+    )
+
+    fig_line = plot_asymmetry_amp_sweep(
+        data=sweep_data,
+        amp_values=amp_values,
+        condition_order=condition_keys,
+        save_path=os.path.join(sweep_out_dir, "asymmetry_amp_sweep.png"),
+        title_suffix=title_suffix,
+    )
+    plt.close(fig_line)
+
+    fig_vio = plot_asymmetry_amp_sweep_violin(
+        data=sweep_data,
+        amp_values=amp_values,
+        condition_order=condition_keys,
+        save_path=os.path.join(sweep_out_dir, "asymmetry_amp_sweep_violin.png"),
+        title_suffix=title_suffix,
+    )
+    plt.close(fig_vio)
+
+    print(f"\nAll outputs saved to {sweep_out_dir}/")
 
     if not args.no_show:
         plt.show()

@@ -22,6 +22,14 @@ if TYPE_CHECKING:
     from .simulation import RingSimulationResult
 
 
+def _tight_layout_suptitle(fig) -> None:
+    """Apply tight_layout, suppressing the polar-axes compatibility warning."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+
+
 def _check_display_available() -> bool:
     """Check if a display is available for GUI plotting."""
     if os.environ.get("DISPLAY"):
@@ -357,6 +365,7 @@ def animate_ring_snapshot_evolution(
         ax_diff = None
     if suptitle:
         fig.suptitle(suptitle, fontsize=12, fontweight="bold")
+        _tight_layout_suptitle(fig)
 
     first = result.r[frame_idx[0], :, population]
     first_closed = np.append(first, first[0])
@@ -825,7 +834,7 @@ def plot_population_activity(
     axes[-1].set_xlabel("Time (ms)")
     fig.suptitle("Population Activity: Cue vs. Opposite Location",
                  fontsize=12, fontweight="bold")
-    fig.tight_layout()
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1306,7 +1315,7 @@ def plot_bump_metrics_comparison(
 
     if suptitle:
         plt.suptitle(suptitle, fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1420,7 +1429,7 @@ def plot_metrics_vs_delay(
             ax.set_title(_METRIC_DISPLAY_NAMES.get(metric_key, metric_key))
 
         plt.suptitle(suptitle or "Bump Metrics During Delay Period", fontsize=13, fontweight="bold")
-        
+        _tight_layout_suptitle(fig)
 
         if save_path:
             fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1463,7 +1472,7 @@ def plot_metrics_vs_delay(
         ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
 
     plt.suptitle(suptitle or "Bump Metrics During Delay Period", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1572,7 +1581,7 @@ def plot_metrics_vs_amplitude(
 
         plt.suptitle(suptitle or "Bump Metrics vs Stimulus Amplitude",
                      fontsize=13, fontweight="bold")
-        
+        _tight_layout_suptitle(fig)
 
         if save_path:
             fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1595,7 +1604,7 @@ def plot_metrics_vs_amplitude(
 
     plt.suptitle(suptitle or "Bump Metrics vs Stimulus Amplitude",
                  fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1738,7 +1747,7 @@ def plot_msd_curves(
         ax_msd.legend(fontsize=8)
 
     plt.suptitle(suptitle or "Diffusion Analysis (MSD)", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1845,7 +1854,7 @@ def plot_oscillation_spectrum(
 
     plt.suptitle(suptitle or "Bump Amplitude Oscillation Spectrum",
                  fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -1974,7 +1983,7 @@ def plot_displacement_distribution(
 
     plt.suptitle(suptitle or "Final Bump Displacement from Cue",
                  fontsize=12, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2048,7 +2057,7 @@ def plot_diffusion_ring_snapshot(
         figsize = (7 * ncols, 9 * nrows)
 
     fig = plt.figure(figsize=figsize)
-    outer = gridspec.GridSpec(nrows, ncols, figure=fig, wspace=0.35, hspace=0.35)
+    outer = fig.add_gridspec(nrows, ncols, top=0.91, wspace=0.35, hspace=0.45)
     pre_cue_ms = 100.0
 
     for idx, ck in enumerate(valid_conds):
@@ -2131,9 +2140,11 @@ def plot_diffusion_ring_snapshot(
         ax_amp.set_xlim(window_start - cue_start, delay_end - cue_start)
         ax_amp.grid(True, alpha=0.2)
 
-    plt.suptitle(
+    fig.text(
+        0.5, 0.96,
         suptitle or "Ring Activity from Cue to End of Delay Across Conditions",
-        fontsize=13, fontweight="bold", y=1.01,
+        ha="center", va="center", fontsize=13, fontweight="bold",
+        transform=fig.transFigure,
     )
 
     if save_path:
@@ -2209,7 +2220,7 @@ def plot_extreme_drift_trials(
 
     plt.suptitle(suptitle or "Most Prominent Drift Trial per Condition",
                  fontsize=12, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2269,7 +2280,7 @@ def plot_drift_field(
     ax.grid(True, alpha=0.3)
 
     plt.suptitle(suptitle or "Drift Field Analysis", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2283,14 +2294,18 @@ def plot_noise_floor_histogram(
     figsize: tuple[float, float] = (12, 4),
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
+    skipped_w_values: Optional[list[float]] = None,
 ):
     """Plot histogram of Â_hat from no-stimulus baseline trials.
 
     Parameters:
         baseline_data: Dict mapping w_inter -> array of Â_hat values.
+            Saturated w_inter values should already be excluded by the caller.
         thresholds: Dict mapping w_inter -> noise floor threshold.
         save_path: If provided, save figure.
         suptitle: Optional super-title.
+        skipped_w_values: w_inter values excluded due to network saturation.
+            If provided, a note is added to the figure.
 
     Returns:
         fig: Matplotlib Figure
@@ -2322,9 +2337,12 @@ def plot_noise_floor_histogram(
     for ax in axes_flat[n:]:
         ax.set_visible(False)
 
-    plt.suptitle(suptitle or "Noise Floor: Â_hat Distribution (No Stimulus)",
-                 fontsize=13, fontweight="bold")
-    
+    title = suptitle or "Noise Floor: Â_hat Distribution (No Stimulus)"
+    if skipped_w_values:
+        skipped_str = ", ".join(f"{w:.2f}" for w in sorted(skipped_w_values))
+        title += f"\n(excluded — node saturation: w = {skipped_str})"
+    plt.suptitle(title, fontsize=13, fontweight="bold")
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2399,7 +2417,7 @@ def plot_calibration_heatmap(
     ax.set_title(metric_labels.get(metric, metric))
 
     plt.suptitle(suptitle or "Parameter Calibration", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2465,7 +2483,7 @@ def plot_calibration_timecourses(
     ax.set_ylim(bottom=0)
 
     plt.suptitle(suptitle or "Â_hat Time Courses", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2541,7 +2559,7 @@ def plot_calibration_scatter(
     ax.grid(True, alpha=0.3)
 
     plt.suptitle(suptitle or "Calibration Summary", fontsize=13, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -2591,7 +2609,7 @@ def plot_noise_summary(
 
     plt.suptitle(suptitle or "Noise Floor Summary", fontsize=13, fontweight="bold")
     
-
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
@@ -2673,7 +2691,7 @@ def plot_distractor_sweep_heatmaps(
     _annotate(ax1, drift_mat)
     plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Drift Field",
                  fontsize=12, fontweight="bold")
-    
+    fig1.tight_layout(rect=[0, 0, 1, 0.96])
     if save_dir:
         fig1.savefig(os.path.join(save_dir, "drift.png"),
                      dpi=150, bbox_inches="tight")
@@ -2701,7 +2719,7 @@ def plot_distractor_sweep_heatmaps(
                          color="black" if val < 0.5 else "white")
     plt.suptitle(f"{suptitle_prefix}Distractor Sweep — Collapse Probability",
                  fontsize=12, fontweight="bold")
-    
+    fig2.tight_layout(rect=[0, 0, 1, 0.96])
     if save_dir:
         fig2.savefig(os.path.join(save_dir, "collapse.png"),
                      dpi=150, bbox_inches="tight")
@@ -2914,7 +2932,7 @@ def plot_distractor_sweep_timecourses(
 
     plt.suptitle(suptitle or "Distractor Sweep — Bump Trajectories",
                  fontsize=12, fontweight="bold")
-    
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
@@ -3222,7 +3240,7 @@ def plot_lesion_study(
         suptitle or 'Population Lesion Study: Formation & Survival',
         fontsize=13, fontweight='bold',
     )
-    
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3298,7 +3316,7 @@ def plot_tau_adapt_sweep(
         suptitle or 'τ_adapt Sweep: Survival, Diffusion & Oscillation',
         fontsize=12, fontweight='bold',
     )
-    
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3409,7 +3427,7 @@ def plot_phase_plane(
         suptitle or 'Phase Plane Analysis: Bifurcation Fingerprinting',
         fontsize=12, fontweight='bold',
     )
-    
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3527,7 +3545,7 @@ def plot_temporal_dissection(
         suptitle or 'Temporal Dissection: Population Time Courses',
         fontsize=12, fontweight='bold',
     )
-    
+    _tight_layout_suptitle(fig)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
@@ -3802,7 +3820,7 @@ def plot_asymmetry_correlation(
                  label='← left        right →')
 
     fig.suptitle(f"Pre-cue vs Delay Asymmetry{title_suffix}", fontsize=13, fontweight='bold')
-    fig.tight_layout()
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -4022,7 +4040,7 @@ def plot_asymmetry_summary(
                     pairwise_stats=pairwise_stats)
 
     fig.suptitle(f"L/R Asymmetry Summary{title_suffix}", fontsize=13, fontweight='bold')
-    fig.tight_layout()
+    _tight_layout_suptitle(fig)
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -4130,5 +4148,306 @@ def plot_burnin_stability(
                 ax.set_ylim(0, max(ax.get_ylim()[1], new_top))
 
     fig.suptitle(f"Burn-in stationarity — {cond_key}", fontsize=12, fontweight='bold')
-    fig.tight_layout()
+    _tight_layout_suptitle(fig)
+    return fig
+
+
+# ============================================================================
+# ASYMMETRY AMPLITUDE SWEEP PLOTS
+# ============================================================================
+
+def plot_asymmetry_amp_sweep(
+    data: dict,
+    amp_values: list[float],
+    condition_order: list[str],
+    save_path: Optional[str] = None,
+    title_suffix: str = "",
+) -> 'plt.Figure':
+    """Plot mean|A(t)| and std(A) vs cue amplitude across conditions.
+
+    Parameters
+    ----------
+    data : dict
+        Nested as ``data[cond_key][amp] = {'mean_abs_asym': [...], 'asym_std': [...]}``.
+        Each list holds one value per trial.
+    amp_values : list[float]
+        Amplitude values in ascending order (x-axis).
+    condition_order : list[str]
+        Condition keys to plot, in order.
+    save_path : str, optional
+        If given, save the figure here.
+    title_suffix : str
+        Appended to the figure suptitle.
+    """
+    import matplotlib.pyplot as plt
+    from ..study import STUDY_CONDITIONS
+
+    COLORS = {
+        'WT':        '#2196F3',
+        'WT_APP':    '#FF9800',
+        'a7_KO_APP': '#F44336',
+        'a7_KO':     '#9C27B0',
+        'b2_KO':     '#4CAF50',
+        'b2_KO_APP': '#FF5722',
+        'a5_KO':     '#00BCD4',
+        'a5_KO_APP': '#8BC34A',
+    }
+
+    metrics = [
+        ('mean_abs_asym', 'Mean |A(t)|'),
+        ('asym_std',      'Std(A(t))'),
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+    amp_arr = np.array(amp_values, dtype=float)
+
+    for ax, (metric_key, ylabel) in zip(axes, metrics):
+        for cond_key in condition_order:
+            if cond_key not in data:
+                continue
+            color = COLORS.get(cond_key, 'gray')
+            label_base = STUDY_CONDITIONS[cond_key].name
+
+            means, sems, ns = [], [], []
+            for amp in amp_values:
+                vals = np.asarray(data[cond_key].get(amp, {}).get(metric_key, []))
+                vals = vals[~np.isnan(vals)]
+                if len(vals) > 0:
+                    means.append(float(vals.mean()))
+                    sems.append(float(vals.std(ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else 0.0)
+                    ns.append(len(vals))
+                else:
+                    means.append(np.nan)
+                    sems.append(np.nan)
+                    ns.append(0)
+
+            means, sems = np.array(means), np.array(sems)
+            valid = ~np.isnan(means)
+
+            # OLS linear fit
+            x_v, y_v = amp_arr[valid], means[valid]
+            slope, intercept, r2 = _ols_fit(x_v, y_v)
+            fit_y = slope * amp_arr + intercept
+
+            n_rep = int(np.median([n for n in ns if n > 0])) if any(n > 0 for n in ns) else 0
+            label = f"{label_base}  (slope={slope:.5f}, R²={r2:.3f}, n={n_rep})"
+
+            ax.plot(amp_arr[valid], means[valid], 'o', color=color, ms=5, zorder=3)
+            ax.plot(amp_arr[valid], fit_y[valid], '-', color=color, lw=1.8, label=label)
+            ax.fill_between(
+                amp_arr[valid],
+                means[valid] - sems[valid],
+                means[valid] + sems[valid],
+                alpha=0.18, color=color,
+            )
+
+        ax.set_xlabel("Cue amplitude (× $I_{ext,pyr}$)", fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"{ylabel} vs cue amplitude", fontsize=10)
+        ax.legend(fontsize=8, loc='upper left')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig.suptitle(
+        "Asymmetry vs amplitude" + (f" — {title_suffix}" if title_suffix else ""),
+        fontsize=11, fontweight='bold',
+    )
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig
+
+
+def plot_asymmetry_amp_sweep_violin(
+    data: dict,
+    amp_values: list[float],
+    condition_order: list[str],
+    save_path: Optional[str] = None,
+    title_suffix: str = "",
+) -> 'plt.Figure':
+    """Violin plots of mean|A(t)| and std(A) per (condition, amplitude).
+
+    Parameters
+    ----------
+    data : dict
+        Same format as :func:`plot_asymmetry_amp_sweep`.
+    amp_values : list[float]
+        Amplitude values in ascending order.
+    condition_order : list[str]
+        Condition keys to plot, in order.
+    save_path : str, optional
+        If given, save the figure here.
+    title_suffix : str
+        Appended to the suptitle.
+    """
+    import matplotlib.pyplot as plt
+    from ..study import STUDY_CONDITIONS
+
+    COLORS = {
+        'WT':        '#2196F3',
+        'WT_APP':    '#FF9800',
+        'a7_KO_APP': '#F44336',
+        'a7_KO':     '#9C27B0',
+        'b2_KO':     '#4CAF50',
+        'b2_KO_APP': '#FF5722',
+        'a5_KO':     '#00BCD4',
+        'a5_KO_APP': '#8BC34A',
+    }
+
+    metrics = [
+        ('mean_abs_asym', 'Mean |A(t)|'),
+        ('asym_std',      'Std(A(t))'),
+    ]
+    n_cond = len(condition_order)
+    n_amp  = len(amp_values)
+
+    fig, axes = plt.subplots(1, 2, figsize=(max(12, n_amp * n_cond * 0.7), 5),
+                              constrained_layout=True)
+
+    width = 0.8 / n_cond
+    offsets = np.linspace(-(n_cond - 1) / 2, (n_cond - 1) / 2, n_cond) * width
+
+    for ax, (metric_key, ylabel) in zip(axes, metrics):
+        for ci, cond_key in enumerate(condition_order):
+            if cond_key not in data:
+                continue
+            color = COLORS.get(cond_key, 'gray')
+            label = STUDY_CONDITIONS[cond_key].name
+
+            positions = np.arange(n_amp) + offsets[ci]
+            all_vals = [
+                np.asarray(data[cond_key].get(amp, {}).get(metric_key, []))
+                for amp in amp_values
+            ]
+            # Filter empty / all-NaN
+            plot_vals = [v[~np.isnan(v)] for v in all_vals]
+            valid_pos = [p for p, v in zip(positions, plot_vals) if len(v) > 1]
+            valid_vals = [v for v in plot_vals if len(v) > 1]
+
+            if not valid_vals:
+                continue
+
+            vp = ax.violinplot(
+                valid_vals,
+                positions=valid_pos,
+                widths=width * 0.85,
+                showmedians=True,
+                showextrema=False,
+            )
+            for body in vp['bodies']:
+                body.set_facecolor(color)
+                body.set_alpha(0.55)
+                body.set_edgecolor(color)
+            vp['cmedians'].set_color(color)
+            vp['cmedians'].set_linewidth(1.5)
+
+            # Mean marker per amplitude
+            means = [v.mean() if len(v) else np.nan for v in plot_vals]
+            ax.plot(positions, means, 'o', color=color, ms=4, zorder=4, label=label)
+
+        ax.set_xticks(np.arange(n_amp))
+        ax.set_xticklabels([f"{a:g}" for a in amp_values], fontsize=8)
+        ax.set_xlabel("Cue amplitude (× $I_{ext,pyr}$)", fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"{ylabel} vs cue amplitude", fontsize=10)
+        ax.legend(fontsize=8, loc='upper left')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig.suptitle(
+        "Asymmetry vs amplitude — distributions" + (f" — {title_suffix}" if title_suffix else ""),
+        fontsize=11, fontweight='bold',
+    )
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig
+
+
+def _ols_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """Ordinary least-squares linear fit. Returns (slope, intercept, R²)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    if mask.sum() < 2:
+        return 0.0, float(np.nanmean(y)), 0.0
+    xm = x[mask] - x[mask].mean()
+    ym = y[mask] - y[mask].mean()
+    denom = float(np.dot(xm, xm))
+    if denom == 0:
+        return 0.0, float(y[mask].mean()), 0.0
+    slope = float(np.dot(xm, ym) / denom)
+    intercept = float(y[mask].mean() - slope * x[mask].mean())
+    y_hat = slope * x[mask] + intercept
+    ss_res = float(np.sum((y[mask] - y_hat) ** 2))
+    ss_tot = float(np.sum((y[mask] - y[mask].mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return slope, intercept, r2
+
+
+# ============================================================================
+# CONNECTIVITY MATRIX PLOT
+# ============================================================================
+
+def plot_connectivity_matrices(
+    ring_params,
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """
+    Plot PYR→PYR and PV→PYR weight matrices + row-0 weight profile.
+
+    Returns the matplotlib Figure.
+    """
+    import matplotlib.pyplot as plt
+    from .connectivity import build_pyr_pyr_weights, build_pv_pyr_weights
+
+    W_exc = build_pyr_pyr_weights(ring_params)
+    W_inh = build_pv_pyr_weights(ring_params)
+
+    n = ring_params.n_nodes
+    angles_deg = ring_params.node_angles_deg  # shape (n,)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    pyr_label = f"w_pyr_inter={ring_params.w_pyr_pyr_inter}, σ_pyr={ring_params.sigma_pyr_deg:.1f}°"
+    fig.suptitle(
+        f"Ring connectivity  |  N={n},  {pyr_label},  w_pv_global={ring_params.w_pv_global}",
+        fontsize=11,
+    )
+
+    ax = axes[0]
+    im = ax.imshow(W_exc, aspect="auto", origin="lower", cmap="Reds")
+    plt.colorbar(im, ax=ax, label="Weight $W_{ij}$")
+    ax.set_title("PYR → PYR (excitatory inter-node)")
+    ax.set_xlabel("Source node j")
+    ax.set_ylabel("Target node i")
+
+    ax = axes[1]
+    im = ax.imshow(W_inh, aspect="auto", origin="lower", cmap="Blues")
+    plt.colorbar(im, ax=ax, label="Weight $W_{ij}$")
+    ax.set_title("PV → PYR (inhibitory inter-node)")
+    ax.set_xlabel("Source node j")
+    ax.set_ylabel("Target node i")
+
+    ax = axes[2]
+    ax.plot(angles_deg, W_exc[0], color="#D62728", label="PYR→PYR (exc)")
+    ax.plot(angles_deg, -W_inh[0], color="#1F77B4", label="-PV→PYR (inh)")
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+    ax.set_title("Weight profile (row 0)")
+    ax.set_xlabel("Source node angle (°)")
+    ax.set_ylabel("Weight from node 0")
+    ax.legend()
+    ax.set_xlim(0, 360)
+    from matplotlib.ticker import MaxNLocator, AutoMinorLocator
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.tick_params(axis="y", which="minor", length=3)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved connectivity plot to {save_path}")
+
     return fig
