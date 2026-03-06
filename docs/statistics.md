@@ -1,104 +1,92 @@
 # Statistical Tests Used in This Project
 
-This document lists **all statistical tests currently performed in the codebase** (as of March 2026), with where they are used and how to interpret them.
+This document lists statistical tests currently used by active experiments.
 
 ## Scope
 
-Only tests that compute a test statistic and p-value are included here. In this repository, those are currently used by the ring-attractor asymmetry analysis pipeline.
+Current test usage is concentrated in:
 
-Main code locations:
+- `ring-asymmetry`
+- `ring-burnin-stability`
 
-- `circuit_model/ring/cli.py` (asymmetry statistical report)
-- `circuit_model/ring/plotting.py` (correlation annotation on scatter plots)
+Main code location:
 
----
+- `circuit_model/ring/cli.py`
+- `circuit_model/ring/plotting.py` (for asymmetry plot annotations)
 
 ## 1) One-sample t-test
 
-- **Function**: `scipy.stats.ttest_1samp`
-- **Where**: `ring-asymmetry` command in `circuit_model/ring/cli.py`
-- **Data**: per-condition asymmetry values (pre-cue and delay), one value per trial
-- **Null hypothesis**: the condition mean asymmetry is 0
-- **Alternative**: two-sided (mean asymmetry different from 0)
-- **Design type**: one-sample (not between-condition)
-- **Why used**: tests whether a condition has systematic directional bias (left/right) relative to zero asymmetry
+- Function: `scipy.stats.ttest_1samp`
+- Where: `ring-asymmetry`
+- Data: per-condition asymmetry values (pre-cue and delay)
+- Null: condition mean asymmetry is 0
+- Alternative: two-sided
 
 Interpretation:
 
-- Significant p-value means the average asymmetry in that condition is non-zero.
-- It does **not** compare two conditions to each other.
-
----
+- Significant p-value implies a systematic directional bias relative to zero.
 
 ## 2) Wilcoxon signed-rank test (one-sample vs zero)
 
-- **Function**: `scipy.stats.wilcoxon(vals, alternative='two-sided')`
-- **Where**: `ring-asymmetry` command in `circuit_model/ring/cli.py`
-- **Data**: same per-condition asymmetry values as above
-- **Applied when**: `n >= 10` in current implementation
-- **Null hypothesis**: median asymmetry is 0 (symmetry around zero)
-- **Alternative**: two-sided
-- **Design type**: one-sample signed test (not between-condition)
-- **Why used**: robust non-parametric counterpart to one-sample t-test when normality may be questionable
+- Function: `scipy.stats.wilcoxon`
+- Where: `ring-asymmetry`
+- Data: same asymmetry values as above
+- Null: median asymmetry is 0
+- Alternative: two-sided
 
 Interpretation:
 
-- Significant p-value means the distribution is shifted away from zero.
-- As above, this is **not** a WT vs WT_APP type comparison.
-
----
+- Significant p-value implies the distribution is shifted away from zero.
 
 ## 3) Mann-Whitney U test (pairwise between conditions)
 
-- **Function**: `scipy.stats.mannwhitneyu(abs_a, abs_b, alternative='two-sided')`
-- **Where**: `ring-asymmetry` command in `circuit_model/ring/cli.py`
-- **Data**: absolute asymmetry magnitudes `|asymmetry|` for each trial in two different conditions
-- **Null hypothesis**: both condition distributions are equal (equivalently, no stochastic dominance)
-- **Alternative**: two-sided
-- **Design type**: unpaired two-sample test
-- **Why used**: compares asymmetry **magnitude** across conditions without assuming Gaussian distributions
+- Function: `scipy.stats.mannwhitneyu`
+- Where: `ring-asymmetry`
+- Data: trial-wise `|asymmetry|` values across condition pairs
+- Null: the two distributions are equal
+- Alternative: two-sided
 
-Important notes:
+Notes:
 
-- This is currently done for all pairwise condition combinations.
-- No multiple-comparison correction is applied in the current implementation.
-- Using `|asymmetry|` removes sign information (tests magnitude differences, not direction differences).
+- This tests asymmetry magnitude differences, not direction.
+- Multiple-comparison correction is not currently applied.
 
----
+## 4) Pearson Correlation Test
 
-## 4) Pearson correlation test
+- Function: `scipy.stats.pearsonr`
+- Where: `ring-asymmetry` correlation plot annotation
+- Data: trial pairs `(pre_cue_asym, delay_asym)` per condition
+- Null: correlation coefficient is 0
 
-- **Function**: `scipy.stats.pearsonr(pre, delay)`
-- **Where**: asymmetry correlation plot in `circuit_model/ring/plotting.py`
-- **Data**: per-trial pairs `(pre_cue_asym, delay_asym)` within each condition
-- **Null hypothesis**: correlation coefficient $r = 0$
-- **Alternative**: two-sided (SciPy default)
-- **Design type**: association test
-- **Why used**: quantifies whether trials with pre-cue asymmetry tend to preserve/invert that asymmetry at delay
+Interpretation:
 
-Implementation note:
+- Significant result indicates linear association between pre-cue and delay asymmetry.
 
-- This test is used for plot annotation (`r` and significance stars), not for the text report generated in `asymmetry_stats.txt`.
+## 5) Kruskal-Wallis Test
 
----
+- Function: `scipy.stats.kruskal`
+- Where: `ring-burnin-stability`
+- Data: per-window distributions of amplitude and `|asymmetry|`
+- Null: all burn-in windows come from the same distribution
 
-## Significance Labels Used
+Interpretation:
 
-Across these analyses, p-values are converted to stars with:
+- Non-significant p-value supports stationarity across burn-in windows.
 
-- `*` for $p < 0.05$
-- `**` for $p < 0.01$
-- `***` for $p < 0.001$
-- otherwise `n.s.` (or `ns` in some plot labels)
+## 6) Adjacent-Window Mann-Whitney U
 
----
+- Function: `scipy.stats.mannwhitneyu`
+- Where: `ring-burnin-stability`
+- Data: adjacent burn-in windows for amplitude and `|asymmetry|`
+- Null: adjacent windows have equal distributions
 
-## What Is *Not* Currently Implemented
+Interpretation:
 
-The current code does **not** implement:
+- Used as a local follow-up check to identify which transitions differ.
 
-- global 3+ group omnibus tests (e.g., one-way ANOVA or Kruskal-Wallis)
-- repeated-measures / blocked-by-seed group tests (e.g., Friedman)
-- pairwise multiple-comparison correction (Holm, Bonferroni, FDR)
+## Significance Labels
 
-If you need formal multi-condition inference for groups such as `WT`, `WT_APP`, `A7_KO_APP`, add an omnibus test first and then corrected post-hoc comparisons.
+- `*`: `p < 0.05`
+- `**`: `p < 0.01`
+- `***`: `p < 0.001`
+- Otherwise: `n.s.`
