@@ -75,17 +75,17 @@ The model do exactly what we expect, with a bump of activity that is more or les
 
 ### 04.03
 - Realize a bug in the burn-in of the noise in the model, which was not correctly implemented. This bug can have a strong impact on the results, especially for the noise floor experiment, and the stability of the bump attractor in the different conditions. I will need to rerun all the experiments with the corrected code, and update the figures and analysis accordingly. The overall conclusions shouldn't change much, except for the asymettry in pre cue period for example.
-- TODO: A comprehensive analysis of the impact of each population on the bump attractor behavior and stability, why is there a oscillations, what's driving it, how does this oscillations change accross conditions, and with distractor.
+
 
 ### 05.03
 - Created the `ring-asymmetry-amp-sweep` experiment: sweeps cue amplitude (default 20–60×) across conditions and measures how delay-period asymmetry (mean|A(t)| and std(A)) evolves with stimulus strength.
-- Key design: one shared 6000 ms burn-in per condition (computed once), then a 1000 ms per-trial secondary burn-in from that shared state, then cue + delay. This amortises the expensive burn-in across the amplitude sweep.
-- Cache is fully interchangeable with `ring-asymmetry`: both commands read/write the same per-amplitude `asymmetry_trials.csv` directories, so trials accumulated by either command are reused by the other.
-- New outputs: `asymmetry_amp_sweep.png` (mean±SEM + OLS fit with slope and R² per condition) and `asymmetry_amp_sweep_violin.png` (full distributions per amplitude), plus a summary CSV and console regression/Mann-Whitney U table.
-- Usage: `python -m circuit_model ring-asymmetry-amp-sweep --w_pyr_pyr_inter 7 --w_pv_global 10 --conditions WT WT_APP --amplitudes 20 30 40 45 50 60 --n_trials 50 --no_show`
+- Finish the re-run everything after the noise burn-in bug fix, and update the figures and analysis accordingly.
+- "meeting" with Boris tbc
+
 
 ### TODO
 - Think about how to read each populations impact on the bump attractor stability and metrics.
 - Do a decision summary (talking about the bump, why ours is a decaying bumpo, there's not strong conscencus about that and so on) 
 - Do a decision summary about the "why we choose these parameters set" (why this inhibition value with these excitation value, -> related to the Pyr activity during working memory, )
-- Fix the extrem firing rate in noise-floor and calibrate. (Amp is 0 with the cap at 200Hz, need to remove properly the point and )
+- Fix the extrem firing rate in noise-floor and calibrate. (Amp is 0 with the cap at 200Hz, need to remove properly the point)
+- TODO: A comprehensive analysis of the impact of each population on the bump attractor behavior and stability, why is there a oscillations, what's driving it, how does this oscillations change accross conditions, and with distractor.

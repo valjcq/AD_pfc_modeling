@@ -112,3 +112,20 @@ But what we observe is that the weight at which the network tend to have bigger 
 **Statistical outputs** (printed to console):
 - OLS slope, intercept, R² per condition.
 - Mann-Whitney U at each amplitude comparing conditions (to see where the difference becomes significant along the amplitude axis).
+
+
+### Behavior with distractor
+
+We analyze three angular positions of the distractor (30°, 90°, 120°, 170°) to see how the bump responds to distractors at different distances from the cue. 
+
+The closer bump (30°) merge in oscillations with the main bump, the resulting bump is wider and less "peaked".
+
+When the distractor is at 90°, it does the same but the merging of oscillations takes more time, and the resulting bump is less strong but still less "peaked" than the main bump.
+
+In both case, the distractor bump has higher amplitude than the main bump, which can be related to the fact that the distractor is more recent than the cue. But we would think that the active inhibition from the main bump should make the distractor bump less strong, but it is not the case. It can be related to the oscillation of the bump, the actual inhibition over the network is varying over time. If its the case, the distractor relative strength should be related to the phase of the oscillation at which it is presented, and that can be interesting to explore.
+
+With 120°, we have the same observations.
+
+With 170°, the distractor is far enough to not merge with the main bump, it does create a second bump, and the oscillations interfer in the way that they get wider, and they alternate. The first bump fire during the trough of the second bump, and the second bump fire during the trough of the first bump.
+
+We need to analyze more in depth the impact of the distractor on the bump stability, and how it differ accross conditions. We need to developp metrics and visualization to analyze the impact on oscillations, and also experiment to test the impact of the timing of the distractor presentation, and the phase of the oscillation at which it is presented.
