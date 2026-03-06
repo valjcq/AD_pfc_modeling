@@ -23,7 +23,6 @@ from .loss import TargetRates, FitConfig
 from .io import load_params_json, format_params_as_code, output_dir as _output_dir
 from .optimization import nevergrad_optimize
 from .simulation import simulate_circuit
-from .ring.constants import TRANSIENT_SKIP_TIME_MS
 
 
 def parse_freeze_list(s: str) -> set[str]:
@@ -681,103 +680,6 @@ Examples:
              "Set to 0 to disable filtering entirely.",
     )
 
-    # =========================================================================
-    # RING-DRIFT-FIELD subcommand
-    # =========================================================================
-    ring_drift_parser = subparsers.add_parser(
-        "ring-drift-field",
-        help="Run distractor drift field analysis on the ring attractor",
-        description="Sweep distractor angular offsets and measure bump "
-                    "displacement to estimate the drift field A_hat(Δφ) "
-                    "(Seeholzer et al. 2019).",
-    )
-    _add_ring_common(ring_drift_parser)
-    ring_drift_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: all 8).",
-    )
-    ring_drift_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per condition per offset (default: 50)",
-    )
-    ring_drift_parser.add_argument(
-        "--distractor_steps", type=float, default=10.0,
-        help="Angular step size for distractor sweep in degrees (default: 10)",
-    )
-    ring_drift_parser.add_argument(
-        "--distractor_amplitude", type=float, default=15.0,
-        help="Distractor stimulus amplitude as factor of I_ext_pyr baseline "
-             "(default: 15.0, i.e. 15× baseline current)",
-    )
-    ring_drift_parser.add_argument(
-        "--distractor_duration_ms", type=float, default=200.0,
-        help="Distractor duration in ms (default: 200)",
-    )
-    ring_drift_parser.add_argument(
-        "--distractor_onset_ms", type=float, default=1500.0,
-        help="Distractor onset after stimulus offset in ms (default: 1500)",
-    )
-    ring_drift_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: min(4, cpu_count))",
-    )
-    ring_drift_parser.add_argument(
-        "--error_band", type=str, default="sem", choices=["sem", "sd"],
-        help="Error band type for plots: 'sem' (default) or 'sd'.",
-    )
-
-    # =========================================================================
-    # RING-DISTRACTOR-SWEEP subcommand
-    # =========================================================================
-    ring_ds_parser = subparsers.add_parser(
-        "ring-distractor-sweep",
-        help="2-D distractor sweep (Δφ × amplitude) on the ring attractor",
-        description="Sweep a 2-D grid of distractor angular offset × distractor "
-                    "amplitude, measuring bump drift and collapse probability. "
-                    "Protocol: cue → delay1 → distractor → delay2.",
-    )
-    _add_ring_common(ring_ds_parser)
-    ring_ds_parser.add_argument(
-        "--condition", type=str, default="WT",
-        help="Experimental condition (default: WT).",
-    )
-    ring_ds_parser.add_argument(
-        "--offsets_deg", type=float, nargs="+",
-        default=[30, 90, 120, 170],
-        help="Distractor angular offsets from cue in degrees (default: 30 90 120 170)",
-    )
-    ring_ds_parser.add_argument(
-        "--amp_factors", type=float, nargs="+",
-        default=[1.0, 0.75],
-        help="Distractor amplitude factors relative to cue (default: 1.0 0.75)",
-    )
-    ring_ds_parser.add_argument(
-        "--n_trials", type=int, default=1,
-        help="Number of trials per grid cell (default: 1)",
-    )
-    ring_ds_parser.add_argument(
-        "--delay1_ms", type=float, default=1000.0,
-        help="Delay period before distractor in ms (default: 1000)",
-    )
-    ring_ds_parser.add_argument(
-        "--delay2_ms", type=float, default=2500.0,
-        help="Delay period after distractor in ms (default: 2500)",
-    )
-    ring_ds_parser.add_argument(
-        "--distractor_duration_ms", type=float, default=250.0,
-        help="Distractor duration in ms (default: 250)",
-    )
-    ring_ds_parser.add_argument(
-        "--collapse_threshold", type=float, default=None,
-        help="Pop-vector amplitude Â below which bump is declared collapsed. "
-             "Auto-detected from calibration_summary.csv when not specified "
-             "(run ring-calibrate first). Falls back to 0.2 with a warning if "
-             "no calibration data is found.",
-    )
-    ring_ds_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: min(4, cpu_count))",
-    )
 
     # =========================================================================
     # RING-CALIBRATE subcommand
@@ -891,142 +793,6 @@ Examples:
              "skips simulations.",
     )
 
-    # =========================================================================
-    # RING-LESION subcommand
-    # =========================================================================
-    ring_lesion_parser = subparsers.add_parser(
-        "ring-lesion",
-        help="Systematic population lesion study (knockdown × population)",
-        description="Sweep knockdown level [0-100%%] for each population "
-                    "(PYR_recurrence, PV, SOM, VIP) and measure formation success "
-                    "rate and bump survival time. Produces a 4×2 panel figure.",
-    )
-    _add_ring_common(ring_lesion_parser)
-    ring_lesion_parser.add_argument(
-        "--populations", type=str, nargs="+",
-        default=["PYR_recurrence", "PV", "SOM", "VIP"],
-        help="Populations to knock down (default: all 4).",
-    )
-    ring_lesion_parser.add_argument(
-        "--knockdown_levels", type=float, nargs="+",
-        default=[0.0, 25.0, 50.0, 75.0, 100.0],
-        help="Knockdown percentages to sweep (default: 0 25 50 75 100).",
-    )
-    ring_lesion_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per knockdown level per population (default: 50).",
-    )
-    ring_lesion_parser.add_argument(
-        "--noise_floor", type=float, default=0.2,
-        help="Amplitude noise floor for formation/collapse detection (default: 0.2).",
-    )
-    ring_lesion_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: auto).",
-    )
-    ring_lesion_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore existing CSV cache and recompute from scratch.",
-    )
-
-    # =========================================================================
-    # RING-TAU-SWEEP subcommand
-    # =========================================================================
-    ring_tau_parser = subparsers.add_parser(
-        "ring-tau-sweep",
-        help="Sweep tau_adapt_pyr and measure bump dynamics",
-        description="Vary tau_adapt_pyr over a log-spaced range and measure "
-                    "bump survival time, diffusion coefficient, and oscillation "
-                    "frequency. Produces a 3-panel figure with shared log x-axis.",
-    )
-    _add_ring_common(ring_tau_parser)
-    ring_tau_parser.add_argument(
-        "--tau_values", type=float, nargs="+",
-        default=[50.0, 100.0, 200.0, 400.0, 600.0, 1000.0, 2000.0],
-        help="tau_adapt_pyr values to sweep in ms (default: 50 100 200 400 600 1000 2000).",
-    )
-    ring_tau_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per tau value (default: 50).",
-    )
-    ring_tau_parser.add_argument(
-        "--noise_floor", type=float, default=0.2,
-        help="Amplitude noise floor for collapse detection (default: 0.2).",
-    )
-    ring_tau_parser.add_argument(
-        "--osc_skip_initial_ms", type=float, default=TRANSIENT_SKIP_TIME_MS,
-        help=f"Initial delay window to skip before FFT oscillation-period estimation (ms, default: {TRANSIENT_SKIP_TIME_MS:.0f}).",
-    )
-    ring_tau_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: auto).",
-    )
-    ring_tau_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore existing CSV cache and recompute from scratch.",
-    )
-
-    # =========================================================================
-    # RING-PHASE-PLANE subcommand
-    # =========================================================================
-    ring_phase_parser = subparsers.add_parser(
-        "ring-phase-plane",
-        help="Phase plane bifurcation analysis (single decoupled node)",
-        description="Sweep I_ext_pyr offset in both directions on a single "
-                    "decoupled node (n_nodes=1, no ring connectivity) to detect "
-                    "bistability and visualise operating points. Produces a "
-                    "4-condition × 4-population S-curve grid.",
-    )
-    _add_ring_common(ring_phase_parser)
-    ring_phase_parser.add_argument(
-        "--conditions", type=str, nargs="+",
-        default=["WT", "a7_KO", "b2_KO", "WT_APP"],
-        help="Conditions to analyse (default: WT a7_KO b2_KO WT_APP).",
-    )
-    ring_phase_parser.add_argument(
-        "--delta_I_min", type=float, default=-10.0,
-        help="Minimum additive current offset to PYR I0 (default: -10.0).",
-    )
-    ring_phase_parser.add_argument(
-        "--delta_I_max", type=float, default=15.0,
-        help="Maximum additive current offset to PYR I0 (default: 15.0).",
-    )
-    ring_phase_parser.add_argument(
-        "--delta_I_steps", type=int, default=60,
-        help="Number of current sweep steps (default: 60).",
-    )
-    ring_phase_parser.add_argument(
-        "--settle_ms", type=float, default=100.0,
-        help="Settling window at end of each step for averaging (ms, default: 100).",
-    )
-    ring_phase_parser.add_argument(
-        "--step_ms", type=float, default=500.0,
-        help="Duration of each integration step (ms, default: 500).",
-    )
-    ring_phase_parser.add_argument(
-        "--bistable_threshold", type=float, default=1.0,
-        help="PYR rate difference (Hz) between UP/DOWN sweeps for bistability (default: 1.0).",
-    )
-
-    # =========================================================================
-    # RING-TEMPORAL-DISSECTION subcommand
-    # =========================================================================
-    ring_dissect_parser = subparsers.add_parser(
-        "ring-temporal-dissection",
-        help="Single clean trial temporal dissection at 3 ring locations",
-        description="Run a single noise-free trial and plot firing rates of all 4 "
-                    "populations plus adaptation current at the center node, +90°, "
-                    "and +180° (antipodal). Produces a 5×3 panel figure.",
-    )
-    _add_ring_common(ring_dissect_parser)
-    ring_dissect_parser.add_argument(
-        "--condition", type=str, default="WT",
-        help="Experimental condition (default: WT).",
-    )
-    ring_dissect_parser.add_argument(
-        "--noise_floor", type=float, default=0.2,
-        help="Amplitude noise floor for collapse detection (default: 0.2).",
-    )
 
     # =========================================================================
     # RING-ASYMMETRY subcommand
@@ -1127,55 +893,6 @@ Examples:
         help="Number of parallel workers (default: auto)",
     )
 
-    # =========================================================================
-    # RING-ASYMMETRY-AMP-SWEEP subcommand
-    # =========================================================================
-    ring_asym_amp_parser = subparsers.add_parser(
-        "ring-asymmetry-amp-sweep",
-        help="Sweep cue amplitude and compare delay asymmetry across conditions",
-        description=(
-            "Runs N trials per (condition, amplitude) using a shared per-condition "
-            "burn-in followed by a short per-trial secondary burn-in, then measures "
-            "delay-period asymmetry (mean|A(t)| and std(A)) at each amplitude. "
-            "Results are saved in the same per-amplitude cache directories as "
-            "ring-asymmetry, so data from either command is interchangeable. "
-            "A cross-amplitude summary figure and violin plot compare the "
-            "amplitude–asymmetry relationship between conditions."
-        ),
-    )
-    _add_ring_common(ring_asym_amp_parser)
-    ring_asym_amp_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to analyse (default: WT WT_APP). "
-             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--amplitudes", type=float, nargs="+",
-        default=[20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0],
-        help="List of amplitude multipliers to sweep (default: 20 25 30 35 40 45 50 55 60)",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per (condition, amplitude) (default: 50)",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: auto)",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--no_cue_balance", action="store_true", default=False,
-        help="Disable automatic cue-placement balance correction (default: on). "
-             "When enabled (default), for even N the cue is placed at a half-step "
-             "between two nodes so left and right node counts are exactly equal.",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--correct_asymmetry", dest="correct_asymmetry", action="store_true", default=True,
-        help="Enable asymmetry correction by bump amplitude (default: on).",
-    )
-    ring_asym_amp_parser.add_argument(
-        "--no_correct_asymmetry", dest="correct_asymmetry", action="store_false",
-        help="Disable asymmetry correction by bump amplitude.",
-    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -1183,11 +900,8 @@ Examples:
     if args.command is None:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
-              "'ring-run', 'ring-study', 'ring-diffusion', 'ring-drift-field', "
-              "'ring-distractor-sweep', 'ring-noise-floor', 'ring-calibrate', "
-              "'ring-lesion', 'ring-tau-sweep', 'ring-phase-plane', "
-              "'ring-temporal-dissection', 'ring-asymmetry', "
-              "'ring-burnin-stability', or 'ring-asymmetry-amp-sweep'.")
+              "'ring-run', 'ring-study', 'ring-diffusion', 'ring-noise-floor', "
+              "'ring-calibrate', 'ring-asymmetry', or 'ring-burnin-stability'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -1204,38 +918,17 @@ Examples:
     elif args.command == "ring-diffusion":
         from .ring.cli import cmd_diffusion as cmd_ring_diffusion
         cmd_ring_diffusion(args)
-    elif args.command == "ring-drift-field":
-        from .ring.cli import cmd_drift_field as cmd_ring_drift_field
-        cmd_ring_drift_field(args)
-    elif args.command == "ring-distractor-sweep":
-        from .ring.cli import cmd_distractor_sweep as cmd_ring_distractor_sweep
-        cmd_ring_distractor_sweep(args)
     elif args.command == "ring-calibrate":
         from .ring.cli import cmd_calibrate as cmd_ring_calibrate
         cmd_ring_calibrate(args)
     elif args.command == "ring-noise-floor":
         from .ring.cli import cmd_noise_floor as _cmd
         _cmd(args)
-    elif args.command == "ring-lesion":
-        from .ring.cli import cmd_lesion as _cmd
-        _cmd(args)
-    elif args.command == "ring-tau-sweep":
-        from .ring.cli import cmd_tau_sweep as _cmd
-        _cmd(args)
-    elif args.command == "ring-phase-plane":
-        from .ring.cli import cmd_phase_plane as _cmd
-        _cmd(args)
-    elif args.command == "ring-temporal-dissection":
-        from .ring.cli import cmd_temporal_dissection as _cmd
-        _cmd(args)
     elif args.command == "ring-asymmetry":
         from .ring.cli import cmd_asymmetry as _cmd
         _cmd(args)
     elif args.command == "ring-burnin-stability":
         from .ring.cli import cmd_burnin_stability as _cmd
-        _cmd(args)
-    elif args.command == "ring-asymmetry-amp-sweep":
-        from .ring.cli import cmd_asymmetry_amp_sweep as _cmd
         _cmd(args)
     else:
         parser.print_help()
