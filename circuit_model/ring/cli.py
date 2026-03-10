@@ -433,6 +433,7 @@ _CSV_FIELDS = [
     'width_mean_deg', 'drift_rate_deg_per_s', 'diffusion_deg2_per_s',
     'error_from_cue_deg',
     'mean_rate_pyr_hz', 'mean_rate_som_hz', 'mean_rate_pv_hz', 'mean_rate_vip_hz',
+    'cue_rate_pyr_hz', 'cue_rate_som_hz', 'cue_rate_pv_hz', 'cue_rate_vip_hz',
 ]
 
 _METRIC_KEYS = [
@@ -440,6 +441,7 @@ _METRIC_KEYS = [
     'width_mean_deg', 'drift_rate_deg_per_s', 'diffusion_deg2_per_s',
     'error_from_cue_deg',
     'mean_rate_pyr_hz', 'mean_rate_som_hz', 'mean_rate_pv_hz', 'mean_rate_vip_hz',
+    'cue_rate_pyr_hz', 'cue_rate_som_hz', 'cue_rate_pv_hz', 'cue_rate_vip_hz',
 ]
 
 _RATE_POPS = [
@@ -447,6 +449,13 @@ _RATE_POPS = [
     ('mean_rate_som_hz', 'SOM', 'Hz'),
     ('mean_rate_pv_hz', 'PV', 'Hz'),
     ('mean_rate_vip_hz', 'VIP', 'Hz'),
+]
+
+_CUE_RATE_POPS = [
+    ('cue_rate_pyr_hz', 'PYR', 'Hz'),
+    ('cue_rate_som_hz', 'SOM', 'Hz'),
+    ('cue_rate_pv_hz', 'PV', 'Hz'),
+    ('cue_rate_vip_hz', 'VIP', 'Hz'),
 ]
 
 
@@ -517,7 +526,7 @@ def _job_result_to_csv_rows(res: dict) -> list[dict]:
     for m in res['delay_metrics']:
         row = {**base, 'eval_time_ms': m['eval_time_ms']}
         for k in _METRIC_KEYS:
-            row[k] = m[k]
+            row[k] = m.get(k, np.nan)
         rows.append(row)
     m = res['full_delay_metrics']
     row = {**base, 'eval_time_ms': 'full_delay'}
@@ -635,13 +644,17 @@ def _ring_run_single(job: tuple) -> dict:
     # Mean firing rate per population during delay period
     _t_start_rate = result.stim_window[1] + 100.0
     _rate_mask = (result.t_ms >= _t_start_rate) & (result.t_ms <= result.t_ms[-1])
+    _cue_idx = int(np.argmin(np.abs(result.ring_params.node_angles_deg - STIM_CENTER_DEG)))
     if np.any(_rate_mask):
         _pop_means = result.r[_rate_mask, :, :].mean(axis=(0, 1))  # shape (4,)
+        _cue_means = result.r[_rate_mask, _cue_idx, :].mean(axis=0)  # shape (4,)
         for _pi, _pn in enumerate(('pyr', 'som', 'pv', 'vip')):
             full_delay_metrics[f'mean_rate_{_pn}_hz'] = float(_pop_means[_pi])
+            full_delay_metrics[f'cue_rate_{_pn}_hz'] = float(_cue_means[_pi])
     else:
         for _pn in ('pyr', 'som', 'pv', 'vip'):
             full_delay_metrics[f'mean_rate_{_pn}_hz'] = np.nan
+            full_delay_metrics[f'cue_rate_{_pn}_hz'] = np.nan
 
     comparison_data = None
     if trial_idx == 0:
@@ -1958,9 +1971,9 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
             sd = np.nanstd(stack, axis=0, ddof=0)
         return t_axis, mean, sd
 
-    amp_sweep_data: dict[float, dict[float, dict]] = {
-        factor: {} for factor in distractor_factors
-    }  # {factor: {offset_deg: {amp: plv_median_delay2_trials}}}
+    amp_sweep_data: dict[float, dict[str, dict[float, dict]]] = {
+        factor: {'full': {}, 'last500': {}} for factor in distractor_factors
+    }  # {factor: {'full'|'last500': {offset_deg: {amp: plv_values}}}}
 
     for ck in condition_keys:
         cond_out = os.path.join(out_root, ck)
@@ -2013,17 +2026,23 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                     # Amplitude sweep data: PLV median in delay2 per trial
                     if off is not None:
                         dist_offset_rel_s = rows[0]['dist_offset_rel_s']
-                        plv_medians = []
+                        plv_medians_full = []
+                        plv_medians_last500 = []
                         for r in rows:
                             plv_t = np.asarray(r['plv_times_s'], dtype=float)
                             plv_v = np.asarray(r['plv'], dtype=float)
+                            t_end = plv_t[-1] if len(plv_t) > 0 else dist_offset_rel_s
                             post_mask = plv_t > dist_offset_rel_s
+                            last500_mask = plv_t >= (t_end - 0.5)
                             if np.any(post_mask):
-                                plv_medians.append(float(np.nanmedian(plv_v[post_mask])))
+                                plv_medians_full.append(float(np.nanmedian(plv_v[post_mask])))
+                            if np.any(last500_mask):
+                                plv_medians_last500.append(float(np.nanmedian(plv_v[last500_mask])))
                         off_float = float(off)
-                        if off_float not in amp_sweep_data[factor]:
-                            amp_sweep_data[factor][off_float] = {}
-                        amp_sweep_data[factor][off_float][amp] = np.array(plv_medians)
+                        for window, medians in [('full', plv_medians_full), ('last500', plv_medians_last500)]:
+                            if off_float not in amp_sweep_data[factor][window]:
+                                amp_sweep_data[factor][window][off_float] = {}
+                            amp_sweep_data[factor][window][off_float][amp] = np.array(medians)
 
                 # Common t_rel axis: use the longest from non-None offsets
                 t_rel_axis = np.array([])
@@ -2045,6 +2064,9 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                         d['plv_mean'] = np.concatenate([d['plv_mean'], np.full(pad, np.nan)])
                         d['plv_sd'] = np.concatenate([d['plv_sd'], np.full(pad, np.nan)])
 
+                amp_out = os.path.join(factor_out, amp_label)
+                os.makedirs(amp_out, exist_ok=True)
+
                 # 1. Timecourse figure
                 fig_tc = plot_osc_distractor_timecourses(
                     t_rel_axis=t_rel_axis,
@@ -2053,7 +2075,7 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                     suptitle=(
                         f"Osc-Distractor | {ck} | {amp_label}× | {factor_label} | {conn_lbl}"
                     ),
-                    save_path=os.path.join(factor_out, f"osc_distractor_timecourses_{amp_label}.png"),
+                    save_path=os.path.join(amp_out, "osc_distractor_timecourses.png"),
                 )
                 plt.close(fig_tc)
 
@@ -2103,7 +2125,7 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                             f"STFT | {ck} | {amp_label}× | offset={int(off)}° | {factor_label}"
                         ),
                         save_path=os.path.join(
-                            factor_out, f"osc_distractor_spectrograms_{amp_label}_offset{int(off)}.png"
+                            amp_out, f"osc_distractor_spectrograms_offset{int(off)}.png"
                         ),
                     )
                     plt.close(fig_sg)
@@ -2114,12 +2136,19 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                 factor_label = f"factor{_fmt(factor)}"
                 factor_out = os.path.join(out_root, ck, factor_label)
 
-                sweep_by_offset_amp = amp_sweep_data.get(factor, {})
-                panels = [(
-                    f"Mean PLV post-distractor | {factor_label}",
-                    "Mean PLV (post-distractor window)",
-                    sweep_by_offset_amp,
-                )]
+                factor_sweep = amp_sweep_data.get(factor, {'full': {}, 'last500': {}})
+                panels = [
+                    (
+                        f"Full post-distractor delay | {factor_label}",
+                        "Median PLV (full post-distractor)",
+                        factor_sweep['full'],
+                    ),
+                    (
+                        f"Last 500 ms of delay | {factor_label}",
+                        "Median PLV (last 500 ms)",
+                        factor_sweep['last500'],
+                    ),
+                ]
                 fig_sw = plot_osc_distractor_amp_sweep(
                     panels=panels,
                     amplitudes=amplitudes,
@@ -2502,6 +2531,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                 plt.close()
 
             # --- Per-amplitude firing rate violin plots ---
+            _all_rate_pops = _RATE_POPS + _CUE_RATE_POPS
             rate_by_cond: dict[str, dict[str, np.ndarray]] = {}
             for cond_key in condition_keys:
                 trial_full = [
@@ -2511,7 +2541,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                 if trial_full:
                     rate_by_cond[cond_key] = {
                         mk: np.array([m.get(mk, np.nan) for m in trial_full])
-                        for mk, *_ in _RATE_POPS
+                        for mk, *_ in _all_rate_pops
                     }
 
             if rate_by_cond:
@@ -2521,7 +2551,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                     for _j, _cb in enumerate(condition_keys):
                         if _j <= _i:
                             continue
-                        for mk, *_ in _RATE_POPS:
+                        for mk, *_ in _all_rate_pops:
                             arr_a = rate_by_cond.get(_ca, {}).get(mk, np.array([]))
                             arr_b = rate_by_cond.get(_cb, {}).get(mk, np.array([]))
                             a_v = arr_a[np.isfinite(arr_a)]
@@ -2542,21 +2572,89 @@ def cmd_study(args: argparse.Namespace) -> None:
                     for _r, _q in zip(rate_stats_rows, _q_vals):
                         _r['q_value'] = float(_q)
 
-                rate_panels = [
-                    (mk, lbl, 'Mean firing rate (Hz)', {
-                        ck: rate_by_cond.get(ck, {}).get(mk, np.array([]))
-                        for ck in condition_keys
-                    })
-                    for mk, lbl, _ in _RATE_POPS
-                ]
-                plot_study_firing_rates_violin(
-                    panels=rate_panels,
-                    cond_order=condition_keys,
-                    stats_rows=rate_stats_rows,
-                    suptitle=f"Population Firing Rates  ({suptitle})",
-                    save_path=os.path.join(amp_out, "firing_rates_violin.png"),
-                )
-                plt.close()
+                for _pop_list, _fname, _title in [
+                    (_RATE_POPS, "firing_rates_all_violin.png",
+                     f"Population Firing Rates — All Nodes  ({suptitle})"),
+                    (_CUE_RATE_POPS, "firing_rates_cue_violin.png",
+                     f"Population Firing Rates — Cue Node  ({suptitle})"),
+                ]:
+                    _panels = [
+                        (mk, lbl, 'Mean firing rate (Hz)', {
+                            ck: rate_by_cond.get(ck, {}).get(mk, np.array([]))
+                            for ck in condition_keys
+                        })
+                        for mk, lbl, _ in _pop_list
+                    ]
+                    plot_study_firing_rates_violin(
+                        panels=_panels,
+                        cond_order=condition_keys,
+                        stats_rows=rate_stats_rows,
+                        suptitle=_title,
+                        save_path=os.path.join(amp_out, _fname),
+                    )
+                    plt.close()
+
+            # --- Per-amplitude interneuron/PYR ratio violin plots ---
+            _RATIO_DEFS = [
+                # (prefix, som_key, pv_key, vip_key, pyr_key, fname, title)
+                ('mean', 'mean_rate_som_hz', 'mean_rate_pv_hz', 'mean_rate_vip_hz',
+                 'mean_rate_pyr_hz', 'interneuron_ratios_all_violin.png',
+                 f"Interneuron/PYR Firing Rate Ratio — All Nodes  ({suptitle})"),
+                ('cue', 'cue_rate_som_hz', 'cue_rate_pv_hz', 'cue_rate_vip_hz',
+                 'cue_rate_pyr_hz', 'interneuron_ratios_cue_violin.png',
+                 f"Interneuron/PYR Firing Rate Ratio — Cue Node  ({suptitle})"),
+            ]
+            if rate_by_cond:
+                for _prefix, _som_k, _pv_k, _vip_k, _pyr_k, _rfname, _rtitle in _RATIO_DEFS:
+                    ratio_by_cond: dict[str, dict[str, np.ndarray]] = {}
+                    for ck in condition_keys:
+                        _d = rate_by_cond.get(ck, {})
+                        _pyr = _d.get(_pyr_k, np.array([]))
+                        _nonzero = _pyr != 0
+                        ratio_by_cond[ck] = {
+                            'som_pyr': np.where(_nonzero, _d.get(_som_k, np.full_like(_pyr, np.nan)) / _pyr, np.nan),
+                            'pv_pyr':  np.where(_nonzero, _d.get(_pv_k,  np.full_like(_pyr, np.nan)) / _pyr, np.nan),
+                            'vip_pyr': np.where(_nonzero, _d.get(_vip_k, np.full_like(_pyr, np.nan)) / _pyr, np.nan),
+                        }
+
+                    ratio_stats_rows: list[dict] = []
+                    for _i, _ca in enumerate(condition_keys):
+                        for _j, _cb in enumerate(condition_keys):
+                            if _j <= _i:
+                                continue
+                            for _rk in ('som_pyr', 'pv_pyr', 'vip_pyr'):
+                                arr_a = ratio_by_cond.get(_ca, {}).get(_rk, np.array([]))
+                                arr_b = ratio_by_cond.get(_cb, {}).get(_rk, np.array([]))
+                                a_v = arr_a[np.isfinite(arr_a)]
+                                b_v = arr_b[np.isfinite(arr_b)]
+                                if len(a_v) > 0 and len(b_v) > 0:
+                                    _u, _p = _scipy_stats_study.mannwhitneyu(
+                                        a_v, b_v, alternative='two-sided'
+                                    )
+                                    ratio_stats_rows.append({
+                                        'metric': _rk, 'cond_a': _ca, 'cond_b': _cb,
+                                        'u_stat': float(_u), 'p_value': float(_p),
+                                    })
+                    if ratio_stats_rows:
+                        _q_r = _fdr_study([r['p_value'] for r in ratio_stats_rows], method='bh')
+                        for _r, _q in zip(ratio_stats_rows, _q_r):
+                            _r['q_value'] = float(_q)
+
+                    ratio_panels = [
+                        (_rk, lbl, 'Rate ratio (relative to PYR)', {
+                            ck: ratio_by_cond.get(ck, {}).get(_rk, np.array([]))
+                            for ck in condition_keys
+                        })
+                        for _rk, lbl in [('som_pyr', 'SOM/PYR'), ('pv_pyr', 'PV/PYR'), ('vip_pyr', 'VIP/PYR')]
+                    ]
+                    plot_study_firing_rates_violin(
+                        panels=ratio_panels,
+                        cond_order=condition_keys,
+                        stats_rows=ratio_stats_rows,
+                        suptitle=_rtitle,
+                        save_path=os.path.join(amp_out, _rfname),
+                    )
+                    plt.close()
 
             if export_mp4:
                 anim_dir = os.path.join(amp_out, "snapshot_evolution")
@@ -2622,8 +2720,9 @@ def cmd_study(args: argparse.Namespace) -> None:
 
         # Firing rate evolution over amplitude
         import scipy.stats as _scipy_stats_sweep
+        _all_rate_pops_sweep = _RATE_POPS + _CUE_RATE_POPS
         rate_sweep: dict[str, dict[str, dict[float, np.ndarray]]] = {}
-        for mk, *_ in _RATE_POPS:
+        for mk, *_ in _all_rate_pops_sweep:
             by_cond_amp: dict[str, dict[float, np.ndarray]] = {}
             for ck in condition_keys:
                 by_cond_amp[ck] = {}
@@ -2637,7 +2736,7 @@ def cmd_study(args: argparse.Namespace) -> None:
             rate_sweep[mk] = by_cond_amp
 
         sweep_stats_rows: list[dict] = []
-        for mk, *_ in _RATE_POPS:
+        for mk, *_ in _all_rate_pops_sweep:
             for _amp in amplitudes:
                 for _i, _ca in enumerate(condition_keys):
                     for _j, _cb in enumerate(condition_keys):
@@ -2662,27 +2761,105 @@ def cmd_study(args: argparse.Namespace) -> None:
             for _r, _q in zip(sweep_stats_rows, _q_vals_sw):
                 _r['q_value'] = float(_q)
 
-        sweep_panels = [
-            (lbl, 'Mean firing rate (Hz)', rate_sweep[mk])
-            for mk, lbl, _ in _RATE_POPS
-        ]
-        stats_per_panel_sweep = [
-            [
-                {'amp': r['amp'], 'q_value': r['q_value'],
-                 'cond_a': r['cond_a'], 'cond_b': r['cond_b']}
-                for r in sweep_stats_rows if r['metric'] == mk
+        for _pop_list, _fname, _title in [
+            (_RATE_POPS, "firing_rates_all_vs_amplitude.png",
+             f"Firing Rates vs Amplitude — All Nodes  [{_weights_label(ring_params)}]"),
+            (_CUE_RATE_POPS, "firing_rates_cue_vs_amplitude.png",
+             f"Firing Rates vs Amplitude — Cue Node  [{_weights_label(ring_params)}]"),
+        ]:
+            _sweep_panels = [
+                (lbl, 'Mean firing rate (Hz)', rate_sweep[mk])
+                for mk, lbl, _ in _pop_list
             ]
-            for mk, *_ in _RATE_POPS
+            _stats_per_panel = [
+                [
+                    {'amp': r['amp'], 'q_value': r['q_value'],
+                     'cond_a': r['cond_a'], 'cond_b': r['cond_b']}
+                    for r in sweep_stats_rows if r['metric'] == mk
+                ]
+                for mk, *_ in _pop_list
+            ]
+            plot_oscillation_amp_sweep_lines(
+                panels=_sweep_panels,
+                amplitudes=amplitudes,
+                cond_order=condition_keys,
+                stats_per_panel=_stats_per_panel,
+                suptitle=_title,
+                save_path=os.path.join(out_dir, _fname),
+            )
+            plt.close()
+
+        # Interneuron/PYR ratio amplitude sweep
+        _RATIO_SWEEP_DEFS = [
+            ('mean_rate_som_hz', 'mean_rate_pv_hz', 'mean_rate_vip_hz', 'mean_rate_pyr_hz',
+             'interneuron_ratios_all_vs_amplitude.png',
+             f"Interneuron/PYR Ratio vs Amplitude — All Nodes  [{_weights_label(ring_params)}]"),
+            ('cue_rate_som_hz', 'cue_rate_pv_hz', 'cue_rate_vip_hz', 'cue_rate_pyr_hz',
+             'interneuron_ratios_cue_vs_amplitude.png',
+             f"Interneuron/PYR Ratio vs Amplitude — Cue Node  [{_weights_label(ring_params)}]"),
         ]
-        plot_oscillation_amp_sweep_lines(
-            panels=sweep_panels,
-            amplitudes=amplitudes,
-            cond_order=condition_keys,
-            stats_per_panel=stats_per_panel_sweep,
-            suptitle=f"Population Firing Rates vs Amplitude  [{_weights_label(ring_params)}]",
-            save_path=os.path.join(out_dir, "firing_rates_vs_amplitude.png"),
-        )
-        plt.close()
+        for _som_k, _pv_k, _vip_k, _pyr_k, _rfname, _rtitle in _RATIO_SWEEP_DEFS:
+            ratio_sweep: dict[str, dict[str, dict[float, np.ndarray]]] = {}
+            for _rk, _num_k in [('som_pyr', _som_k), ('pv_pyr', _pv_k), ('vip_pyr', _vip_k)]:
+                by_cond_amp: dict[str, dict[float, np.ndarray]] = {}
+                for ck in condition_keys:
+                    by_cond_amp[ck] = {}
+                    for _amp in amplitudes:
+                        trial_full = [
+                            r['full_delay_metrics'] for r in all_results
+                            if r['cond_key'] == ck and r['amplitude'] == _amp
+                        ]
+                        _pyr = np.array([m.get(_pyr_k, np.nan) for m in trial_full])
+                        _num = np.array([m.get(_num_k, np.nan) for m in trial_full])
+                        with np.errstate(invalid='ignore', divide='ignore'):
+                            _ratio = np.where(_pyr != 0, _num / _pyr, np.nan)
+                        by_cond_amp[ck][_amp] = _ratio[np.isfinite(_ratio)]
+                ratio_sweep[_rk] = by_cond_amp
+
+            ratio_sweep_stats: list[dict] = []
+            for _rk in ('som_pyr', 'pv_pyr', 'vip_pyr'):
+                for _amp in amplitudes:
+                    for _i, _ca in enumerate(condition_keys):
+                        for _j, _cb in enumerate(condition_keys):
+                            if _j <= _i:
+                                continue
+                            arr_a = ratio_sweep[_rk].get(_ca, {}).get(_amp, np.array([]))
+                            arr_b = ratio_sweep[_rk].get(_cb, {}).get(_amp, np.array([]))
+                            if len(arr_a) > 0 and len(arr_b) > 0:
+                                _u, _p = _scipy_stats_sweep.mannwhitneyu(
+                                    arr_a, arr_b, alternative='two-sided'
+                                )
+                                ratio_sweep_stats.append({
+                                    'metric': _rk, 'amp': _amp,
+                                    'cond_a': _ca, 'cond_b': _cb,
+                                    'p_value': float(_p),
+                                })
+            if ratio_sweep_stats:
+                _q_rs = _fdr_sweep([r['p_value'] for r in ratio_sweep_stats], method='bh')
+                for _r, _q in zip(ratio_sweep_stats, _q_rs):
+                    _r['q_value'] = float(_q)
+
+            _ratio_panels = [
+                (lbl, 'Rate ratio (relative to PYR)', ratio_sweep[_rk])
+                for _rk, lbl in [('som_pyr', 'SOM/PYR'), ('pv_pyr', 'PV/PYR'), ('vip_pyr', 'VIP/PYR')]
+            ]
+            _ratio_stats_per_panel = [
+                [
+                    {'amp': r['amp'], 'q_value': r['q_value'],
+                     'cond_a': r['cond_a'], 'cond_b': r['cond_b']}
+                    for r in ratio_sweep_stats if r['metric'] == _rk
+                ]
+                for _rk in ('som_pyr', 'pv_pyr', 'vip_pyr')
+            ]
+            plot_oscillation_amp_sweep_lines(
+                panels=_ratio_panels,
+                amplitudes=amplitudes,
+                cond_order=condition_keys,
+                stats_per_panel=_ratio_stats_per_panel,
+                suptitle=_rtitle,
+                save_path=os.path.join(out_dir, _rfname),
+            )
+            plt.close()
 
     # Timed metrics-vs-amplitude plots (at different delay offsets)
     amp_eval_step_ms = getattr(args, 'amp_eval_step_ms', 500.0)
