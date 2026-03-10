@@ -506,81 +506,183 @@ def fit_diffusion_coefficient(
     return B_hat, fit_line, r_squared
 
 
-def compute_oscillation_spectrum(
-    amplitude_trials: np.ndarray,
+def compute_oscillation_band_timecourse(
+    amplitude: np.ndarray,
     t_s: np.ndarray,
-    min_freq_hz: float = 1.0,
-    max_freq_hz: float = 50.0,
-    skip_initial_s: float = 0.0,
+    min_freq_hz: float = 2.0,
+    max_freq_hz: float = 12.0,
+    window_s: float = 1.0,
+    overlap_frac: float = 0.8,
 ) -> dict:
-    """Compute power spectrum of bump amplitude and detect dominant oscillation.
+    """Compute a time-frequency map and dominant-band trajectory for one trial.
 
-    Each trial's amplitude is linearly detrended to remove slow drift before
-    computing the FFT.  The dominant oscillation frequency is identified as the
-    highest-power peak in ``[min_freq_hz, max_freq_hz]`` that exceeds 3× the
-    median power in that band (i.e. stands clearly above the noise floor).
+    Uses a Hann-window STFT on the bump-amplitude trajectory. In each time
+    bin, the dominant frequency is selected as the frequency with maximum power
+    within [min_freq_hz, max_freq_hz].
 
     Parameters:
-        amplitude_trials: Per-trial amplitude timecourses, shape (n_trials, n_steps).
-        t_s: Time vector in seconds, shape (n_steps,).
-        min_freq_hz: Low edge of the frequency band to search (default: 1 Hz).
-        max_freq_hz: High edge of the frequency band to search (default: 50 Hz).
-        skip_initial_s: Ignore this initial duration (seconds) before
-            estimating the spectrum to avoid early post-cue transients.
+        amplitude: 1D bump-amplitude trajectory, shape (n_steps,).
+        t_s: Matching time vector in seconds, shape (n_steps,).
+        min_freq_hz: Low edge of frequency band to analyze.
+        max_freq_hz: High edge of frequency band to analyze.
+        window_s: STFT window length in seconds.
+        overlap_frac: Fractional overlap between consecutive windows [0, 0.99].
 
     Returns:
         dict with keys:
-            ``freqs``             – frequency array in Hz, shape (n_freqs,)
-            ``power_mean``        – mean PSD across trials, shape (n_freqs,)
-            ``power_sem``         – SEM of PSD across trials, shape (n_freqs,)
-            ``dominant_freq_hz``  – detected dominant frequency (float or None)
-            ``dominant_period_s`` – corresponding period in s (float or None)
+            ``freqs_hz``            – frequency axis (band-limited), shape (n_freqs,)
+            ``times_s``             – STFT time bins (absolute seconds), shape (n_times,)
+            ``power``               – power map, shape (n_freqs, n_times)
+            ``dominant_freq_hz``    – dominant frequency per time bin, shape (n_times,)
+            ``dominant_power``      – dominant power per time bin, shape (n_times,)
     """
-    n_trials, n_steps = amplitude_trials.shape
-    dt = float(t_s[1] - t_s[0]) if len(t_s) > 1 else 1e-3
+    from scipy.signal import spectrogram
 
-    if skip_initial_s > 0:
-        valid_mask = t_s >= (t_s[0] + skip_initial_s)
-        if np.count_nonzero(valid_mask) >= 4:
-            t_s = t_s[valid_mask]
-            amplitude_trials = amplitude_trials[:, valid_mask]
-            n_steps = amplitude_trials.shape[1]
+    amp = np.asarray(amplitude, dtype=float).ravel()
+    tt = np.asarray(t_s, dtype=float).ravel()
+    if len(amp) != len(tt):
+        raise ValueError("amplitude and t_s must have same length")
+    if len(amp) < 8:
+        raise ValueError("Need at least 8 samples for oscillation timecourse")
 
-    freqs = np.fft.rfftfreq(n_steps, d=dt)
+    dt = float(np.median(np.diff(tt))) if len(tt) > 1 else 1e-3
+    fs = 1.0 / max(dt, 1e-9)
 
-    psds = np.zeros((n_trials, len(freqs)))
-    for i, amp in enumerate(amplitude_trials):
-        # Linearly detrend to remove the slow post-stimulus rise
-        trend = np.polyval(np.polyfit(t_s, amp, 1), t_s)
-        detrended = amp - trend
-        fft_vals = np.fft.rfft(detrended)
-        psds[i] = (np.abs(fft_vals) ** 2) / n_steps
+    nperseg = int(max(8, round(window_s * fs)))
+    nperseg = min(nperseg, len(amp))
+    overlap_frac = float(np.clip(overlap_frac, 0.0, 0.99))
+    noverlap = int(round(overlap_frac * nperseg))
+    noverlap = min(noverlap, max(0, nperseg - 1))
+    # Aggressive zero-padding: very dense frequency grid for thin, smooth bins.
+    # Cap nfft to avoid pathological runtimes on very long windows.
+    nfft_base = max(64, nperseg)
+    nfft_pow2 = 1 << int(np.ceil(np.log2(nfft_base)))
+    nfft = int(max(nfft_pow2, 16 * nperseg))
+    nfft = min(nfft, 32768)
 
-    power_mean = np.mean(psds, axis=0)
-    power_sem = (
-        np.std(psds, axis=0, ddof=1) / np.sqrt(n_trials)
-        if n_trials > 1 else np.zeros_like(power_mean)
+    # Remove slow trend and DC offset so low-frequency drift does not dominate.
+    trend = np.polyval(np.polyfit(tt, amp, 1), tt)
+    detrended = amp - trend
+    detrended = detrended - np.mean(detrended)
+
+    freqs, times_rel, power = spectrogram(
+        detrended,
+        fs=fs,
+        window='hann',
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
+        detrend=False,
+        scaling='density',
+        mode='psd',
     )
 
-    # Detect dominant peak in the target frequency band
-    band_mask = (freqs >= min_freq_hz) & (freqs <= max_freq_hz)
-    dominant_freq: Optional[float] = None
-    dominant_period: Optional[float] = None
-    if np.any(band_mask):
-        band_power = power_mean[band_mask]
-        noise_floor = float(np.median(band_power))
-        peak_rel_idx = int(np.argmax(band_power))
-        peak_power = float(band_power[peak_rel_idx])
-        if peak_power > 3.0 * noise_floor and noise_floor > 0:
-            dominant_freq = float(freqs[band_mask][peak_rel_idx])
-            dominant_period = 1.0 / dominant_freq
+    band = (freqs >= min_freq_hz) & (freqs <= max_freq_hz)
+    if not np.any(band):
+        return {
+            'freqs_hz': np.array([], dtype=float),
+            'times_s': np.array([], dtype=float),
+            'power': np.zeros((0, 0), dtype=float),
+            'dominant_freq_hz': np.array([], dtype=float),
+            'dominant_power': np.array([], dtype=float),
+        }
+
+    freqs_band = freqs[band]
+    power_band = power[band, :]
+    if power_band.shape[1] == 0:
+        times_abs = np.array([], dtype=float)
+        dom_freq = np.array([], dtype=float)
+        dom_power = np.array([], dtype=float)
+    else:
+        peak_idx = np.argmax(power_band, axis=0)
+        # Refine peak location with quadratic interpolation in log-power around
+        # the winning bin to avoid frequency values being locked to FFT bin centers.
+        dom_freq = freqs_band[peak_idx].astype(float)
+        if len(freqs_band) >= 3:
+            for ti, k in enumerate(peak_idx):
+                if k <= 0 or k >= len(freqs_band) - 1:
+                    continue
+                y1 = float(np.log(max(power_band[k - 1, ti], 1e-30)))
+                y2 = float(np.log(max(power_band[k, ti], 1e-30)))
+                y3 = float(np.log(max(power_band[k + 1, ti], 1e-30)))
+                denom = (y1 - 2.0 * y2 + y3)
+                if abs(denom) < 1e-12:
+                    continue
+                delta = 0.5 * (y1 - y3) / denom
+                # Keep interpolation local to neighboring bins.
+                delta = float(np.clip(delta, -1.0, 1.0))
+                f_lo = float(freqs_band[k - 1])
+                f_mid = float(freqs_band[k])
+                f_hi = float(freqs_band[k + 1])
+                if f_hi <= f_lo:
+                    continue
+                dom_freq[ti] = f_mid + delta * (f_hi - f_lo) * 0.5
+        dom_power = power_band[peak_idx, np.arange(power_band.shape[1])].astype(float)
+        dom_freq = dom_freq.astype(float)
+        # SNR threshold: suppress timepoints where the dominant bin does not
+        # stand above the local noise floor (median across all band frequencies).
+        noise_floor_t = np.median(power_band, axis=0)
+        below_snr = dom_power <= 2.0 * noise_floor_t
+        dom_freq[below_snr] = np.nan
+        dom_power[below_snr] = np.nan
+        times_abs = float(tt[0]) + times_rel
 
     return {
-        'freqs': freqs,
-        'power_mean': power_mean,
-        'power_sem': power_sem,
-        'dominant_freq_hz': dominant_freq,
-        'dominant_period_s': dominant_period,
+        'freqs_hz': freqs_band,
+        'times_s': times_abs,
+        'power': power_band,
+        'dominant_freq_hz': dom_freq,
+        'dominant_power': dom_power,
+    }
+
+
+def summarize_oscillation_timecourse(
+    dominant_freq_hz: np.ndarray,
+    dominant_power: np.ndarray,
+    times_s: np.ndarray,
+    sample_time_s: Optional[float] = None,
+) -> dict:
+    """Summarize dominant oscillation trajectories into trial-level metrics.
+
+    Returns both delay-averaged metrics and one-timepoint metrics (nearest STFT
+    bin to sample_time_s, or center time if sample_time_s is None).
+    """
+    f = np.asarray(dominant_freq_hz, dtype=float).ravel()
+    p = np.asarray(dominant_power, dtype=float).ravel()
+    t = np.asarray(times_s, dtype=float).ravel()
+
+    _nan_result = {
+        'freq_median_hz': np.nan,
+        'power_median': np.nan,
+        'freq_sample_hz': np.nan,
+        'power_sample': np.nan,
+        'sample_time_s': np.nan,
+    }
+
+    if len(f) == 0 or len(p) == 0 or len(t) == 0:
+        return _nan_result
+
+    # t must be non-NaN to find sample index; f and p may have NaNs from SNR mask
+    valid_t = ~np.isnan(t)
+    if not np.any(valid_t):
+        return _nan_result
+
+    t = t[valid_t]
+    f = f[valid_t]
+    p = p[valid_t]
+
+    if sample_time_s is None:
+        sample_time_s = float(t[len(t) // 2])
+    else:
+        sample_time_s = float(sample_time_s)
+
+    idx = int(np.argmin(np.abs(t - sample_time_s)))
+    return {
+        'freq_median_hz': float(np.nanmedian(f)),
+        'power_median': float(np.nanmedian(p)),
+        'freq_sample_hz': float(f[idx]),
+        'power_sample': float(p[idx]),
+        'sample_time_s': float(t[idx]),
     }
 
 
@@ -762,4 +864,102 @@ def aggregate_single_metrics(all_metrics: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # New analysis functions for the 4-experiment battery
 # ---------------------------------------------------------------------------
+
+
+def compute_plv_timecourse(
+    signal1: np.ndarray,
+    signal2: np.ndarray,
+    t_s: np.ndarray,
+    min_freq_hz: float = 2.0,
+    max_freq_hz: float = 12.0,
+    filter_order: int = 4,
+    window_s: float = 1.0,
+    overlap_frac: float = 0.8,
+) -> dict:
+    """Compute a Phase Locking Value (PLV) timecourse between two signals.
+
+    Measures phase synchrony in the oscillation band by:
+    1. Bandpass-filtering both signals (zero-phase Butterworth)
+    2. Extracting instantaneous phases via Hilbert transform
+    3. Computing PLV in sliding windows matching the STFT bin grid
+
+    The window/step formula is identical to ``compute_oscillation_band_timecourse``
+    so that PLV and STFT timecourses share the same time axis.
+
+    Parameters
+    ----------
+    signal1, signal2 : np.ndarray
+        1-D raw signals (e.g. firing rate at cue node and distractor node),
+        shape ``(n_steps,)``.
+    t_s : np.ndarray
+        Matching time vector in seconds, shape ``(n_steps,)``.
+    min_freq_hz, max_freq_hz : float
+        Bandpass edges for the Butterworth filter.
+    filter_order : int
+        Butterworth filter order (applied forward+backward by ``filtfilt``).
+    window_s : float
+        Sliding-window length in seconds.
+    overlap_frac : float
+        Fractional overlap between consecutive windows [0, 0.99].
+
+    Returns
+    -------
+    dict with keys:
+        ``times_s`` – window-center times (absolute seconds), shape ``(n_windows,)``
+        ``plv``     – PLV values in [0, 1], shape ``(n_windows,)``
+    """
+    from scipy.signal import butter, filtfilt, hilbert
+
+    _empty = {'times_s': np.array([], dtype=float), 'plv': np.array([], dtype=float)}
+
+    s1 = np.asarray(signal1, dtype=float).ravel()
+    s2 = np.asarray(signal2, dtype=float).ravel()
+    tt = np.asarray(t_s, dtype=float).ravel()
+
+    if len(s1) != len(tt) or len(s2) != len(tt):
+        raise ValueError("signal1, signal2, and t_s must have the same length")
+    if len(s1) < 8:
+        return _empty
+
+    dt = float(np.median(np.diff(tt))) if len(tt) > 1 else 1e-3
+    fs = 1.0 / max(dt, 1e-9)
+    nyq = fs / 2.0
+
+    lo = float(np.clip(min_freq_hz, 0.0, nyq - 1e-3))
+    hi = float(np.clip(max_freq_hz, lo + 1e-3, nyq - 1e-3))
+    if lo >= nyq or hi >= nyq or lo >= hi:
+        return _empty
+
+    b, a = butter(filter_order, [lo / nyq, hi / nyq], btype='bandpass')
+    filt1 = filtfilt(b, a, s1)
+    filt2 = filtfilt(b, a, s2)
+
+    phase1 = np.angle(hilbert(filt1))
+    phase2 = np.angle(hilbert(filt2))
+    dphase = phase1 - phase2
+
+    # Sliding window matching compute_oscillation_band_timecourse bin grid
+    nperseg = int(max(8, round(window_s * fs)))
+    nperseg = min(nperseg, len(s1))
+    overlap_frac = float(np.clip(overlap_frac, 0.0, 0.99))
+    noverlap = int(round(overlap_frac * nperseg))
+    noverlap = min(noverlap, max(0, nperseg - 1))
+    step = max(1, nperseg - noverlap)
+
+    centers: list[float] = []
+    plv_vals: list[float] = []
+    start = 0
+    while start + nperseg <= len(s1):
+        end = start + nperseg
+        window_dphase = dphase[start:end]
+        plv_val = float(np.abs(np.mean(np.exp(1j * window_dphase))))
+        t_center = float(tt[start + nperseg // 2])
+        centers.append(t_center)
+        plv_vals.append(plv_val)
+        start += step
+
+    return {
+        'times_s': np.array(centers, dtype=float),
+        'plv': np.array(plv_vals, dtype=float),
+    }
 
