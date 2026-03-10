@@ -646,6 +646,135 @@ Examples:
     )
 
     # =========================================================================
+    # RING-OSCILLATION-STUDY subcommand
+    # =========================================================================
+    ring_osc_parser = subparsers.add_parser(
+        "ring-oscillation-study",
+        help="Cue-only oscillation analysis (dominant 2-12 Hz dynamics)",
+        description=(
+            "Run cue-only ring simulations across conditions and amplitudes, "
+            "extract dominant oscillation frequency/power trajectories in a "
+            "frequency band (default 2-12 Hz), compare distributions across "
+            "conditions, and generate high-quality frequency-band heatmaps."
+        ),
+    )
+    _add_ring_common(ring_osc_parser)
+    ring_osc_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT WT_APP).",
+    )
+    ring_osc_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (x I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Trials per condition x amplitude (default: 50)",
+    )
+    ring_osc_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_parser.add_argument(
+        "--osc_skip_ms", type=float, default=200.0,
+        help="Initial delay segment to skip before oscillation analysis (default: 200 ms)",
+    )
+    ring_osc_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for dominant-frequency search (default: 2)",
+    )
+    ring_osc_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for dominant-frequency search (default: 12)",
+    )
+    ring_osc_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0,1) (default: 0.8)",
+    )
+    ring_osc_parser.add_argument(
+        "--sample_time_frac", type=float, default=0.75,
+        help="Timepoint for single-bin comparison as fraction of analyzed delay (default: 0.75)",
+    )
+    ring_osc_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run all trials from scratch.",
+    )
+    # =========================================================================
+    # RING-OSC-DISTRACTOR-STUDY subcommand
+    # =========================================================================
+    ring_osc_dist_parser = subparsers.add_parser(
+        "ring-osc-distractor-study",
+        help="Oscillation + distractor study (STFT at cue/distractor nodes + PLV)",
+        description=(
+            "Run cue + distractor ring simulations, sweeping cue amplitude, "
+            "distractor angular offset, and distractor amplitude factor. "
+            "Extracts STFT-based oscillatory power at the cue and distractor nodes, "
+            "and Phase Locking Value (PLV) between them."
+        ),
+    )
+    _add_ring_common(ring_osc_dist_parser)
+    ring_osc_dist_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--distractor_factors", type=float, nargs="+", default=[0.75, 1.0],
+        help="Distractor amplitude as fraction of cue amplitude (default: 0.75 1.0)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--offsets_deg", type=float, nargs="+", default=[30.0, 70.0, 90.0, 120.0, 170.0],
+        help="Distractor angular offsets from cue in degrees (default: 30 70 90 120 170)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--delay1_ms", type=float, default=1500.0,
+        help="Delay between cue offset and distractor onset (default: 1500 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=200.0,
+        help="Duration of distractor stimulus (default: 200 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--delay2_ms", type=float, default=3000.0,
+        help="Delay after distractor offset until end of trial (default: 3000 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--n_trials", type=int, default=10,
+        help="Trials per condition x amplitude x factor x offset (default: 10)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run from scratch.",
+    )
+
+    # =========================================================================
     # RING-DIFFUSION subcommand
     # =========================================================================
     ring_diff_parser = subparsers.add_parser(
@@ -900,7 +1029,8 @@ Examples:
     if args.command is None:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
-              "'ring-run', 'ring-study', 'ring-diffusion', 'ring-noise-floor', "
+              "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
+              "'ring-diffusion', 'ring-noise-floor', "
               "'ring-calibrate', 'ring-asymmetry', or 'ring-burnin-stability'.")
         sys.exit(1)
     elif args.command == "run":
@@ -915,6 +1045,12 @@ Examples:
     elif args.command == "ring-study":
         from .ring.cli import cmd_study as cmd_ring_study
         cmd_ring_study(args)
+    elif args.command == "ring-oscillation-study":
+        from .ring.cli import cmd_oscillation_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-osc-distractor-study":
+        from .ring.cli import cmd_osc_distractor_study as _cmd
+        _cmd(args)
     elif args.command == "ring-diffusion":
         from .ring.cli import cmd_diffusion as cmd_ring_diffusion
         cmd_ring_diffusion(args)
