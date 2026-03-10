@@ -2560,14 +2560,15 @@ def plot_asymmetry_distribution(
             vals = np.asarray(d[key], dtype=float)
 
             # Violin
-            vp = ax.violinplot(vals, positions=[xi], showmedians=True,
-                               widths=0.55, showextrema=False)
-            for body in vp['bodies']:
-                body.set_facecolor(ccolor)
-                body.set_alpha(0.35)
-                body.set_edgecolor('none')
-            vp['cmedians'].set_color('black')
-            vp['cmedians'].set_linewidth(2.0)
+            vp, _ = _safe_violinplot(ax, [vals], [xi], showmedians=True,
+                                     widths=0.55, showextrema=False)
+            if vp is not None:
+                for body in vp['bodies']:
+                    body.set_facecolor(ccolor)
+                    body.set_alpha(0.35)
+                    body.set_edgecolor('none')
+                vp['cmedians'].set_color('black')
+                vp['cmedians'].set_linewidth(2.0)
 
             # Jittered strip, colored by asymmetry value
             jitter = rng.uniform(-0.12, 0.12, len(vals))
@@ -2732,6 +2733,25 @@ def plot_asymmetry_correlation(
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
 
     return fig
+
+
+def _safe_violinplot(ax, datasets: list, positions: list, **kwargs):
+    """violinplot wrapper that drops NaN/zero-variance data and silences det warnings."""
+    import warnings
+    clean = [np.asarray(d, dtype=float) for d in datasets]
+    clean = [d[np.isfinite(d)] for d in clean]
+    valid_idx = [i for i, d in enumerate(clean) if len(d) > 1 and np.std(d) > 0]
+    if not valid_idx:
+        return None, []
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='invalid value encountered in det',
+                                category=RuntimeWarning)
+        vp = ax.violinplot(
+            [clean[i] for i in valid_idx],
+            positions=[positions[i] for i in valid_idx],
+            **kwargs,
+        )
+    return vp, valid_idx
 
 
 def _pairwise_bracket_stars(p) -> str:
@@ -3425,19 +3445,17 @@ def plot_oscillation_amp_sweep_violin(
             if not vals_list:
                 continue
 
-            vp = ax.violinplot(
-                vals_list,
-                positions=xpos_list,
-                showmedians=True,
-                widths=0.38,
-                showextrema=False,
+            vp, valid_idx = _safe_violinplot(
+                ax, vals_list, xpos_list,
+                showmedians=True, widths=0.38, showextrema=False,
             )
-            for body in vp['bodies']:
-                body.set_facecolor(color)
-                body.set_alpha(0.40)
-                body.set_edgecolor('none')
-            vp['cmedians'].set_color('black')
-            vp['cmedians'].set_linewidth(1.5)
+            if vp is not None:
+                for body in vp['bodies']:
+                    body.set_facecolor(color)
+                    body.set_alpha(0.40)
+                    body.set_edgecolor('none')
+                vp['cmedians'].set_color('black')
+                vp['cmedians'].set_linewidth(1.5)
 
             for xpos, vals in zip(xpos_list, vals_list):
                 jitter = rng.uniform(-0.07, 0.07, size=len(vals))
@@ -3484,16 +3502,11 @@ def plot_oscillation_violin(
         positions = np.arange(len(conds))
         labels = [STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
-        nonempty = [i for i, arr in enumerate(vals) if len(arr) > 0]
-
-        if nonempty:
-            vp = ax.violinplot(
-                [vals[i] for i in nonempty],
-                positions=[positions[i] for i in nonempty],
-                showmedians=True,
-                widths=0.7,
-                showextrema=False,
-            )
+        vp, nonempty = _safe_violinplot(
+            ax, vals, list(positions),
+            showmedians=True, widths=0.7, showextrema=False,
+        )
+        if vp is not None:
             for body_i, cond_i in enumerate(nonempty):
                 ck = conds[cond_i]
                 body = vp['bodies'][body_i]
@@ -3502,14 +3515,15 @@ def plot_oscillation_violin(
                 body.set_edgecolor('none')
             vp['cmedians'].set_color('black')
             vp['cmedians'].set_linewidth(1.8)
-        else:
+        elif not any(len(np.asarray(v, dtype=float)[np.isfinite(np.asarray(v, dtype=float))]) > 1 for v in vals):
             ax.text(0.5, 0.5, "No finite samples", transform=ax.transAxes, ha='center', va='center')
 
         for i, arr in enumerate(vals):
-            if len(arr) == 0:
+            arr_clean = arr[np.isfinite(arr)]
+            if len(arr_clean) == 0:
                 continue
-            jitter = rng.uniform(-0.12, 0.12, size=len(arr))
-            ax.scatter(i + jitter, arr, s=12, alpha=0.6, color='black', linewidths=0)
+            jitter = rng.uniform(-0.12, 0.12, size=len(arr_clean))
+            ax.scatter(i + jitter, arr_clean, s=12, alpha=0.6, color='black', linewidths=0)
 
         ax.set_xticks(positions)
         ax.set_xticklabels(labels, rotation=20, ha='right')
@@ -3563,16 +3577,12 @@ def plot_oscillation_multi_violin(
         positions = np.arange(len(conds))
         labels = [STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
-        nonempty = [i for i, arr in enumerate(vals) if len(arr) > 0]
-
-        if nonempty:
-            vp = ax.violinplot(
-                [vals[i] for i in nonempty],
-                positions=[positions[i] for i in nonempty],
-                showmedians=True,
-                widths=0.6,
-                showextrema=False,
-            )
+        vals_clean = [arr[np.isfinite(arr)] for arr in vals]
+        vp, nonempty = _safe_violinplot(
+            ax, vals_clean, list(positions),
+            showmedians=True, widths=0.6, showextrema=False,
+        )
+        if vp is not None:
             for body_i, cond_i in enumerate(nonempty):
                 ck = conds[cond_i]
                 body = vp['bodies'][body_i]
@@ -3582,7 +3592,7 @@ def plot_oscillation_multi_violin(
             vp['cmedians'].set_color('black')
             vp['cmedians'].set_linewidth(1.8)
 
-        for i, arr in enumerate(vals):
+        for i, arr in enumerate(vals_clean):
             if len(arr) == 0:
                 continue
             jit = rng.uniform(-0.10, 0.10, size=len(arr))
@@ -3688,17 +3698,13 @@ def plot_study_firing_rates_violin(
 
         positions = np.arange(len(conds))
         labels = [STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck for ck in conds]
-        vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
-        nonempty = [i for i, arr in enumerate(vals) if len(arr) > 0]
-
-        if nonempty:
-            vp = ax.violinplot(
-                [vals[i] for i in nonempty],
-                positions=[positions[i] for i in nonempty],
-                showmedians=True,
-                widths=0.6,
-                showextrema=False,
-            )
+        vals_clean = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
+        vp, nonempty = _safe_violinplot(
+            ax, vals_clean, list(positions),
+            showmedians=True, widths=0.6, showextrema=False,
+        )
+        vals_clean = [arr[np.isfinite(arr)] for arr in vals_clean]
+        if vp is not None:
             for body_i, cond_i in enumerate(nonempty):
                 ck = conds[cond_i]
                 body = vp['bodies'][body_i]
@@ -3708,7 +3714,7 @@ def plot_study_firing_rates_violin(
             vp['cmedians'].set_color('black')
             vp['cmedians'].set_linewidth(1.8)
 
-        for i, arr in enumerate(vals):
+        for i, arr in enumerate(vals_clean):
             if len(arr) == 0:
                 continue
             jit = rng.uniform(-0.10, 0.10, size=len(arr))
@@ -3733,8 +3739,7 @@ def plot_study_firing_rates_violin(
                         panel_tests.append(row)
 
         if panel_tests:
-            all_finite = np.concatenate([v for v in vals if len(v) > 0])
-            all_finite = all_finite[np.isfinite(all_finite)]
+            all_finite = np.concatenate([v for v in vals_clean if len(v) > 0]) if any(len(v) > 0 for v in vals_clean) else np.array([])
             if len(all_finite) > 0:
                 data_range = max(float(np.nanmax(all_finite) - np.nanmin(all_finite)), 1e-12)
                 bu = data_range * 0.10
