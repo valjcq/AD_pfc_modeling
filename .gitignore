@@ -12,4 +12,8 @@ __pycache__/
 log.md
 writing/
 
+# Generated experiment artifacts
+figs/**/.osc_cache_*.pkl
+figs/**/study_metrics.csv
+
 *.pkl
