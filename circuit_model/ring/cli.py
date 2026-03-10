@@ -246,147 +246,6 @@ def _start_mp4_progress(
 
 def _network_label(rp: RingParams) -> str:
     """Build a directory-safe label encoding n_nodes and connectivity weights.
-        base_params = load_params_json(args.params_json)
-    else:
-        base_params = CircuitParams()
-
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
-
-    factor = amp_factor if amp_factor is not None else args.amplitude
-    actual_current = factor * base_params.I_ext_pyr()
-
-    stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
-
-    response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
-    response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
-    post_response_ms = getattr(args, 'post_response_ms', 3000.0)
-
-    if response_onset_ms > 0:
-        trans_start = delay_end_ms + response_onset_ms
-        T_ms = trans_start + response_duration_ms + post_response_ms
-    elif getattr(args, 'total_time_ms', None) is not None:
-        if args.total_time_ms < delay_end_ms:
-            print(f"Error: total_time_ms ({args.total_time_ms} ms) must be "
-                  f">= delay end time ({delay_end_ms} ms)")
-            sys.exit(1)
-        T_ms = args.total_time_ms
-    else:
-        T_ms = delay_end_ms
-
-    stimuli = [
-        RingStimulus(
-            center_deg=STIM_CENTER_DEG, amplitude=actual_current,
-            sigma_deg=STIM_SIGMA_DEG,
-            onset_ms=STIM_ONSET_MS, duration_ms=STIM_DURATION_MS,
-        ),
-    ]
-
-    return base_params, ring_params, T_ms, stimuli, factor
-
-
-def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) -> CircuitParams:
-    """Apply response transient settings to CircuitParams if enabled."""
-    response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
-    if response_onset_ms <= 0:
-        return params
-    response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
-    response_factor = getattr(args, 'response_factor', 0.5)
-    trans_start = delay_end_ms + response_onset_ms
-    return replace(params,
-                   trans_enabled=True,
-                   trans_start_ms=trans_start,
-                   trans_duration_ms=response_duration_ms,
-                   trans_factor=response_factor)
-
-
-def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: float,
-                  ring_params: RingParams | None = None):
-    """Print configuration summary."""
-    I_baseline = base_params.I_ext_pyr()
-    actual_current = amp_factor * I_baseline
-    print(f"Stimulus: {amp_factor:.1f}× I_ext_pyr  "
-          f"(= {actual_current:.2f}, baseline = {I_baseline:.2f})")
-    print(f"          Gaussian sigma={STIM_SIGMA_DEG:.0f} deg, "
-          f"duration={STIM_DURATION_MS:.0f} ms")
-
-    if ring_params is not None:
-        print(f"Connectivity: Gaussian profile, w_inter = {ring_params.w_pyr_pyr_inter:.2f}, "
-              f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
-        print(f"Inhibition:   Uniform PV, w_pv = {ring_params.w_pv_global:.2f}")
-
-    response_onset = getattr(args, 'response_onset_ms', 0.0)
-    if response_onset > 0:
-        response_factor = getattr(args, 'response_factor', 0.5)
-        response_duration = getattr(args, 'response_duration_ms', 500.0)
-        print(f"Response transient: +{response_factor:.0%} of I0 to all populations, "
-              f"{response_onset:.0f} ms after delay end, duration={response_duration:.0f} ms")
-
-
-def _fmt(v: float) -> str:
-    """Format float for labels/paths: drop trailing zeros, keep at most 2 decimals."""
-    return f"{v:.2f}".rstrip("0").rstrip(".")
-
-
-def _format_duration_human(seconds: float) -> str:
-    """Format a duration in seconds as s/mm:ss/hh:mm:ss."""
-    seconds = max(0, int(round(seconds)))
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, sec = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes:02d}:{sec:02d}"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours:d}:{minutes:02d}:{sec:02d}"
-
-
-def _estimate_mp4_times(
-    time_range: tuple[float, float],
-    frame_step_ms: float,
-    fps: int,
-) -> tuple[int, float, tuple[float, float]]:
-    """Estimate frame count, video duration, and rough wall-time range for export."""
-    t0, t1 = time_range
-    dt = max(1e-9, float(frame_step_ms))
-    frame_count = max(1, int(np.floor(max(0.0, t1 - t0) / dt)) + 1)
-    video_seconds = frame_count / max(1, int(fps))
-    wall_time_fast = frame_count / 15.0
-    wall_time_slow = frame_count / 6.0
-    return frame_count, video_seconds, (wall_time_fast, wall_time_slow)
-
-
-def _start_mp4_progress(
-    total_videos: int,
-    frame_step_ms: float,
-    fps: int,
-    sample_time_range: tuple[float, float] | None = None,
-):
-    """Create MP4 tqdm and print a start message when only one video is exported."""
-    from tqdm import tqdm
-
-    pbar = tqdm(total=total_videos, desc="MP4 export", unit="video")
-    if total_videos == 1:
-        if sample_time_range is not None:
-            n_frames, video_s, (wall_fast, wall_slow) = _estimate_mp4_times(
-                sample_time_range, frame_step_ms=frame_step_ms, fps=fps,
-            )
-            pbar.set_postfix_str(
-                f"1 video | ~{n_frames} frames | vid { _format_duration_human(video_s) } | "
-                f"est { _format_duration_human(wall_fast) }–{ _format_duration_human(wall_slow) }"
-            )
-        else:
-            pbar.set_postfix_str("1 video")
-    return pbar
-
-
-def _network_label(rp: RingParams) -> str:
-    """Build a directory-safe label encoding n_nodes and connectivity weights.
 
     Example: 128_inhib_10_excit_7
     """
@@ -2626,7 +2485,6 @@ def cmd_study(args: argparse.Namespace) -> None:
     # --- Aggregate and plot ---
     all_delay_metrics_agg: dict[float, dict[str, dict]] = {}
     export_mp4 = not getattr(args, "no_snapshot_mp4", False)
-    export_mp4 = not getattr(args, "no_snapshot_mp4", False)
     anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
     mp4_pbar = None
     if export_mp4:
@@ -2680,7 +2538,6 @@ def cmd_study(args: argparse.Namespace) -> None:
                         comparison_data[cond_key] = r['comparison_data']
                         break
 
-            if delay_eval_times and metrics_over_delay_agg and len(delay_labels) > 1:
             if delay_eval_times and metrics_over_delay_agg and len(delay_labels) > 1:
                 band_tag = f", {n_trials} trials, ±{error_band.upper()}" if n_trials > 1 else ""
                 # Skip first point — bump is still forming at the earliest eval time
@@ -4881,7 +4738,6 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
         # --- Noise floor: auto-trigger ring-noise-floor if baseline is missing/incomplete ---
         baseline_n_trials_target = max(1, int(n_trials))
-        baseline_n_trials_target = max(1, int(n_trials))
         conditions_missing_baseline: list[str] = []
         condition_missing_w: dict[str, list[float]] = {}
         trials_to_add_by_key: dict[tuple[str, float], int] = {}
@@ -6024,7 +5880,6 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     t_offset_disp = ASYM_SETTLING_MS
     time_range = (ASYM_SETTLING_MS - ASYM_PRE_CUE_WINDOW_MS, T_ms)
 
-    export_mp4 = not getattr(args, "no_snapshot_mp4", False)
     export_mp4 = not getattr(args, "no_snapshot_mp4", False)
     anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
     mp4_pbar = None
