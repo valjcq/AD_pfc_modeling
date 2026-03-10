@@ -261,7 +261,7 @@ class TestIntegration:
     def test_bump_forms_with_stimulus(self):
         """Activity should increase at stimulus location."""
         local = CircuitParams()
-        ring = RingParams(n_nodes=32, w_pyr_pyr_inter=2.0, sigma_pyr_deg=45.0)
+        ring = RingParams(n_nodes=32, w_pyr_pyr_inter=2.0, sigma_pyr_deg=30.0)
         stim = RingStimulus(
             center_deg=180, amplitude=10.0, onset_ms=100, duration_ms=200
         )
@@ -307,6 +307,107 @@ class TestIntegration:
 
         # Should complete without error
         assert result.t_ms[-1] >= protocol.total_duration_ms - 1
+
+
+class TestComputePLVTimecourse:
+    """Tests for compute_plv_timecourse in analysis.py."""
+
+    def _make_sinusoid(self, freq_hz: float, t: np.ndarray, phase: float = 0.0) -> np.ndarray:
+        return np.sin(2 * np.pi * freq_hz * t + phase)
+
+    def test_perfect_phase_lock(self):
+        """Two identical sinusoids at 5 Hz → PLV should be ≈ 1."""
+        from circuit_model.ring.analysis import compute_plv_timecourse
+
+        fs = 1000.0  # Hz
+        duration = 5.0  # s
+        t = np.arange(0, duration, 1.0 / fs)
+        sig = self._make_sinusoid(5.0, t)
+
+        result = compute_plv_timecourse(sig, sig, t, min_freq_hz=2.0, max_freq_hz=12.0,
+                                        window_s=1.0, overlap_frac=0.8)
+        assert len(result['plv']) > 0
+        assert np.all(result['plv'] >= 0.0)
+        assert np.all(result['plv'] <= 1.0 + 1e-9)
+        assert float(np.mean(result['plv'])) > 0.95, "Expected PLV ≈ 1 for identical signals"
+
+    def test_fixed_phase_offset(self):
+        """Two sinusoids at same frequency with a fixed phase offset → PLV ≈ 1."""
+        from circuit_model.ring.analysis import compute_plv_timecourse
+
+        fs = 1000.0
+        t = np.arange(0, 5.0, 1.0 / fs)
+        s1 = self._make_sinusoid(5.0, t, phase=0.0)
+        s2 = self._make_sinusoid(5.0, t, phase=np.pi / 3)
+
+        result = compute_plv_timecourse(s1, s2, t, min_freq_hz=2.0, max_freq_hz=12.0,
+                                        window_s=1.0, overlap_frac=0.8)
+        assert float(np.mean(result['plv'])) > 0.9, "Fixed phase offset should still give high PLV"
+
+    def test_independent_noise_low_plv(self):
+        """Independent white noise signals → PLV should be low (near 0)."""
+        from circuit_model.ring.analysis import compute_plv_timecourse
+
+        rng = np.random.default_rng(42)
+        t = np.arange(0, 10.0, 1.0 / 500.0)
+        s1 = rng.standard_normal(len(t))
+        s2 = rng.standard_normal(len(t))
+
+        result = compute_plv_timecourse(s1, s2, t, min_freq_hz=2.0, max_freq_hz=12.0,
+                                        window_s=1.0, overlap_frac=0.8)
+        assert len(result['plv']) > 0
+        # With independent noise, mean PLV should be well below 0.5
+        assert float(np.mean(result['plv'])) < 0.4, "Independent noise should give low PLV"
+
+    def test_window_count_matches_stft(self):
+        """PLV time bins should match STFT time bin count for same parameters."""
+        from circuit_model.ring.analysis import compute_plv_timecourse, compute_oscillation_band_timecourse
+
+        fs = 200.0
+        t = np.arange(0, 5.0, 1.0 / fs)
+        sig = self._make_sinusoid(5.0, t) + 0.1 * np.random.default_rng(0).standard_normal(len(t))
+
+        window_s = 1.0
+        overlap = 0.8
+
+        plv_result = compute_plv_timecourse(sig, sig, t, min_freq_hz=2.0, max_freq_hz=12.0,
+                                             window_s=window_s, overlap_frac=overlap)
+        stft_result = compute_oscillation_band_timecourse(sig, t, min_freq_hz=2.0, max_freq_hz=12.0,
+                                                          window_s=window_s, overlap_frac=overlap)
+
+        n_plv = len(plv_result['times_s'])
+        n_stft = len(stft_result['times_s'])
+        assert n_plv > 0
+        assert n_stft > 0
+        # PLV windows are computed with the same nperseg/step formula → same count
+        assert abs(n_plv - n_stft) <= 1, (
+            f"PLV and STFT bin counts differ too much: {n_plv} vs {n_stft}"
+        )
+
+    def test_short_signal_returns_empty(self):
+        """Signal with fewer than 8 samples → empty arrays returned, no crash."""
+        from circuit_model.ring.analysis import compute_plv_timecourse
+
+        t = np.array([0.0, 0.005, 0.010])
+        s = np.array([1.0, 0.5, 0.2])
+
+        result = compute_plv_timecourse(s, s, t)
+        assert len(result['times_s']) == 0
+        assert len(result['plv']) == 0
+
+    def test_output_values_in_range(self):
+        """PLV values must always lie in [0, 1]."""
+        from circuit_model.ring.analysis import compute_plv_timecourse
+
+        rng = np.random.default_rng(7)
+        t = np.arange(0, 8.0, 1.0 / 250.0)
+        s1 = rng.standard_normal(len(t))
+        s2 = rng.standard_normal(len(t))
+
+        result = compute_plv_timecourse(s1, s2, t, min_freq_hz=3.0, max_freq_hz=10.0)
+        plv = result['plv']
+        assert np.all(plv >= 0.0 - 1e-9)
+        assert np.all(plv <= 1.0 + 1e-9)
 
 
 if __name__ == "__main__":

@@ -251,7 +251,7 @@ circuit_model/
 ├── study.py             # Batch study across 8 experimental conditions
 ├── plotting.py          # Visualization (dashboard, box plots)
 ├── io.py                # JSON I/O, output_dir()
-├── cli.py               # Unified CLI (run, optimize, study, ring-run, ring-study)
+├── cli.py               # Unified CLI (run, optimize, study, ring-run, ring-study, ring-oscillation-study)
 │
 └── ring/                # Ring attractor subpackage
     ├── __init__.py      # Ring API exports
@@ -280,6 +280,7 @@ tests/
 | `python -m circuit_model study` | Batch study across 8 conditions |
 | `python -m circuit_model ring-run` | Ring attractor single-condition simulation |
 | `python -m circuit_model ring-study` | Ring attractor multi-condition comparison |
+| `python -m circuit_model ring-oscillation-study` | Cue-only oscillation analysis (dominant 2-12 Hz) |
 
 See [docs/CLI.md](docs/CLI.md) for full parameter documentation.
 
@@ -418,89 +419,6 @@ python -m circuit_model ring-run --condition WT --amplitude 150
 
 # Multi-condition comparison
 python -m circuit_model ring-study --conditions WT WT_APP a7_KO --n_trials 10
-```
-
-### Use as a library
-
-```python
-from circuit_model import CircuitParams, simulate_circuit, mean_rates
-
-params = CircuitParams()
-result = simulate_circuit(params, T_ms=1000, dt_ms=0.1)
-rates = mean_rates(result, burn_in_ms=500, window_ms=500)
-print(f"PYR: {rates[0]:.2f}, SOM: {rates[1]:.2f}, PV: {rates[2]:.2f}, VIP: {rates[3]:.2f}")
-```
-
-```python
-from circuit_model import CircuitParams
-from circuit_model.ring import RingParams, RingStimulus, simulate_ring, decode_bump_center
-
-result = simulate_ring(
-    CircuitParams(), RingParams(n_nodes=128),
-    T_ms=5000, stimuli=[RingStimulus(center_deg=180, amplitude=150, onset_ms=500, duration_ms=250)],
-)
-center_deg, amplitude = decode_bump_center(result)
-```
-
-For full CLI documentation, see [docs/CLI.md](docs/CLI.md).
-
----
-
-## Data Structures
-
-### SimulationResult
-
-```python
-@dataclass
-class SimulationResult:
-    t_ms: np.ndarray      # Shape: (n_steps,) - Time points
-    r: np.ndarray         # Shape: (n_steps, 4) - Firing rates [pyr, som, pv, vip]
-    I_adapt: np.ndarray   # Shape: (n_steps, 2) - Adaptation currents [pyr, som]
-```
-
-### CircuitParams
-
-Frozen dataclass containing all ~60 circuit parameters. Key methods:
-- `g_gaba()`: Returns total GABA scaling
-- `I_ext_pyr()`: Returns total external current to PYR
-- `I_ext_pv()`: Returns total external current to PV (with α7 modulation)
-- `I_ext_som()`: Returns total external current to SOM (with α7, β2)
-- `I_ext_vip()`: Returns total external current to VIP (with α5)
-
-### Candidate
-
-```python
-@dataclass(frozen=True)
-class Candidate:
-    loss: float           # Total loss value
-    means: np.ndarray     # Shape: (4,) - Mean rates [pyr, som, pv, vip]
-    ko_means: KOMeans     # Knockout condition results
-    params: CircuitParams # The parameter set
-```
-
-### Output Files
-
-#### JSON Parameter File
-```json
-{
-  "tau_s": 37.3479,
-  "tau_adapt_pyr": 186.602,
-  "w_ee": 6.27108,
-  ...
-}
-```
-
-#### JSONL Log File
-Each line is a JSON object:
-```json
-{
-  "step": 100,
-  "loss": 0.0234,
-  "target": {"mean_r_pyr": 5.0, ...},
-  "means": {"pyr": 5.12, "som": 9.87, ...},
-  "ko_means": {"alpha7_ko": [7.2, ...], ...},
-  "params": {...}
-}
 ```
 
 ---
