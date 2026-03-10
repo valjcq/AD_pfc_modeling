@@ -246,10 +246,171 @@ def _start_mp4_progress(
 
 def _network_label(rp: RingParams) -> str:
     """Build a directory-safe label encoding n_nodes and connectivity weights.
+        base_params = load_params_json(args.params_json)
+    else:
+        base_params = CircuitParams()
+
+    ring_params = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+
+    )
+
+    factor = amp_factor if amp_factor is not None else args.amplitude
+    actual_current = factor * base_params.I_ext_pyr()
+
+    stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
+    delay_end_ms = stim_offset_ms + args.delay_ms
+
+    response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
+    response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
+    post_response_ms = getattr(args, 'post_response_ms', 3000.0)
+
+    if response_onset_ms > 0:
+        trans_start = delay_end_ms + response_onset_ms
+        T_ms = trans_start + response_duration_ms + post_response_ms
+    elif getattr(args, 'total_time_ms', None) is not None:
+        if args.total_time_ms < delay_end_ms:
+            print(f"Error: total_time_ms ({args.total_time_ms} ms) must be "
+                  f">= delay end time ({delay_end_ms} ms)")
+            sys.exit(1)
+        T_ms = args.total_time_ms
+    else:
+        T_ms = delay_end_ms
+
+    stimuli = [
+        RingStimulus(
+            center_deg=STIM_CENTER_DEG, amplitude=actual_current,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=STIM_ONSET_MS, duration_ms=STIM_DURATION_MS,
+        ),
+    ]
+
+    return base_params, ring_params, T_ms, stimuli, factor
+
+
+def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) -> CircuitParams:
+    """Apply response transient settings to CircuitParams if enabled."""
+    response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
+    if response_onset_ms <= 0:
+        return params
+    response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
+    response_factor = getattr(args, 'response_factor', 0.5)
+    trans_start = delay_end_ms + response_onset_ms
+    return replace(params,
+                   trans_enabled=True,
+                   trans_start_ms=trans_start,
+                   trans_duration_ms=response_duration_ms,
+                   trans_factor=response_factor)
+
+
+def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: float,
+                  ring_params: RingParams | None = None):
+    """Print configuration summary."""
+    I_baseline = base_params.I_ext_pyr()
+    actual_current = amp_factor * I_baseline
+    print(f"Stimulus: {amp_factor:.1f}× I_ext_pyr  "
+          f"(= {actual_current:.2f}, baseline = {I_baseline:.2f})")
+    print(f"          Gaussian sigma={STIM_SIGMA_DEG:.0f} deg, "
+          f"duration={STIM_DURATION_MS:.0f} ms")
+
+    if ring_params is not None:
+        print(f"Connectivity: Gaussian profile, w_inter = {ring_params.w_pyr_pyr_inter:.2f}, "
+              f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
+        print(f"Inhibition:   Uniform PV, w_pv = {ring_params.w_pv_global:.2f}")
+
+    response_onset = getattr(args, 'response_onset_ms', 0.0)
+    if response_onset > 0:
+        response_factor = getattr(args, 'response_factor', 0.5)
+        response_duration = getattr(args, 'response_duration_ms', 500.0)
+        print(f"Response transient: +{response_factor:.0%} of I0 to all populations, "
+              f"{response_onset:.0f} ms after delay end, duration={response_duration:.0f} ms")
+
+
+def _fmt(v: float) -> str:
+    """Format float for labels/paths: drop trailing zeros, keep at most 2 decimals."""
+    return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
+def _format_duration_human(seconds: float) -> str:
+    """Format a duration in seconds as s/mm:ss/hh:mm:ss."""
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes:02d}:{sec:02d}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:d}:{minutes:02d}:{sec:02d}"
+
+
+def _estimate_mp4_times(
+    time_range: tuple[float, float],
+    frame_step_ms: float,
+    fps: int,
+) -> tuple[int, float, tuple[float, float]]:
+    """Estimate frame count, video duration, and rough wall-time range for export."""
+    t0, t1 = time_range
+    dt = max(1e-9, float(frame_step_ms))
+    frame_count = max(1, int(np.floor(max(0.0, t1 - t0) / dt)) + 1)
+    video_seconds = frame_count / max(1, int(fps))
+    wall_time_fast = frame_count / 15.0
+    wall_time_slow = frame_count / 6.0
+    return frame_count, video_seconds, (wall_time_fast, wall_time_slow)
+
+
+def _start_mp4_progress(
+    total_videos: int,
+    frame_step_ms: float,
+    fps: int,
+    sample_time_range: tuple[float, float] | None = None,
+):
+    """Create MP4 tqdm and print a start message when only one video is exported."""
+    from tqdm import tqdm
+
+    pbar = tqdm(total=total_videos, desc="MP4 export", unit="video")
+    if total_videos == 1:
+        if sample_time_range is not None:
+            n_frames, video_s, (wall_fast, wall_slow) = _estimate_mp4_times(
+                sample_time_range, frame_step_ms=frame_step_ms, fps=fps,
+            )
+            pbar.set_postfix_str(
+                f"1 video | ~{n_frames} frames | vid { _format_duration_human(video_s) } | "
+                f"est { _format_duration_human(wall_fast) }–{ _format_duration_human(wall_slow) }"
+            )
+        else:
+            pbar.set_postfix_str("1 video")
+    return pbar
+
+
+def _network_label(rp: RingParams) -> str:
+    """Build a directory-safe label encoding n_nodes and connectivity weights.
 
     Example: 128_inhib_10_excit_7
     """
     return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_excit_{_fmt(rp.w_pyr_pyr_inter)}"
+
+
+def _calibration_network_label(rp: RingParams) -> str:
+    """Label used for calibration/noise-floor output directories."""
+    return _network_label(rp)
+
+
+def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
+    """Place cue at a location that balances left/right node counts when possible.
+
+    For even node counts, use half-step locations (between two nodes).
+    For odd node counts, snap to nearest node (already balanced by design).
+    """
+    n = int(rp.n_nodes)
+    step = 360.0 / max(1, n)
+    if n % 2 == 0:
+        k = int(np.round((target_deg - 0.5 * step) / step))
+        return (k * step + 0.5 * step) % 360.0
+    k = int(np.round(target_deg / step))
+    return (k * step) % 360.0
 
 
 def _calibration_network_label(rp: RingParams) -> str:
@@ -2465,7 +2626,17 @@ def cmd_study(args: argparse.Namespace) -> None:
     # --- Aggregate and plot ---
     all_delay_metrics_agg: dict[float, dict[str, dict]] = {}
     export_mp4 = not getattr(args, "no_snapshot_mp4", False)
+    export_mp4 = not getattr(args, "no_snapshot_mp4", False)
     anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
+    mp4_pbar = None
+    if export_mp4:
+        total_videos = len(amplitudes) * len(condition_keys)
+        mp4_pbar = _start_mp4_progress(
+            total_videos=total_videos,
+            frame_step_ms=args.snapshot_anim_step_ms,
+            fps=args.snapshot_anim_fps,
+            sample_time_range=(BURN_IN_MS, T_ms_full),
+        )
     mp4_pbar = None
     if export_mp4:
         total_videos = len(amplitudes) * len(condition_keys)
@@ -2509,6 +2680,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                         comparison_data[cond_key] = r['comparison_data']
                         break
 
+            if delay_eval_times and metrics_over_delay_agg and len(delay_labels) > 1:
             if delay_eval_times and metrics_over_delay_agg and len(delay_labels) > 1:
                 band_tag = f", {n_trials} trials, ±{error_band.upper()}" if n_trials > 1 else ""
                 # Skip first point — bump is still forming at the earliest eval time
@@ -2702,6 +2874,8 @@ def cmd_study(args: argparse.Namespace) -> None:
 
             all_delay_metrics_agg[amp] = delay_end_metrics_agg
     finally:
+        if mp4_pbar is not None:
+            mp4_pbar.close()
         if mp4_pbar is not None:
             mp4_pbar.close()
 
@@ -4113,6 +4287,442 @@ def _asym_run_single(job: tuple) -> dict:
         "asym_std_precue": float(m_pre.get("asym_std", np.nan)),
     }
 
+def _unique_path(path: str) -> str:
+    """Return a non-colliding path by appending _N when needed."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    k = 1
+    while True:
+        candidate = f"{base}_{k}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        k += 1
+
+
+def _is_calibrate_cached(
+    cond_dir: str,
+    cond_key: str,
+    amplitudes: list[float],
+    w_inter_values: list[float],
+    n_trials: int,
+) -> bool:
+    """Check whether calibration summary already has all requested grid points."""
+    csv_path = os.path.join(cond_dir, "calibration_summary.csv")
+    if not os.path.exists(csv_path):
+        return False
+    needed = {(float(a), float(w)) for a in amplitudes for w in w_inter_values}
+    found: set[tuple[float, float]] = set()
+    try:
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                a = float(row.get("amplitude", "nan"))
+                w = float(row.get("w_inter", "nan"))
+                tr = int(float(row.get("n_trials", 0)))
+                if (a, w) in needed and tr >= n_trials:
+                    found.add((a, w))
+    except Exception:
+        return False
+    return found == needed
+
+
+def _load_baseline_trial_counts(
+    cond_dir: str,
+    cond_key: str,
+) -> tuple[dict[tuple[str, float], int], bool]:
+    """Return cached baseline trial counts and whether trial metadata is present."""
+    csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
+    if not os.path.exists(csv_path):
+        return {}, False
+    counts: dict[tuple[str, float], int] = {}
+    has_trial_idx = False
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if rows and "trial_idx" in rows[0]:
+        has_trial_idx = True
+    for row in rows:
+        ck = row.get("condition", cond_key)
+        if ck != cond_key:
+            continue
+        try:
+            w = float(row["w_inter"])
+        except Exception:
+            continue
+        key = (ck, w)
+        if has_trial_idx:
+            counts[key] = counts.get(key, 0) + 1
+        else:
+            counts[key] = max(counts.get(key, 0), 1)
+    return counts, has_trial_idx
+
+
+def _load_calibrate_baseline(
+    cond_dir: str,
+    cond_key: str,
+    w_inter_values: list[float],
+    noise_percentile: float,
+) -> tuple[dict[tuple[str, float], float], dict[tuple[str, float], np.ndarray], set[float]]:
+    """Load baseline amplitudes and thresholds for one condition."""
+    csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
+    if not os.path.exists(csv_path):
+        return {}, {}, set()
+
+    allowed_w = {float(w) for w in w_inter_values}
+    samples: dict[tuple[str, float], list[float]] = {}
+    thresholds: dict[tuple[str, float], float] = {}
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        ck = row.get("condition", cond_key)
+        if ck != cond_key:
+            continue
+        try:
+            w = float(row["w_inter"])
+            if w not in allowed_w:
+                continue
+            a_hat = float(row["A_hat"])
+        except Exception:
+            continue
+        key = (ck, w)
+        samples.setdefault(key, []).append(a_hat)
+        if row.get("noise_threshold", "") != "":
+            try:
+                thresholds[key] = float(row["noise_threshold"])
+            except Exception:
+                pass
+
+    baseline = {k: np.asarray(v, dtype=float) for k, v in samples.items()}
+    for key, vals in baseline.items():
+        if key not in thresholds:
+            thresholds[key] = compute_noise_floor(vals, percentile=noise_percentile)
+
+    saturated = {w for (ck, w), th in thresholds.items() if ck == cond_key and th <= 1e-6}
+    return thresholds, baseline, saturated
+
+
+def _run_noise_floor_for_conditions(
+    conditions_to_run: list[str],
+    w_inter_values: list[float],
+    ring_params_base: RingParams,
+    base_params: CircuitParams,
+    n_baseline: int,
+    noise_percentile: float,
+    out_dir: str,
+    n_workers: int,
+    batch_chunk_size: int,
+    seed: int,
+    delay_ms: float,
+    record_dt_ms: float,
+    w_inter_values_by_condition: dict[str, list[float]] | None = None,
+    trials_to_add_by_key: dict[tuple[str, float], int] | None = None,
+    trial_start_idx_by_key: dict[tuple[str, float], int] | None = None,
+    preserve_existing_cache: bool = True,
+) -> tuple[dict[tuple[str, float], float], dict[tuple[str, float], np.ndarray]]:
+    """Compute baseline no-stimulus amplitudes and thresholds for conditions."""
+    del n_workers, batch_chunk_size  # sequential fallback implementation
+
+    all_thresholds: dict[tuple[str, float], float] = {}
+    all_baseline: dict[tuple[str, float], np.ndarray] = {}
+
+    for cond_idx, ck in enumerate(conditions_to_run):
+        cond_dir = os.path.join(out_dir, ck)
+        os.makedirs(cond_dir, exist_ok=True)
+        csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
+
+        existing_rows: list[dict] = []
+        if preserve_existing_cache and os.path.exists(csv_path):
+            with open(csv_path, newline="") as f:
+                existing_rows = list(csv.DictReader(f))
+
+        target_ws = (
+            w_inter_values_by_condition.get(ck, w_inter_values)
+            if w_inter_values_by_condition is not None
+            else w_inter_values
+        )
+
+        new_rows: list[dict] = []
+        for w in target_ws:
+            key = (ck, float(w))
+            n_add = (
+                int(trials_to_add_by_key.get(key, n_baseline))
+                if trials_to_add_by_key is not None else n_baseline
+            )
+            start_idx = (
+                int(trial_start_idx_by_key.get(key, 0))
+                if trial_start_idx_by_key is not None else 0
+            )
+            if n_add <= 0:
+                continue
+
+            rp = replace(ring_params_base, w_pyr_pyr_inter=float(w))
+            conn = RingConnectivity.from_params(rp)
+            local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+
+            for i in range(n_add):
+                trial_idx = start_idx + i
+                trial_seed = int(seed + cond_idx * 100000 + int(round(w * 1000)) * 10 + trial_idx)
+                result = simulate_ring(
+                    local_params,
+                    rp,
+                    T_ms=max(BURN_IN_MS, float(delay_ms)),
+                    stimuli=None,
+                    seed=trial_seed,
+                    connectivity=conn,
+                    record_dt_ms=max(10.0, float(record_dt_ms)),
+                )
+                _, a_hat = population_vector_decode(result.r[-1, :, 0], rp.node_angles_rad)
+                new_rows.append(
+                    {
+                        "condition": ck,
+                        "w_inter": f"{float(w):.8g}",
+                        "trial_idx": str(trial_idx),
+                        "seed": str(trial_seed),
+                        "A_hat": f"{float(a_hat):.10g}",
+                        "noise_percentile": f"{float(noise_percentile):.8g}",
+                        "noise_threshold": "",
+                    }
+                )
+
+        rows = existing_rows + new_rows
+
+        # Compute thresholds per w_inter and write back.
+        vals_by_w: dict[float, list[float]] = {}
+        for row in rows:
+            if row.get("condition", ck) != ck:
+                continue
+            try:
+                w = float(row["w_inter"])
+                vals_by_w.setdefault(w, []).append(float(row["A_hat"]))
+            except Exception:
+                continue
+
+        thresholds_by_w = {
+            w: compute_noise_floor(np.asarray(vals, dtype=float), percentile=noise_percentile)
+            for w, vals in vals_by_w.items()
+        }
+
+        for row in rows:
+            try:
+                w = float(row["w_inter"])
+                row["noise_threshold"] = f"{float(thresholds_by_w[w]):.10g}"
+            except Exception:
+                pass
+
+        rows.sort(key=lambda r: (r.get("condition", ""), float(r.get("w_inter", 0.0)), int(float(r.get("trial_idx", 0)))))
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "condition",
+                    "w_inter",
+                    "trial_idx",
+                    "seed",
+                    "A_hat",
+                    "noise_percentile",
+                    "noise_threshold",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+        for w, vals in vals_by_w.items():
+            key = (ck, w)
+            all_baseline[key] = np.asarray(vals, dtype=float)
+            all_thresholds[key] = float(thresholds_by_w[w])
+
+    return all_thresholds, all_baseline
+
+
+def _compute_calibrate_metrics(
+    result,
+    cond_key: str,
+    amplitude: float,
+    w_inter: float,
+    trial_idx: int,
+    seed: int,
+    eval_times_ms: list[float],
+    delay_ms: float,
+) -> dict:
+    """Compute per-trial calibration metrics from a ring simulation result."""
+    del delay_ms
+
+    t = np.asarray(result.t_ms)
+    a_hat_tc: list[float] = []
+    for et in eval_times_ms:
+        idx = int(np.argmin(np.abs(t - float(et))))
+        _, a_hat = population_vector_decode(result.r[idx, :, 0], result.ring_params.node_angles_rad)
+        a_hat_tc.append(float(a_hat))
+
+    center_final_rad, a_hat_final = population_vector_decode(
+        result.r[-1, :, 0], result.ring_params.node_angles_rad,
+    )
+    center_final_deg = float(np.degrees(center_final_rad) % 360.0)
+    err_deg = float((center_final_deg - STIM_CENTER_DEG + 180.0) % 360.0 - 180.0)
+    peak_pyr_rate = float(np.max(result.r[:, :, 0]))
+
+    return {
+        "cond_key": cond_key,
+        "amplitude": float(amplitude),
+        "w_inter": float(w_inter),
+        "trial_idx": int(trial_idx),
+        "seed": int(seed),
+        "A_hat_final": float(a_hat_final),
+        "A_hat_timecourse": a_hat_tc,
+        "peak_pyr_rate": peak_pyr_rate,
+        "center_final_deg": center_final_deg,
+        "error_from_cue_deg": abs(err_deg),
+    }
+
+
+def _load_calibrate_grid_results(cond_dir: str, cond_key: str) -> list[dict]:
+    """Load cached per-trial calibration results from CSV."""
+    csv_path = os.path.join(cond_dir, "calibration_results.csv")
+    if not os.path.exists(csv_path):
+        return []
+
+    rows: list[dict] = []
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("condition_key", cond_key) != cond_key:
+                continue
+            tc_raw = row.get("a_hat_timecourse", "").strip()
+            tc = [float(x) for x in tc_raw.split()] if tc_raw else []
+            rows.append(
+                {
+                    "cond_key": cond_key,
+                    "amplitude": float(row["amplitude"]),
+                    "w_inter": float(row["w_inter"]),
+                    "trial_idx": int(float(row["trial_idx"])),
+                    "seed": int(float(row.get("seed", 0))),
+                    "A_hat_final": float(row.get("A_hat_final", "nan")),
+                    "A_hat_timecourse": tc,
+                    "peak_pyr_rate": float(row.get("peak_pyr_rate", "nan")),
+                    "center_final_deg": float(row.get("center_final_deg", "nan")),
+                    "error_from_cue_deg": float(row.get("error_from_cue_deg", "nan")),
+                }
+            )
+    return rows
+
+
+ASYM_SETTLING_MS: float = 1000.0
+ASYM_PRE_CUE_WINDOW_MS: float = 200.0
+
+_asym_sim_args: Optional[dict] = None
+
+
+def _asym_init_worker(
+    base_params: CircuitParams,
+    ring_params: RingParams,
+    connectivity: RingConnectivity,
+    amplitude: float,
+    delay_ms: float,
+    record_dt_ms: float,
+    random_cue_location: bool,
+    balance_cue: bool,
+    correct_asymmetry: bool,
+) -> None:
+    """Initialise worker process for asymmetry trials."""
+    global _asym_sim_args
+    _asym_sim_args = {
+        "base_params": base_params,
+        "ring_params": ring_params,
+        "connectivity": connectivity,
+        "amplitude": amplitude,
+        "delay_ms": delay_ms,
+        "record_dt_ms": record_dt_ms,
+        "random_cue_location": random_cue_location,
+        "balance_cue": balance_cue,
+        "correct_asymmetry": correct_asymmetry,
+    }
+
+
+def _asym_run_single(job: tuple) -> dict:
+    """Run one asymmetry trial and return summary metrics."""
+    from .analysis import compute_bump_asymmetry, decode_bump_center, compute_asymmetry_temporal_metrics
+
+    global _asym_sim_args
+    cfg = _asym_sim_args
+
+    cond_key, trial_idx, seed = job
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(cfg["base_params"], condition)
+    rp = cfg["ring_params"]
+
+    if cfg["random_cue_location"]:
+        rng = np.random.default_rng(int(seed) ^ 0xA51A51)
+        cue_deg = float(rng.uniform(0.0, 360.0))
+    elif cfg["balance_cue"]:
+        cue_deg = _balance_cue_location(STIM_CENTER_DEG, rp)
+    else:
+        cue_deg = STIM_CENTER_DEG
+
+    stim_onset = ASYM_SETTLING_MS
+    stim_offset = stim_onset + STIM_DURATION_MS
+    T_ms = stim_offset + cfg["delay_ms"]
+    cue_current = cfg["amplitude"] * cfg["base_params"].I_ext_pyr()
+
+    stimuli = [
+        RingStimulus(
+            center_deg=cue_deg,
+            amplitude=cue_current,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=stim_onset,
+            duration_ms=STIM_DURATION_MS,
+        )
+    ]
+
+    result = simulate_ring(
+        local_params,
+        rp,
+        T_ms=T_ms,
+        stimuli=stimuli,
+        seed=seed,
+        connectivity=cfg["connectivity"],
+        record_dt_ms=cfg["record_dt_ms"],
+        record_adaptation=False,
+    )
+
+    asym = compute_bump_asymmetry(result)
+    _, amp_trace = decode_bump_center(result, population=0)
+
+    pre_mask = (result.t_ms >= (stim_onset - ASYM_PRE_CUE_WINDOW_MS)) & (result.t_ms < stim_onset)
+    delay_start = stim_offset + TRANSIENT_SKIP_TIME_MS
+    delay_mask = (result.t_ms >= delay_start) & (result.t_ms <= T_ms)
+
+    def _window_asym(mask: np.ndarray) -> float:
+        if not mask.any():
+            return float("nan")
+        a = asym[mask]
+        if not cfg["correct_asymmetry"]:
+            return float(np.mean(a))
+        amp_w = amp_trace[mask]
+        denom = float(np.sum(amp_w))
+        if denom <= 1e-10:
+            return 0.0
+        return float(np.sum(a * amp_w) / denom)
+
+    pre_cue_asym = _window_asym(pre_mask)
+    last_pre_vals = asym[pre_mask]
+    last_pre_cue_asym = float(last_pre_vals[-1]) if len(last_pre_vals) > 0 else float("nan")
+    delay_asym = _window_asym(delay_mask)
+
+    m_delay = compute_asymmetry_temporal_metrics(asym[delay_mask], result.t_ms[delay_mask])
+    m_pre = compute_asymmetry_temporal_metrics(asym[pre_mask], result.t_ms[pre_mask])
+
+    return {
+        "cond_key": cond_key,
+        "trial_idx": int(trial_idx),
+        "seed": int(seed),
+        "cue_deg": float(cue_deg),
+        "pre_cue_asym": float(pre_cue_asym),
+        "last_pre_cue_asym": float(last_pre_cue_asym),
+        "delay_asym": float(delay_asym),
+        "mean_abs_asym": float(m_delay.get("mean_abs_asym", np.nan)),
+        "asym_std": float(m_delay.get("asym_std", np.nan)),
+        "mean_abs_asym_precue": float(m_pre.get("mean_abs_asym", np.nan)),
+        "asym_std_precue": float(m_pre.get("asym_std", np.nan)),
+    }
+
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Run 2D parameter calibration (amplitude x w_inter)."""
     _resolve_seed(args)
@@ -4270,6 +4880,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         T_ms_short = T_ms_full - BURN_IN_MS
 
         # --- Noise floor: auto-trigger ring-noise-floor if baseline is missing/incomplete ---
+        baseline_n_trials_target = max(1, int(n_trials))
         baseline_n_trials_target = max(1, int(n_trials))
         conditions_missing_baseline: list[str] = []
         condition_missing_w: dict[str, list[float]] = {}
@@ -5414,7 +6025,17 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     time_range = (ASYM_SETTLING_MS - ASYM_PRE_CUE_WINDOW_MS, T_ms)
 
     export_mp4 = not getattr(args, "no_snapshot_mp4", False)
+    export_mp4 = not getattr(args, "no_snapshot_mp4", False)
     anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
+    mp4_pbar = None
+    if export_mp4:
+        total_videos = len(condition_keys)
+        mp4_pbar = _start_mp4_progress(
+            total_videos=total_videos,
+            frame_step_ms=args.snapshot_anim_step_ms,
+            fps=args.snapshot_anim_fps,
+            sample_time_range=time_range,
+        )
     mp4_pbar = None
     if export_mp4:
         total_videos = len(condition_keys)
@@ -5497,9 +6118,30 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                 mp4_pbar.update(1)
             except Exception as exc:
                 print(f"  Warning: animation failed: {exc}")
+        if export_mp4:
+            anim_path = os.path.join(cond_dir, "snapshot_evolution.mp4")
+            mp4_pbar.set_postfix_str(f"cond={cond_key}")
+            try:
+                fig_anim, _ = animate_ring_snapshot_evolution(
+                    result_worst,
+                    save_path=anim_path,
+                    time_range=time_range,
+                    t_offset=t_offset_disp,
+                    frame_step_ms=args.snapshot_anim_step_ms,
+                    fps=args.snapshot_anim_fps,
+                    suptitle=f"{STUDY_CONDITIONS[cond_key].name} — worst-case",
+                    show_asymmetry=True,
+                    **anim_quality_kwargs,
+                )
+                plt.close(fig_anim)
+                mp4_pbar.update(1)
+            except Exception as exc:
+                print(f"  Warning: animation failed: {exc}")
 
         del result_worst
 
+    if mp4_pbar is not None:
+        mp4_pbar.close()
     if mp4_pbar is not None:
         mp4_pbar.close()
 
