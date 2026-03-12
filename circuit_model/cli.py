@@ -598,6 +598,16 @@ Examples:
         help="Experimental condition (default: WT). "
              "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
     )
+    ring_run_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=250.0,
+        help="Distractor stimulus duration in ms (default: 250). "
+             "Only used when --distractor_factor and --distractor_offset_deg are set.",
+    )
+    ring_run_parser.add_argument(
+        "--delay2_ms", type=float, default=5000.0,
+        help="Delay after distractor offset in ms (default: 5000). "
+             "Only used when the distractor is enabled.",
+    )
 
     # =========================================================================
     # RING-STUDY subcommand
@@ -981,6 +991,54 @@ Examples:
     )
 
     # =========================================================================
+    # RING-PRE-CUE-POWER subcommand
+    # =========================================================================
+    ring_pre_cue_parser = subparsers.add_parser(
+        "ring-pre-cue-power-study",
+        help="Pre-cue (noise-only) power spectrum and spectral peakedness analysis",
+        description=(
+            "Run noise-only simulations from the burn-in state to characterise "
+            "spontaneous oscillatory power in the pre-cue baseline period. "
+            "Computes the mean PSD across a frequency band, plots the spectrum "
+            "distribution per condition, and compares a spectral peakedness metric "
+            "(1 − normalised entropy) across conditions with a Mann-Whitney U test."
+        ),
+    )
+    _add_ring_common(ring_pre_cue_parser)
+    ring_pre_cue_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--duration_ms", type=float, default=2000.0,
+        help="Duration of each noise-only trial in ms (default: 2000).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_trials", type=int, default=20,
+        help="Trials per condition (default: 20)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT (default: 2 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT (default: 12 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_window_s", type=float, default=0.5,
+        help="STFT window length in seconds (default: 0.5)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+
+    # =========================================================================
     # RING-BURNIN-STABILITY subcommand
     # =========================================================================
     ring_burnin_parser = subparsers.add_parser(
@@ -1031,7 +1089,8 @@ Examples:
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
               "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
               "'ring-diffusion', 'ring-noise-floor', "
-              "'ring-calibrate', 'ring-asymmetry', or 'ring-burnin-stability'.")
+              "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
+              "or 'ring-pre-cue-power-study'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -1065,6 +1124,9 @@ Examples:
         _cmd(args)
     elif args.command == "ring-burnin-stability":
         from .ring.cli import cmd_burnin_stability as _cmd
+        _cmd(args)
+    elif args.command == "ring-pre-cue-power-study":
+        from .ring.cli import cmd_pre_cue_power_study as _cmd
         _cmd(args)
     else:
         parser.print_help()

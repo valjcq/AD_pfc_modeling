@@ -66,6 +66,8 @@ from .plotting import (
     plot_osc_distractor_timecourses,
     plot_osc_distractor_spectrograms,
     plot_osc_distractor_amp_sweep,
+    plot_pre_cue_power_spectrum,
+    plot_pre_cue_power_metric,
     plot_study_firing_rates_violin,
 )
 
@@ -92,6 +94,27 @@ STIM_ONSET_MS = BURN_IN_MS + 500.0
 STIM_DURATION_MS = 250.0
 STIM_CENTER_DEG = 180.0
 STIM_SIGMA_DEG = 18.0
+
+
+def _has_distractor(args) -> bool:
+    """Return True when both distractor_factor and distractor_offset_deg are set."""
+    return (
+        getattr(args, 'distractor_factor', None) is not None
+        and getattr(args, 'distractor_offset_deg', None) is not None
+    )
+
+
+def _compute_delay_end_ms(args, stim_offset_ms: float) -> float:
+    """Return the end-of-delay time (ms) used for response-transient placement.
+
+    Without distractor: stim_offset + delay_ms
+    With distractor:    stim_offset + delay1 + distractor_duration + delay2
+    """
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_offset_ms = dist_onset_ms + args.distractor_duration_ms
+        return dist_offset_ms + args.delay2_ms
+    return stim_offset_ms + args.delay_ms
 
 
 def _build_common(args, amp_factor: float | None = None):
@@ -121,7 +144,7 @@ def _build_common(args, amp_factor: float | None = None):
     actual_current = factor * base_params.I_ext_pyr()
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
+    delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
 
     response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
     response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
@@ -146,6 +169,20 @@ def _build_common(args, amp_factor: float | None = None):
             onset_ms=STIM_ONSET_MS, duration_ms=STIM_DURATION_MS,
         ),
     ]
+
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_center_deg = (STIM_CENTER_DEG + args.distractor_offset_deg) % 360.0
+        dist_current = args.distractor_factor * actual_current
+        stimuli.append(
+            RingStimulus(
+                center_deg=dist_center_deg,
+                amplitude=dist_current,
+                sigma_deg=STIM_SIGMA_DEG,
+                onset_ms=dist_onset_ms,
+                duration_ms=args.distractor_duration_ms,
+            )
+        )
 
     return base_params, ring_params, T_ms, stimuli, factor
 
@@ -245,11 +282,15 @@ def _start_mp4_progress(
 
 
 def _network_label(rp: RingParams) -> str:
-    """Build a directory-safe label encoding n_nodes and connectivity weights.
+    """Build a directory-safe label encoding n_nodes, connectivity weights, and Gaussian sigma.
 
-    Example: 128_inhib_10_excit_7
+    Example: 128_inhib_10_excit_7_sigma_30
     """
-    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_excit_{_fmt(rp.w_pyr_pyr_inter)}"
+    return (
+        f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}"
+        f"_excit_{_fmt(rp.w_pyr_pyr_inter)}"
+        f"_sigma_{_fmt(rp.sigma_pyr_deg)}"
+    )
 
 
 def _calibration_network_label(rp: RingParams) -> str:
@@ -290,6 +331,22 @@ def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
         return (k * step + 0.5 * step) % 360.0
     k = int(np.round(target_deg / step))
     return (k * step) % 360.0
+
+
+def _run_type_label(args) -> str:
+    """Return a folder name encoding the experiment type for ring-run outputs.
+
+    Possible values: cue, cue_transient, cue_distractor, cue_distractor_transient
+    """
+    has_dist = _has_distractor(args)
+    has_trans = getattr(args, 'response_onset_ms', 0.0) > 0
+    if has_dist and has_trans:
+        return "cue_distractor_transient"
+    if has_dist:
+        return "cue_distractor"
+    if has_trans:
+        return "cue_transient"
+    return "cue"
 
 
 def _stim_label(amp_factor: float) -> str:
@@ -298,8 +355,8 @@ def _stim_label(amp_factor: float) -> str:
 
 
 def _weights_label(rp: RingParams) -> str:
-    """Short label for PYR and PV weights, used in plot titles."""
-    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}"
+    """Short label for PYR and PV weights and sigma, used in plot titles."""
+    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}, σ={_fmt(rp.sigma_pyr_deg)}°"
 
 
 def _parse_seed(value: str) -> int | None:
@@ -366,7 +423,18 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--delay_ms", type=float, default=5000.0,
-        help="Delay duration after cue offset in ms (default: 5000)",
+        help="Delay duration after cue offset in ms (default: 5000). "
+             "When a distractor is enabled this becomes delay1 (cue offset → distractor onset).",
+    )
+    parser.add_argument(
+        "--distractor_offset_deg", type=float, default=None,
+        help="Distractor angular offset from cue in degrees. "
+             "If set together with --distractor_factor, enables the distractor.",
+    )
+    parser.add_argument(
+        "--distractor_factor", type=float, default=None,
+        help="Distractor amplitude as a fraction of cue amplitude (e.g. 0.75). "
+             "If set together with --distractor_offset_deg, enables the distractor.",
     )
     parser.add_argument(
         "--total_time_ms", type=float, default=None,
@@ -2185,6 +2253,308 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
 
 
 # ============================================================================
+# PRE-CUE POWER STUDY: PARALLEL WORKERS
+# ============================================================================
+
+_pre_cue_power_sim_args: Optional[dict] = None
+
+
+def _pre_cue_power_init_worker(
+    base_params: "CircuitParams",
+    ring_params: "RingParams",
+    connectivity: "RingConnectivity",
+    burnin_states: dict,
+    duration_ms: float,
+    record_dt_ms: float,
+    min_freq_hz: float,
+    max_freq_hz: float,
+    tf_window_s: float,
+    tf_overlap: float,
+) -> None:
+    """Initialise worker process for pre-cue power study jobs."""
+    global _pre_cue_power_sim_args
+    _pre_cue_power_sim_args = {
+        'base_params': base_params,
+        'ring_params': ring_params,
+        'connectivity': connectivity,
+        'burnin_states': burnin_states,
+        'duration_ms': duration_ms,
+        'record_dt_ms': record_dt_ms,
+        'min_freq_hz': min_freq_hz,
+        'max_freq_hz': max_freq_hz,
+        'tf_window_s': tf_window_s,
+        'tf_overlap': tf_overlap,
+    }
+
+
+def _pre_cue_power_run_single(job: tuple) -> dict:
+    """Run one noise-only trial from burn-in state and return mean PSD per frequency."""
+    global _pre_cue_power_sim_args
+    cfg = _pre_cue_power_sim_args
+    cond_key, trial_idx, seed = job
+
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(cfg['base_params'], condition)
+    r0, I_adapt0 = cfg['burnin_states'][cond_key]
+
+    result = simulate_ring(
+        local_params,
+        cfg['ring_params'],
+        T_ms=cfg['duration_ms'],
+        stimuli=None,
+        r0=r0,
+        I_adapt0=I_adapt0,
+        seed=seed,
+        connectivity=cfg['connectivity'],
+        record_dt_ms=cfg['record_dt_ms'],
+    )
+
+    t_s = result.t_ms / 1000.0
+    _, amp_t = population_vector_decode(result.r[:, :, 0], cfg['ring_params'].node_angles_rad)
+
+    try:
+        osc = compute_oscillation_band_timecourse(
+            amp_t, t_s,
+            min_freq_hz=cfg['min_freq_hz'],
+            max_freq_hz=cfg['max_freq_hz'],
+            window_s=cfg['tf_window_s'],
+            overlap_frac=cfg['tf_overlap'],
+        )
+        if osc['power'].size > 0:
+            mean_power = np.mean(osc['power'], axis=1)  # (n_freqs,): average over time
+        else:
+            mean_power = np.zeros(len(osc['freqs_hz']))
+        freqs_hz = osc['freqs_hz']
+    except ValueError:
+        freqs_hz = np.array([], dtype=float)
+        mean_power = np.array([], dtype=float)
+
+    return {
+        'cond_key': cond_key,
+        'trial_idx': trial_idx,
+        'seed': seed,
+        'freqs_hz': freqs_hz,
+        'mean_power': mean_power,
+    }
+
+
+# ============================================================================
+# PRE-CUE POWER STUDY: SUBCOMMAND
+# ============================================================================
+
+def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
+    """Pre-cue (noise-driven) power spectrum analysis across conditions.
+
+    Runs noise-only simulations from the burn-in state, computes the mean
+    power spectral density (PSD) across the specified frequency band, and
+    compares spectral peakedness (1 − normalised entropy) between conditions.
+
+    Outputs
+    -------
+    - pre_cue_power_spectrum.png  : mean PSD ± std per condition
+    - pre_cue_power_metric.png    : boxplot of spectral peakedness per condition
+    - pre_cue_power_trials.csv    : per-trial spectral peakedness values
+    """
+    _resolve_seed(args)
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    ring_params = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+
+    if args.conditions is None:
+        condition_keys = ['WT']
+    else:
+        condition_keys = args.conditions
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'.\nValid: {', '.join(STUDY_CONDITIONS.keys())}")
+            sys.exit(1)
+
+    n_trials = int(args.n_trials)
+    n_workers = _resolve_workers(args)
+    duration_ms = float(args.duration_ms)
+    record_dt_ms = float(getattr(args, 'record_dt_ms', 5.0))
+
+    conn_label = _network_label(ring_params)
+    conn_lbl = _weights_label(ring_params)
+    freq_label = f"{_fmt(args.min_freq_hz)}-{_fmt(args.max_freq_hz)}hz"
+    out_root = os.path.join(
+        _output_dir("figs/ring/pre_cue_power", args.params_json),
+        conn_label,
+        freq_label,
+    )
+    os.makedirs(out_root, exist_ok=True)
+
+    print("\nPre-cue power study configuration:")
+    print(f"  Conditions:  {', '.join(condition_keys)}")
+    print(f"  Duration:    {duration_ms:.0f} ms (noise-only per trial)")
+    print(f"  Trials:      {n_trials}, workers: {n_workers}")
+    print(f"  Band:        [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz")
+    print(f"  TF window:   {args.tf_window_s:.2f} s, overlap: {args.tf_overlap:.2f}")
+
+    connectivity = RingConnectivity.from_params(ring_params)
+
+    print("\nComputing burn-in states...")
+    burnin_states: dict = {}
+    for ck in tqdm(condition_keys, desc="Burn-in", unit="cond"):
+        local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+        burnin_states[ck] = _compute_burnin_state(
+            local_params, ring_params, connectivity, seed=args.seed,
+        )
+
+    trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+    jobs = [
+        (ck, ti, trial_seeds[ti])
+        for ck in condition_keys
+        for ti in range(n_trials)
+    ]
+
+    init_args = (
+        base_params, ring_params, connectivity, burnin_states,
+        duration_ms, record_dt_ms,
+        args.min_freq_hz, args.max_freq_hz, args.tf_window_s, args.tf_overlap,
+    )
+
+    all_results: list[dict] = []
+    if n_workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(
+            mp_context=_MP_CONTEXT,
+            max_workers=n_workers,
+            initializer=_pre_cue_power_init_worker,
+            initargs=init_args,
+        ) as executor:
+            futures = {executor.submit(_pre_cue_power_run_single, job): job for job in jobs}
+            with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
+                for future in as_completed(futures):
+                    all_results.append(future.result())
+                    pbar.update()
+    else:
+        _pre_cue_power_init_worker(*init_args)
+        for job in tqdm(jobs, desc="Simulations", unit="sim"):
+            all_results.append(_pre_cue_power_run_single(job))
+
+    # ------------------------------------------------------------------
+    # Spectral peakedness metric: 1 − normalised Shannon entropy of PSD
+    # High = power concentrated at one frequency; Low = flat spectrum
+    # ------------------------------------------------------------------
+    def _spectral_peakedness(power: np.ndarray) -> float:
+        p = np.abs(power)
+        total = p.sum()
+        if total < 1e-30 or len(p) < 2:
+            return 0.0
+        p_norm = p / total
+        H = -float(np.sum(p_norm * np.log(p_norm + 1e-30)))
+        H_max = float(np.log(len(p)))
+        return 0.0 if H_max < 1e-30 else 1.0 - H / H_max
+
+    # ------------------------------------------------------------------
+    # Organise per condition
+    # ------------------------------------------------------------------
+    spectrum_data: dict = {}  # {cond_key: {'freqs_hz': ..., 'powers': (n_trials, n_freqs)}}
+    metric_data: dict = {}    # {cond_key: np.ndarray of peakedness values}
+
+    for ck in condition_keys:
+        rows = [r for r in all_results if r['cond_key'] == ck and r['freqs_hz'].size > 0]
+        if not rows:
+            continue
+        freqs_hz = rows[0]['freqs_hz']
+        powers, metrics = [], []
+        for r in rows:
+            p = np.asarray(r['mean_power'], dtype=float)
+            if p.shape == freqs_hz.shape:
+                powers.append(p)
+                metrics.append(_spectral_peakedness(p))
+        if powers:
+            spectrum_data[ck] = {
+                'freqs_hz': freqs_hz,
+                'powers': np.stack(powers, axis=0),  # (n_trials, n_freqs)
+            }
+            metric_data[ck] = np.array(metrics)
+
+    # ------------------------------------------------------------------
+    # Save CSV
+    # ------------------------------------------------------------------
+    csv_path = os.path.join(out_root, "pre_cue_power_trials.csv")
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['condition', 'trial_idx', 'seed', 'spectral_peakedness'])
+        writer.writeheader()
+        for r in sorted(all_results, key=lambda x: (x['cond_key'], x['trial_idx'])):
+            ck = r['cond_key']
+            metrics = metric_data.get(ck, np.array([]))
+            # Find index of this trial in the per-condition results
+            rows_ck = [x for x in all_results if x['cond_key'] == ck and x['freqs_hz'].size > 0]
+            row_idx = next((i for i, x in enumerate(rows_ck) if x['trial_idx'] == r['trial_idx']), None)
+            peak = float(metrics[row_idx]) if row_idx is not None and row_idx < len(metrics) else float('nan')
+            writer.writerow({
+                'condition': ck,
+                'trial_idx': r['trial_idx'],
+                'seed': r['seed'],
+                'spectral_peakedness': peak,
+            })
+
+    # ------------------------------------------------------------------
+    # Statistical tests (pairwise Mann-Whitney U)
+    # ------------------------------------------------------------------
+    from scipy.stats import mannwhitneyu as _mwu
+
+    def _sig(p: float) -> str:
+        return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'n.s.'
+
+    cond_keys_valid = [ck for ck in condition_keys if ck in metric_data]
+    print("\nSpectral peakedness statistics:")
+    for ci, ck1 in enumerate(cond_keys_valid):
+        v1 = metric_data[ck1]
+        print(f"  {ck1}: mean={v1.mean():.4f} ± {v1.std(ddof=1):.4f} (n={len(v1)})")
+    for ci, ck1 in enumerate(cond_keys_valid):
+        for ck2 in cond_keys_valid[ci + 1:]:
+            v1, v2 = metric_data[ck1], metric_data[ck2]
+            if len(v1) >= 2 and len(v2) >= 2:
+                _, p = _mwu(v1, v2, alternative='two-sided')
+                print(f"  Mann-Whitney U — {ck1} vs {ck2}: p={p:.4g} {_sig(p)}")
+
+    # ------------------------------------------------------------------
+    # Figures
+    # ------------------------------------------------------------------
+    if spectrum_data:
+        fig_spec = plot_pre_cue_power_spectrum(
+            data=spectrum_data,
+            title=f"Pre-cue power spectrum | {conn_lbl}",
+            save_path=os.path.join(out_root, "pre_cue_power_spectrum.png"),
+        )
+        plt.close(fig_spec)
+
+    if metric_data:
+        fig_met = plot_pre_cue_power_metric(
+            data=metric_data,
+            title=f"Pre-cue spectral peakedness | {conn_lbl}",
+            save_path=os.path.join(out_root, "pre_cue_power_metric.png"),
+        )
+        plt.close(fig_met)
+
+    print("\nPre-cue power study complete.")
+    print(f"  CSV:    {csv_path}")
+    print(f"  Figs:   {out_root}")
+
+    if not args.no_show:
+        plt.show()
+
+
+# ============================================================================
 # RUN SUBCOMMAND
 # ============================================================================
 
@@ -2210,12 +2580,35 @@ def cmd_run(args: argparse.Namespace) -> None:
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(base_params, condition)
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
+    delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
     local_params = _apply_response_transient(local_params, args, delay_end_ms)
 
     _print_config(args, amp_factor, base_params, T_ms, ring_params=ring_params)
+    if _has_distractor(args):
+        print(f"Distractor: offset={args.distractor_offset_deg:.1f} deg, "
+              f"factor={args.distractor_factor:.2f}×cue, "
+              f"duration={args.distractor_duration_ms:.0f} ms, "
+              f"delay1={args.delay_ms:.0f} ms, delay2={args.delay2_ms:.0f} ms"
+              + (f", delay3={args.response_onset_ms:.0f} ms"
+                 if getattr(args, 'response_onset_ms', 0.0) > 0 else ""))
     print(f"Condition: {cond_key}")
     print(f"Seed: {args.seed}")
+
+    # ------------------------------------------------------------------
+    # Distractor geometry (computed once, used for both plots and MP4)
+    # ------------------------------------------------------------------
+    dist_node: Optional[int] = None
+    dist_center_deg: Optional[float] = None
+    dist_window: Optional[tuple[float, float]] = None
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_offset_ms = dist_onset_ms + args.distractor_duration_ms
+        dist_window = (dist_onset_ms, dist_offset_ms)
+        dist_center_deg = (STIM_CENTER_DEG + args.distractor_offset_deg) % 360.0
+        angles_deg = np.rad2deg(ring_params.node_angles_rad)
+        ang_diff = np.abs(angles_deg - dist_center_deg)
+        ang_diff = np.minimum(ang_diff, 360.0 - ang_diff)
+        dist_node = int(np.argmin(ang_diff))
 
     connectivity = RingConnectivity.from_params(ring_params)
     result = simulate_ring(
@@ -2229,15 +2622,27 @@ def cmd_run(args: argparse.Namespace) -> None:
         record_adaptation=True,
     )
 
-    out_dir = os.path.join(
+    # ------------------------------------------------------------------
+    # Output directory: insert distractor subfolder when relevant
+    # ------------------------------------------------------------------
+    out_dir_parts = [
         _output_dir("figs/ring/run", args.params_json),
+        _run_type_label(args),
         _network_label(ring_params),
-    )
+    ]
+    if _has_distractor(args):
+        out_dir_parts.append(
+            f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
+        )
+    out_dir_parts.append(cond_key)
+    out_dir = os.path.join(*out_dir_parts)
     os.makedirs(out_dir, exist_ok=True)
 
     suptitle = (
         f"{condition.label} -- {_stim_label(amp_factor)}, {_weights_label(ring_params)}"
     )
+    if dist_center_deg is not None:
+        suptitle += f" | distractor {dist_center_deg:.0f}°"
     t_offset = BURN_IN_MS
     time_range = (BURN_IN_MS, result.t_ms[-1])
 
@@ -2247,6 +2652,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         time_range=time_range,
         t_offset=t_offset,
         suptitle=suptitle,
+        distractor_node=dist_node,
+        distractor_angle_deg=dist_center_deg,
+        distractor_window=dist_window,
     )
     plt.close(fig_dash)
 
@@ -2268,6 +2676,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         result,
         t_offset=t_offset,
         save_path=os.path.join(out_dir, "population_activity.png"),
+        distractor_node=dist_node,
+        distractor_window=dist_window,
     )
     plt.close(fig_pop)
 
@@ -2295,12 +2705,16 @@ def cmd_run(args: argparse.Namespace) -> None:
                 frame_step_ms=args.snapshot_anim_step_ms,
                 fps=args.snapshot_anim_fps,
                 suptitle=f"{condition.label} -- snapshot evolution",
-                show_asymmetry=True,
+                show_asymmetry=dist_node is None,  # asymmetry panel only without distractor
+                distractor_window=dist_window,
+                distractor_angle_deg=dist_center_deg,
                 **anim_quality_kwargs,
             )
             plt.close(fig_anim)
         except Exception as exc:
+            import traceback
             print(f"Warning: snapshot animation export failed: {exc}")
+            traceback.print_exc()
 
     print(f"\nFigures saved to {out_dir}/")
 
