@@ -262,7 +262,7 @@ python -m circuit_model ring-run [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--sigma_pyr_deg` | float | `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pyr_pyr_inter` | float | `4.0` | Total PYR→PYR coupling strength |
+| `--w_pyr_pyr_inter` | float (one or more) | `8.0` | Total PYR→PYR coupling strength. Multi-condition commands accept one value per condition (e.g. `--w_pyr_pyr_inter 8.0 7.5` for WT and WT_APP). A single value is broadcast to all conditions. |
 | `--w_pv_global` | float | `4.0` | Total PV→PYR global inhibition strength (uniform) |
 
 **PYR→PYR**: Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.

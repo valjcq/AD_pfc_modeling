@@ -142,13 +142,13 @@ def _build_common(args, amp_factor: float | None = None):
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
     )
 
-    factor = amp_factor if amp_factor is not None else args.amplitude
+    factor = amp_factor if amp_factor is not None else args.amplitude[0]
     actual_current = factor * base_params.I_ext_pyr()
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
@@ -414,30 +414,6 @@ def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
     return (k * step) % 360.0
 
 
-def _calibration_network_label(rp: RingParams) -> str:
-    """Label for calibration directories: inhibition + Gaussian sigma only.
-
-    Excitation is excluded because calibration is the process that determines it.
-    Example: 128_inhib_10_sigma_30
-    """
-    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_sigma_{_fmt(rp.sigma_pyr_deg)}"
-
-
-def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
-    """Place cue at a location that balances left/right node counts when possible.
-
-    For even node counts, use half-step locations (between two nodes).
-    For odd node counts, snap to nearest node (already balanced by design).
-    """
-    n = int(rp.n_nodes)
-    step = 360.0 / max(1, n)
-    if n % 2 == 0:
-        k = int(np.round((target_deg - 0.5 * step) / step))
-        return (k * step + 0.5 * step) % 360.0
-    k = int(np.round(target_deg / step))
-    return (k * step) % 360.0
-
-
 def _run_type_label(args) -> str:
     """Return a folder name encoding the experiment type for ring-run outputs.
 
@@ -490,6 +466,53 @@ def _snapshot_animation_quality_kwargs(args: argparse.Namespace) -> dict[str, in
     return {"dpi": 100, "av1_crf": 35, "av1_preset": 8}
 
 
+def _resolve_per_cond_param(
+    values: list[float],
+    condition_keys: list[str],
+    param_name: str,
+) -> dict[str, float]:
+    """Map per-condition parameter values.
+
+    If a single value is provided it is broadcast to all conditions.
+    If N values are provided they must match the N conditions in order.
+    """
+    if len(values) == 1:
+        return {ck: values[0] for ck in condition_keys}
+    if len(values) != len(condition_keys):
+        print(
+            f"Error: --{param_name} has {len(values)} values but "
+            f"{len(condition_keys)} conditions ({', '.join(condition_keys)})."
+        )
+        sys.exit(1)
+    return dict(zip(condition_keys, values))
+
+
+def _build_cond_labels(
+    condition_keys: list[str],
+    cond_excit: dict[str, float],
+    cond_amp: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """Build legend labels annotated with per-condition parameters.
+
+    When all conditions share the same excitation weight (and amplitude),
+    no annotation is added and the result is identical to the default
+    ``STUDY_CONDITIONS[ck].name`` labels.  When values differ, each label
+    gets a short suffix, e.g. ``"WT APP (e=7.5)"``.
+    """
+    all_same_excit = len(set(cond_excit.values())) == 1
+    all_same_amp = cond_amp is None or len(set(cond_amp.values())) == 1
+    labels: dict[str, str] = {}
+    for ck in condition_keys:
+        base = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        extras: list[str] = []
+        if not all_same_excit:
+            extras.append(f"e={_fmt(cond_excit[ck])}")
+        if not all_same_amp and cond_amp is not None:
+            extras.append(f"a={_fmt(cond_amp[ck])}")
+        labels[ck] = f"{base} ({', '.join(extras)})" if extras else base
+    return labels
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add common arguments shared by ring-run and ring-study."""
     parser.add_argument(
@@ -510,8 +533,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="Number of ring nodes (default: 128)",
     )
     parser.add_argument(
-        "--w_pyr_pyr_inter", type=float, default=8.0,
-        help="Inter-node PYR->PYR weight (default: 8.0)",
+        "--w_pyr_pyr_inter", nargs="+", type=float, default=[8.0],
+        help="Inter-node PYR->PYR weight (default: 8.0). "
+             "Accepts one value (shared) or one per condition for per-condition excitation.",
     )
     parser.add_argument(
         "--sigma_pyr_deg", type=float, default=30.0,
@@ -523,8 +547,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
-        "--amplitude", type=float, default=10.0,
-        help="Cue amplitude factor (multiplier of I_ext_pyr)",
+        "--amplitude", nargs="+", type=float, default=[10.0],
+        help="Cue amplitude factor (multiplier of I_ext_pyr). "
+             "Accepts one value (shared) or one per condition in ring-study.",
     )
     parser.add_argument(
         "--delay_ms", type=float, default=5000.0,
@@ -747,8 +772,8 @@ _ring_sim_args: Optional[dict] = None
 def _ring_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     delay_eval_times: list[float],
     T_ms_full: float,
@@ -758,8 +783,8 @@ def _ring_init_worker(
     _ring_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'delay_eval_times': delay_eval_times,
         'T_ms_full': T_ms_full,
@@ -774,8 +799,8 @@ def _ring_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
     T_ms_full = cfg['T_ms_full']
 
     condition = STUDY_CONDITIONS[cond_key]
@@ -1015,7 +1040,7 @@ _bump_decay_sim_args: Optional[dict] = None
 
 def _bump_decay_init_worker(
     base_params: "CircuitParams",
-    ring_params: "RingParams",
+    per_cond_rp: dict,
     connectivity_map: dict,
     burnin_states: dict,
     delay_ms: float,
@@ -1028,7 +1053,7 @@ def _bump_decay_init_worker(
     global _bump_decay_sim_args
     _bump_decay_sim_args = {
         'base_params':      base_params,
-        'ring_params':      ring_params,
+        'per_cond_rp':      per_cond_rp,
         'connectivity_map': connectivity_map,
         'burnin_states':    burnin_states,
         'delay_ms':         delay_ms,
@@ -1052,7 +1077,7 @@ def _bump_decay_run_single(job: tuple) -> dict:
     cond_key, amp_factor, w_inter, trial_idx, seed = job
 
     base_params   = cfg['base_params']
-    ring_params   = cfg['ring_params']
+    ring_params   = cfg['per_cond_rp'][cond_key]
     T_ms_full     = cfg['T_ms_full']
     ref_offset_ms = cfg['ref_offset_ms']
     window_ms     = cfg['window_ms']
@@ -1060,7 +1085,7 @@ def _bump_decay_run_single(job: tuple) -> dict:
     # Look up precomputed connectivity for this w_inter
     connectivity = cfg['connectivity_map'][w_inter]
 
-    # Build matching RingParams if w_inter differs from base
+    # Build matching RingParams if w_inter differs from this condition's base
     if w_inter != ring_params.w_pyr_pyr_inter:
         ring_params = RingParams(
             n_nodes=ring_params.n_nodes,
@@ -1145,8 +1170,8 @@ _osc_sim_args: Optional[dict] = None
 def _osc_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     T_ms_full: float,
 ):
@@ -1155,8 +1180,8 @@ def _osc_init_worker(
     _osc_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'T_ms_full': T_ms_full,
     }
@@ -1170,8 +1195,8 @@ def _osc_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
     T_ms_full = cfg['T_ms_full']
 
     condition = STUDY_CONDITIONS[cond_key]
@@ -1306,13 +1331,6 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     condition_keys = list(args.conditions) if args.conditions else ['WT', 'WT_APP']
     for k in condition_keys:
         if k not in STUDY_CONDITIONS:
@@ -1320,8 +1338,19 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
     amplitudes     = list(args.amplitudes) if args.amplitudes else [5.0, 10.0, 15.0, 20.0, 25.0]
-    w_inter_values = list(args.w_inter_values) if args.w_inter_values else [args.w_pyr_pyr_inter]
+    w_inter_values = list(args.w_inter_values) if args.w_inter_values else [args.w_pyr_pyr_inter[0]]
     n_trials       = int(args.n_trials)
     n_workers      = _resolve_workers(args)
     delay_ms       = float(args.delay_ms)
@@ -1342,12 +1371,14 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
     ref_center_rel = STIM_DURATION_MS + ref_offset_ms  # e.g. 650 ms
     ref_bin_idx    = int(np.argmin(np.abs(bin_centers - ref_center_rel)))
 
-    conn_label = _network_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
     out_dir = os.path.join(
         _output_dir("figs/ring/bump_decay", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
 
     _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params,
                   experiment_info=[
@@ -1359,24 +1390,23 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
                       f"Window:        {window_ms:.0f} ms   ref bin center={bin_centers[ref_bin_idx]:.0f} ms",
                   ])
 
-    # ── Burn-in states (one per condition, shared across w_inter) ────────────
+    # ── Burn-in states (one per condition, using per-condition ring_params) ───
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    base_connectivity = RingConnectivity.from_params(ring_params)
     for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
         local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, base_connectivity, seed=args.seed,
+            local_params, per_cond_rp[cond_key], per_cond_conn[cond_key], seed=args.seed,
         )
 
     # ── Precompute connectivity map {w_inter: RingConnectivity} ─────────────
     connectivity_map: dict[float, RingConnectivity] = {}
     for w in w_inter_values:
         rp_w = RingParams(
-            n_nodes=ring_params.n_nodes,
+            n_nodes=base_rp.n_nodes,
             w_pyr_pyr_inter=w,
-            sigma_pyr_deg=ring_params.sigma_pyr_deg,
-            w_pv_global=ring_params.w_pv_global,
+            sigma_pyr_deg=base_rp.sigma_pyr_deg,
+            w_pv_global=base_rp.w_pv_global,
         )
         connectivity_map[w] = RingConnectivity.from_params(rp_w)
 
@@ -1391,7 +1421,7 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
 
     # ── Cache lookup ──────────────────────────────────────────────────────────
     use_cache  = not getattr(args, 'no_cache', False)
-    cache_key  = _bump_decay_cache_key(args, base_params, ring_params,
+    cache_key  = _bump_decay_cache_key(args, base_params, base_rp,
                                         condition_keys, amplitudes, w_inter_values)
     cache_file = os.path.join(out_dir, f'.bump_decay_cache_{cache_key}.pkl')
 
@@ -1403,7 +1433,7 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
         print(f"  Loaded {len(all_results)} trials from cache.")
     else:
         init_args = (
-            base_params, ring_params, connectivity_map,
+            base_params, per_cond_rp, connectivity_map,
             burnin_states, delay_ms, ref_offset_ms,
             window_ms, record_dt_ms, T_ms_full,
         )
@@ -1528,7 +1558,7 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
             sub = os.path.join(sub, f"w{w:g}")
         return os.path.join(out_dir, sub)
 
-    conn_lbl = _network_label(ring_params)
+    conn_lbl = _weights_label(base_rp)
 
     # ── Per-amplitude: timecourse overlay + boxplot over time ────────────────
     for amp in amplitudes:
@@ -1595,6 +1625,7 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
         )],
         amplitudes=amplitudes,
         cond_order=condition_keys,
+        cond_labels=cond_labels,
         suptitle=f"Bump decay vs cue amplitude — {conn_lbl}",
         save_path=os.path.join(out_dir, "bump_decay_amp_sweep.png"),
     )
@@ -1647,13 +1678,6 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     if args.conditions is None:
         condition_keys = ['WT', 'WT_APP']
     else:
@@ -1664,14 +1688,25 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude]
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for suptitle / config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
     n_trials = int(args.n_trials)
     n_workers = _resolve_workers(args)
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
     T_ms_full = stim_offset_ms + args.delay_ms
 
-    conn_label = _network_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
     out_dir = os.path.join(
         _output_dir("figs/ring/oscillation", args.params_json),
         conn_label,
@@ -1688,16 +1723,14 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                       f"   window={args.tf_window_s:.3f} s   overlap={args.tf_overlap:.2f}",
                   ])
 
-    connectivity = RingConnectivity.from_params(ring_params)
-
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
         local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
         burnin_states[cond_key] = _compute_burnin_state(
             local_params,
-            ring_params,
-            connectivity,
+            per_cond_rp[cond_key],
+            per_cond_conn[cond_key],
             seed=args.seed,
         )
 
@@ -1728,7 +1761,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     import pickle as _pickle
     use_cache = not getattr(args, 'no_cache', False)
-    cache_key = _osc_cache_key(args, base_params, ring_params, condition_keys, amplitudes)
+    cache_key = _osc_cache_key(args, base_params, base_rp, condition_keys, amplitudes)
     cache_file = os.path.join(out_dir, f'.osc_cache_{cache_key}.pkl')
 
     all_results: list[dict] = []
@@ -1740,10 +1773,10 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
         print(f"  Pass --no_cache to force re-computation.")
     else:
         if n_workers > 1 and len(jobs) > 1:
-            with ProcessPoolExecutor(mp_context=_MP_CONTEXT, 
+            with ProcessPoolExecutor(mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
                 initializer=_osc_init_worker,
-                initargs=(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full),
+                initargs=(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full),
             ) as executor:
                 futures = {executor.submit(_osc_run_single, job): job for job in jobs}
                 with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
@@ -1751,7 +1784,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                         all_results.append(future.result())
                         pbar.update()
         else:
-            _osc_init_worker(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full)
+            _osc_init_worker(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full)
             for job in tqdm(jobs, desc="Simulations", unit="sim"):
                 all_results.append(_osc_run_single(job))
 
@@ -2089,7 +2122,8 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 return {'cond_a': r['cond_a'], 'cond_b': r['cond_b'], 'q_value': r['q_value']}
         return None
 
-    conn_lbl = _weights_label(ring_params)
+    conn_lbl = _weights_label(base_rp)
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
     for amp, pd_amp in amp_plot_data.items():
         amp_dir = pd_amp['amp_dir']
         pick_lbl = pd_amp['pick_lbl']
@@ -2114,6 +2148,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 ),
             ],
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             suptitle=(
                 f"Dominant power | amp={_fmt(amp)}x | {conn_lbl}"
                 + (f" | f: {pick_lbl}" if pick_lbl != "NA" else "")
@@ -2151,6 +2186,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 ),
             ],
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             suptitle=f"Oscillation stability & spectral focus | amp={_fmt(amp)}x | {conn_lbl}",
             stats_per_panel=[
                 _amp_stat(amp, 'power_var'),
@@ -2188,6 +2224,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
             ],
             amplitudes=amplitudes,
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             stats_per_panel=[_sweep_stats('power_median'), _sweep_stats('power_sample')],
             suptitle=f"Dominant power vs cue amplitude — {conn_lbl}",
             save_path=os.path.join(out_dir, "oscillation_amp_sweep_power.png"),
@@ -2219,6 +2256,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
             ],
             amplitudes=amplitudes,
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             stats_per_panel=[
                 _sweep_stats('power_var'),
                 _sweep_stats('power_dvar'),
@@ -2248,8 +2286,8 @@ _osc_dist_sim_args: Optional[dict] = None
 def _osc_dist_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     T_ms_full: float,
 ):
@@ -2258,8 +2296,8 @@ def _osc_dist_init_worker(
     _osc_dist_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'T_ms_full': T_ms_full,
     }
@@ -2273,8 +2311,8 @@ def _osc_dist_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
 
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(base_params, condition)
@@ -2485,13 +2523,6 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     if args.conditions is None:
         condition_keys = ['WT']
     else:
@@ -2501,14 +2532,25 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
             print(f"Error: unknown condition '{k}'.\nValid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude]
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
     distractor_factors = list(args.distractor_factors)
     offsets_deg = list(args.offsets_deg)
     n_trials = int(args.n_trials)
     n_workers = _resolve_workers(args)
 
-    conn_label = _network_label(ring_params)
-    conn_lbl = _weights_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
     out_root = os.path.join(
         _output_dir("figs/ring/osc_distractor", args.params_json),
         conn_label,
@@ -2520,8 +2562,10 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     import pickle as _pickle
     use_cache = not getattr(args, 'no_cache', False)
-    cache_key = _osc_dist_cache_key(args, base_params, ring_params, condition_keys, amplitudes)
+    cache_key = _osc_dist_cache_key(args, base_params, base_rp, condition_keys, amplitudes)
     cache_file = os.path.join(out_root, f'.osc_dist_cache_{cache_key}.pkl')
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
 
     _print_config(args, amplitudes[0], base_params, 0.0, ring_params,
                   experiment_info=[
@@ -2547,16 +2591,14 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         print(f"  Pass --no_cache to force re-computation.")
     else:
         # Burn-in and simulation — only run when no valid cache exists
-        connectivity = RingConnectivity.from_params(ring_params)
-
         print("\nComputing burn-in states...")
         burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
             local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
             burnin_states[cond_key] = _compute_burnin_state(
                 local_params,
-                ring_params,
-                connectivity,
+                per_cond_rp[cond_key],
+                per_cond_conn[cond_key],
                 seed=args.seed,
             )
 
@@ -2590,10 +2632,10 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         T_ms_full = cue_offset_post_burnin + args.delay1_ms + args.distractor_duration_ms + args.delay2_ms
 
         if n_workers > 1 and len(jobs) > 1:
-            with ProcessPoolExecutor(mp_context=_MP_CONTEXT, 
+            with ProcessPoolExecutor(mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
                 initializer=_osc_dist_init_worker,
-                initargs=(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full),
+                initargs=(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full),
             ) as executor:
                 futures = {executor.submit(_osc_dist_run_single, job): job for job in jobs}
                 with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
@@ -2601,7 +2643,7 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                         all_results.append(future.result())
                         pbar.update()
         else:
-            _osc_dist_init_worker(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full)
+            _osc_dist_init_worker(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full)
             for job in tqdm(jobs, desc="Simulations", unit="sim"):
                 all_results.append(_osc_dist_run_single(job))
 
@@ -2938,6 +2980,7 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                         t_axis=t_ref_bp,
                         data_by_condition=data_by_cond,
                         dist_offset_s=dist_off_s_bp,
+                        cond_labels=cond_labels,
                         suptitle=(
                             f"Condition comparison | {amp_label}× | {factor_label} | "
                             f"offset={int(off)}° | {conn_lbl}"
@@ -2964,8 +3007,8 @@ _pre_cue_power_sim_args: Optional[dict] = None
 
 def _pre_cue_power_init_worker(
     base_params: "CircuitParams",
-    ring_params: "RingParams",
-    connectivity: "RingConnectivity",
+    per_cond_rp: dict,
+    per_cond_conn: dict,
     burnin_states: dict,
     duration_ms: float,
     record_dt_ms: float,
@@ -2978,8 +3021,8 @@ def _pre_cue_power_init_worker(
     global _pre_cue_power_sim_args
     _pre_cue_power_sim_args = {
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'duration_ms': duration_ms,
         'record_dt_ms': record_dt_ms,
@@ -3000,20 +3043,21 @@ def _pre_cue_power_run_single(job: tuple) -> dict:
     local_params = apply_condition(cfg['base_params'], condition)
     r0, I_adapt0 = cfg['burnin_states'][cond_key]
 
+    rp = cfg['per_cond_rp'][cond_key]
     result = simulate_ring(
         local_params,
-        cfg['ring_params'],
+        rp,
         T_ms=cfg['duration_ms'],
         stimuli=None,
         r0=r0,
         I_adapt0=I_adapt0,
         seed=seed,
-        connectivity=cfg['connectivity'],
+        connectivity=cfg['per_cond_conn'][cond_key],
         record_dt_ms=cfg['record_dt_ms'],
     )
 
     t_s = result.t_ms / 1000.0
-    _, amp_t = population_vector_decode(result.r[:, :, 0], cfg['ring_params'].node_angles_rad)
+    _, amp_t = population_vector_decode(result.r[:, :, 0], rp.node_angles_rad)
 
     try:
         osc = compute_oscillation_band_timecourse(
@@ -3072,13 +3116,6 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     if args.conditions is None:
         condition_keys = ['WT']
     else:
@@ -3088,13 +3125,24 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
             print(f"Error: unknown condition '{k}'.\nValid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
     n_trials = int(args.n_trials)
     n_workers = _resolve_workers(args)
     duration_ms = float(args.duration_ms)
     record_dt_ms = float(getattr(args, 'record_dt_ms', 5.0))
 
-    conn_label = _network_label(ring_params)
-    conn_lbl = _weights_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
     freq_label = f"{_fmt(args.min_freq_hz)}-{_fmt(args.max_freq_hz)}hz"
     out_root = os.path.join(
         _output_dir("figs/ring/pre_cue_power", args.params_json),
@@ -3103,7 +3151,9 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
     )
     os.makedirs(out_root, exist_ok=True)
 
-    _print_config(args, amplitudes[0] if amplitudes else 1.0, base_params, 0.0, ring_params,
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
+
+    _print_config(args, args.amplitude[0], base_params, 0.0, ring_params,
                   experiment_info=[
                       f"Conditions:  {', '.join(condition_keys)}",
                       f"Duration:    {duration_ms:.0f} ms (noise-only per trial)",
@@ -3112,14 +3162,12 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
                       f"   window={args.tf_window_s:.2f} s   overlap={args.tf_overlap:.2f}",
                   ])
 
-    connectivity = RingConnectivity.from_params(ring_params)
-
     print("\nComputing burn-in states...")
     burnin_states: dict = {}
     for ck in tqdm(condition_keys, desc="Burn-in", unit="cond"):
         local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
         burnin_states[ck] = _compute_burnin_state(
-            local_params, ring_params, connectivity, seed=args.seed,
+            local_params, per_cond_rp[ck], per_cond_conn[ck], seed=args.seed,
         )
 
     trial_seeds = _generate_trial_seeds(args.seed, n_trials)
@@ -3130,7 +3178,7 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
     ]
 
     init_args = (
-        base_params, ring_params, connectivity, burnin_states,
+        base_params, per_cond_rp, per_cond_conn, burnin_states,
         duration_ms, record_dt_ms,
         args.min_freq_hz, args.max_freq_hz, args.tf_window_s, args.tf_overlap,
     )
@@ -3454,15 +3502,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
-
-    # Determine conditions
+    # Determine conditions first (needed for per-cond param resolution)
     if args.conditions is None:
         condition_keys = list(CONDITION_ORDER)
     else:
@@ -3476,18 +3516,36 @@ def cmd_study(args: argparse.Namespace) -> None:
                         f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
                     sys.exit(1)
 
-    if args.amplitudes is None:
-        amplitudes = [args.amplitude]
-    elif isinstance(args.amplitudes, (list, tuple)):
+    # Per-condition excitation weight
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp   = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # for suptitle / _weights_label (shared params)
+
+    # Per-condition or sweep amplitudes
+    if args.amplitudes is not None:
+        # Amplitude sweep applied uniformly to all conditions
         amplitudes = list(args.amplitudes)
+        cond_amp: dict[str, float] | None = None
     else:
-        amplitudes = [float(args.amplitudes)]
+        # Per-condition (or shared) base amplitude
+        cond_amp = _resolve_per_cond_param(args.amplitude, condition_keys, 'amplitude')
+        amplitudes = [args.amplitude[0]]  # used for timing; one loop iteration
     n_trials = getattr(args, 'n_trials', 1)
     n_workers = _resolve_workers(args)
     no_cache = getattr(args, 'no_cache', False)
     error_band = getattr(args, 'error_band', 'sem')
 
-    conn_label = _network_label(ring_params)
+    # Legend labels (annotated when per-cond params differ)
+    cond_labels = _build_cond_labels(condition_keys, cond_excit, cond_amp)
+
+    conn_label = _calibration_network_label(base_rp)
     out_dir = os.path.join(
         _output_dir("figs/ring/run", args.params_json),
         conn_label,
@@ -3496,28 +3554,26 @@ def cmd_study(args: argparse.Namespace) -> None:
     csv_path = os.path.join(out_dir, "study_metrics.csv")
 
     # Compute T_ms using first amplitude (timing is same for all amplitudes)
-    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=amplitudes[0])
+    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=args.amplitude[0])
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
 
-    _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params,
+    _print_config(args, args.amplitude[0], base_params, T_ms_full, base_rp,
                   experiment_info=[
                       f"Conditions:  {', '.join(condition_keys)}",
-                      f"Amplitudes:  {', '.join(_fmt(a) for a in amplitudes)}× I_ext_pyr",
+                      f"Excit/cond:  {', '.join(f'{ck}={_fmt(cond_excit[ck])}' for ck in condition_keys)}",
+                      f"Amp/cond:    {', '.join(f'{ck}={_fmt(cond_amp[ck])}' for ck in condition_keys) if cond_amp else ', '.join(_fmt(a) for a in amplitudes) + '× I_ext_pyr'}",
                       f"Delay:       {args.delay_ms:.0f} ms",
                       f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
                   ])
 
-    # --- Pre-compute connectivity (once) ---
-    connectivity = RingConnectivity.from_params(ring_params)
-
-    # --- Burn-in states (once per condition) ---
+    # --- Burn-in states (once per condition, using per-condition ring_params) ---
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
         condition = STUDY_CONDITIONS[cond_key]
         local_params = apply_condition(base_params, condition)
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, connectivity, seed=args.seed,
+            local_params, per_cond_rp[cond_key], per_cond_conn[cond_key], seed=args.seed,
         )
 
     # --- Trial seeds ---
@@ -3538,12 +3594,16 @@ def cmd_study(args: argparse.Namespace) -> None:
     # --- Build jobs ---
     jobs = []
     for cond_key in condition_keys:
-        for amp in amplitudes:
+        amps_for_cond = [cond_amp[cond_key]] if cond_amp else amplitudes
+        for amp in amps_for_cond:
             for trial_idx, seed in enumerate(trial_seeds):
                 if (cond_key, amp, trial_idx) not in completed:
                     jobs.append((cond_key, amp, trial_idx, seed))
 
-    total_jobs = len(condition_keys) * len(amplitudes) * n_trials
+    if cond_amp:
+        total_jobs = len(condition_keys) * n_trials
+    else:
+        total_jobs = len(condition_keys) * len(amplitudes) * n_trials
     cached_jobs = total_jobs - len(jobs)
     print(f"\nJobs: {len(jobs)} to run, {cached_jobs} cached")
 
@@ -3553,7 +3613,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     if jobs:
         args_dict = _args_to_dict(args)
         init_args = (
-            args_dict, base_params, ring_params, connectivity,
+            args_dict, base_params, per_cond_rp, per_cond_conn,
             burnin_states, delay_eval_times, T_ms_full,
         )
 
@@ -3635,16 +3695,17 @@ def cmd_study(args: argparse.Namespace) -> None:
         for amp in amplitudes:
             amp_out = os.path.join(out_dir, f"amp{_fmt(amp)}")
             os.makedirs(amp_out, exist_ok=True)
-            suptitle = f"{_stim_label(amp)}, {_weights_label(ring_params)}"
+            suptitle = f"{_stim_label(amp)}, {_weights_label(base_rp)}"
 
             metrics_over_delay_agg: dict[str, list[dict]] = {}
             delay_end_metrics_agg: dict[str, dict] = {}
             comparison_data: dict[str, dict] = {}
 
             for cond_key in condition_keys:
+                ck_amp = cond_amp[cond_key] if cond_amp else amp
                 trial_results = [
                     r for r in all_results
-                    if r['cond_key'] == cond_key and r['amplitude'] == amp
+                    if r['cond_key'] == cond_key and abs(r['amplitude'] - ck_amp) < 1e-9
                 ]
                 if not trial_results:
                     continue
@@ -3674,6 +3735,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                     suptitle=f"Bump Metrics During Delay  ({suptitle}{band_tag})",
                     error_band=error_band,
                     separate_app=False,  # all conditions on same plot for delay time course
+                    cond_labels=cond_labels,
                 )
                 plt.close()
 
@@ -3682,6 +3744,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                     comparison_data,
                     save_path=os.path.join(amp_out, "bump_metrics_comparison.png"),
                     suptitle=f"Bump Metrics Comparison  ({suptitle})",
+                    cond_labels=cond_labels,
                 )
                 plt.close()
 
@@ -3746,6 +3809,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                         stats_rows=rate_stats_rows,
                         suptitle=_title,
                         save_path=os.path.join(amp_out, _fname),
+                        cond_labels=cond_labels,
                     )
                     plt.close()
 
@@ -3820,7 +3884,8 @@ def cmd_study(args: argparse.Namespace) -> None:
                     local_params = apply_condition(base_params, condition)
                     delay_end_ms = stim_offset_ms + args.delay_ms
                     local_params = _apply_response_transient(local_params, args, delay_end_ms)
-                    cue_current = amp * base_params.I_ext_pyr()
+                    ck_amp_vis = cond_amp[cond_key] if cond_amp else amp
+                    cue_current = ck_amp_vis * base_params.I_ext_pyr()
                     stimuli = [
                         RingStimulus(
                             center_deg=STIM_CENTER_DEG,
@@ -3833,11 +3898,11 @@ def cmd_study(args: argparse.Namespace) -> None:
                     vis_seed = trial_seeds[0] if trial_seeds else args.seed
                     vis_result = simulate_ring(
                         local_params,
-                        ring_params,
+                        per_cond_rp[cond_key],
                         T_ms=T_ms_full,
                         stimuli=stimuli,
                         seed=vis_seed,
-                        connectivity=connectivity,
+                        connectivity=per_cond_conn[cond_key],
                         record_dt_ms=args.record_dt_ms,
                     )
                     anim_path = os.path.join(anim_dir, f"{cond_key}.mp4")
@@ -3869,9 +3934,10 @@ def cmd_study(args: argparse.Namespace) -> None:
             all_delay_metrics_agg,
             amplitude_values=amplitudes,
             save_path=os.path.join(out_dir, f"metrics_vs_amplitude_{error_band}.png"),
-            suptitle=f"Metrics vs Amplitude (full delay){band_tag}  [{_weights_label(ring_params)}]",
+            suptitle=f"Metrics vs Amplitude (full delay){band_tag}  [{_weights_label(base_rp)}]",
             error_band=error_band,
             separate_app=False,  # all conditions on same plot for amplitude comparison
+            cond_labels=cond_labels,
         )
         plt.close()
 
@@ -4210,7 +4276,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -5210,8 +5276,8 @@ _asym_sim_args: Optional[dict] = None
 
 def _asym_init_worker(
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict,
+    per_cond_conn: dict,
     amplitude: float,
     delay_ms: float,
     record_dt_ms: float,
@@ -5223,8 +5289,8 @@ def _asym_init_worker(
     global _asym_sim_args
     _asym_sim_args = {
         "base_params": base_params,
-        "ring_params": ring_params,
-        "connectivity": connectivity,
+        "per_cond_rp": per_cond_rp,
+        "per_cond_conn": per_cond_conn,
         "amplitude": amplitude,
         "delay_ms": delay_ms,
         "record_dt_ms": record_dt_ms,
@@ -5244,7 +5310,7 @@ def _asym_run_single(job: tuple) -> dict:
     cond_key, trial_idx, seed = job
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(cfg["base_params"], condition)
-    rp = cfg["ring_params"]
+    rp = cfg["per_cond_rp"][cond_key]
 
     if cfg["random_cue_location"]:
         rng = np.random.default_rng(int(seed) ^ 0xA51A51)
@@ -5275,7 +5341,7 @@ def _asym_run_single(job: tuple) -> dict:
         T_ms=T_ms,
         stimuli=stimuli,
         seed=seed,
-        connectivity=cfg["connectivity"],
+        connectivity=cfg["per_cond_conn"][cond_key],
         record_dt_ms=cfg["record_dt_ms"],
         record_adaptation=False,
     )
@@ -5341,7 +5407,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     ring_params_base = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -5834,7 +5900,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
 
     ring_params_base = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -6175,14 +6241,6 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
-
     condition_keys = args.conditions if args.conditions else ['WT', 'WT_APP', 'a7_KO_APP']
     for k in condition_keys:
         if k not in STUDY_CONDITIONS:
@@ -6190,14 +6248,25 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amp = args.amplitude
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amp = args.amplitude[0]
     n_trials = args.n_trials
     n_workers = _resolve_workers(args)
     random_cue_location: bool = getattr(args, 'random_cue_location', False)
     balance_cue: bool = not getattr(args, 'no_cue_balance', False)
     correct_asymmetry: bool = getattr(args, 'correct_asymmetry', True)
 
-    conn_label = _network_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
     asym_mode_label = "corrected" if correct_asymmetry else "uncorrected"
     amp_label = f"amp{amp:g}_{asym_mode_label}"
     out_dir = os.path.join(
@@ -6253,9 +6322,6 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     if _balance_note:
         _asym_info.append(_balance_note.strip())
     _print_config(args, amp, base_params, 0.0, ring_params, experiment_info=_asym_info)
-
-    # --- Connectivity ---
-    connectivity = RingConnectivity.from_params(ring_params)
 
     # --- CSV cache: load existing trials if parameters match ---
     csv_path = os.path.join(out_dir, "asymmetry_trials.csv")
@@ -6344,7 +6410,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     new_results: list[dict] = []
     if jobs:
         init_args = (
-            base_params, ring_params, connectivity,
+            base_params, per_cond_rp, per_cond_conn,
             amp, args.delay_ms, args.record_dt_ms,
             random_cue_location, balance_cue, correct_asymmetry,
         )
@@ -6657,9 +6723,9 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         )]
 
         result_worst = simulate_ring(
-            local_params_wc, ring_params, T_ms=T_ms,
+            local_params_wc, per_cond_rp[cond_key], T_ms=T_ms,
             stimuli=stimuli_worst, seed=worst['seed'],
-            connectivity=connectivity,
+            connectivity=per_cond_conn[cond_key],
             record_dt_ms=args.record_dt_ms,
             record_adaptation=True,
         )
@@ -6865,7 +6931,7 @@ def cmd_burnin_stability(args: argparse.Namespace) -> None:
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
     )
@@ -7281,8 +7347,8 @@ _osc_phase_dist_sim_args: Optional[dict] = None
 def _osc_phase_dist_init_worker(
     args_dict: dict,
     base_params,
-    ring_params,
-    connectivity,
+    per_cond_rp: dict,
+    per_cond_conn: dict,
     pre_dist_states: dict,
 ) -> None:
     """Initialize worker for the phase-timing distractor experiment.
@@ -7293,8 +7359,8 @@ def _osc_phase_dist_init_worker(
     _osc_phase_dist_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'pre_dist_states': pre_dist_states,
     }
 
@@ -7310,8 +7376,8 @@ def _osc_phase_dist_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
 
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(base_params, condition)
@@ -7500,20 +7566,24 @@ def cmd_osc_distractor_phase_study(args) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     condition_keys = args.conditions if args.conditions else ['WT']
     for k in condition_keys:
         if k not in STUDY_CONDITIONS:
             print(f"Error: unknown condition '{k}'.")
             sys.exit(1)
 
-    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude]
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
     distractor_factors = list(args.distractor_factors)
     offsets_deg = list(args.offsets_deg)
     n_trials = int(args.n_trials)
@@ -7522,15 +7592,15 @@ def cmd_osc_distractor_phase_study(args) -> None:
     n_phase = int(args.n_phase_sweep)
     osc_freq_fallback = float(args.osc_freq_hz)
 
-    conn_label = _network_label(ring_params)
-    conn_lbl = _weights_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
     out_root = os.path.join(
         _output_dir("figs/ring/osc_phase_distractor", args.params_json),
         conn_label,
     )
     os.makedirs(out_root, exist_ok=True)
 
-    connectivity = RingConnectivity.from_params(ring_params)
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
 
     # ------------------------------------------------------------------
     # Step 1 — Estimate oscillation frequency from a reference simulation
@@ -7539,7 +7609,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
     ref_cond_key = condition_keys[0]
     ref_local_params = apply_condition(base_params, STUDY_CONDITIONS[ref_cond_key])
     r0_bi_ref, Ia_bi_ref = _compute_burnin_state(
-        ref_local_params, ring_params, connectivity, seed=args.seed,
+        ref_local_params, per_cond_rp[ref_cond_key], per_cond_conn[ref_cond_key], seed=args.seed,
     )
 
     pre_cue_ms = STIM_ONSET_MS - BURN_IN_MS        # 500 ms
@@ -7548,7 +7618,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
     T_ref_ms = pre_cue_ms + STIM_DURATION_MS + ref_delay_ms
 
     ref_result = simulate_ring(
-        ref_local_params, ring_params,
+        ref_local_params, per_cond_rp[ref_cond_key],
         T_ms=T_ref_ms,
         stimuli=[RingStimulus(
             center_deg=STIM_CENTER_DEG,
@@ -7560,11 +7630,11 @@ def cmd_osc_distractor_phase_study(args) -> None:
         r0=r0_bi_ref,
         I_adapt0=Ia_bi_ref,
         seed=args.seed,
-        connectivity=connectivity,
+        connectivity=per_cond_conn[ref_cond_key],
         record_dt_ms=5.0,
     )
 
-    angles_deg = np.rad2deg(ring_params.node_angles_rad)
+    angles_deg = np.rad2deg(per_cond_rp[ref_cond_key].node_angles_rad)
     cue_idx_ref = int(np.argmin(np.abs(angles_deg - STIM_CENTER_DEG)))
     cue_offset_abs = pre_cue_ms + STIM_DURATION_MS
     mask_post = ref_result.t_ms >= cue_offset_abs
@@ -7610,7 +7680,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
     # ------------------------------------------------------------------
     use_cache = not getattr(args, 'no_cache', False)
     cache_key = _osc_phase_dist_cache_key(
-        args, base_params, ring_params, condition_keys, amplitudes, all_phase_pis,
+        args, base_params, base_rp, condition_keys, amplitudes, all_phase_pis,
     )
     cache_file = os.path.join(out_root, f'.osc_phase_cache_{cache_key}.pkl')
 
@@ -7629,7 +7699,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
         for ck in tqdm(condition_keys, desc="Burn-in", unit="cond"):
             lp = apply_condition(base_params, STUDY_CONDITIONS[ck])
             burnin_states[ck] = _compute_burnin_state(
-                lp, ring_params, connectivity, seed=args.seed,
+                lp, per_cond_rp[ck], per_cond_conn[ck], seed=args.seed,
             )
 
         # ------------------------------------------------------------------
@@ -7652,7 +7722,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
                         d1 = phase_pi_to_delay1(phi_pi)
                         T_pre = pre_cue_ms + STIM_DURATION_MS + d1
                         pre_res = simulate_ring(
-                            lp, ring_params,
+                            lp, per_cond_rp[ck],
                             T_ms=T_pre,
                             stimuli=[RingStimulus(
                                 center_deg=STIM_CENTER_DEG,
@@ -7664,7 +7734,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
                             r0=r0_bi,
                             I_adapt0=Ia_bi,
                             seed=args.seed,   # FIXED seed → deterministic trajectory
-                            connectivity=connectivity,
+                            connectivity=per_cond_conn[ck],
                             record_dt_ms=5.0,
                         )
                         pre_dist_states[ck][amp][phi_pi] = (
@@ -7709,8 +7779,8 @@ def cmd_osc_distractor_phase_study(args) -> None:
                 mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
                 initializer=_osc_phase_dist_init_worker,
-                initargs=(args_dict, base_params, ring_params,
-                          connectivity, pre_dist_states),
+                initargs=(args_dict, base_params, per_cond_rp,
+                          per_cond_conn, pre_dist_states),
             ) as executor:
                 futures = {
                     executor.submit(_osc_phase_dist_run_single, job): job
@@ -7723,7 +7793,7 @@ def cmd_osc_distractor_phase_study(args) -> None:
                         pbar.update()
         else:
             _osc_phase_dist_init_worker(
-                args_dict, base_params, ring_params, connectivity, pre_dist_states,
+                args_dict, base_params, per_cond_rp, per_cond_conn, pre_dist_states,
             )
             for job in tqdm(jobs, desc="Simulations", unit="sim"):
                 all_results.append(_osc_phase_dist_run_single(job))

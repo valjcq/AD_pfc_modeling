@@ -1342,6 +1342,7 @@ def plot_bump_metrics_comparison(
     comparison_data: dict[str, dict],
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (12, 8),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
 ):
@@ -1372,7 +1373,7 @@ def plot_bump_metrics_comparison(
         color = condition_colors.get(cond_key, None)
 
         from ..study import STUDY_CONDITIONS
-        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+        label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
 
         axes[0].plot(data["t_display"], data["center_deg"], color=color, lw=1, alpha=0.7, label=label)
         axes[1].plot(data["t_display"], data["amplitude"], color=color, lw=1, alpha=0.7, label=label)
@@ -1440,6 +1441,7 @@ def plot_metrics_vs_delay(
     metrics_to_plot: tuple[str, ...] = ("amplitude_mean", "width_mean_deg", "error_from_cue_deg"),
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (14, 5),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
     error_band: str = "sem",
@@ -1483,7 +1485,7 @@ def plot_metrics_vs_delay(
                 continue
             metric_list = metrics_over_delay[cond_key]
             color = condition_colors.get(cond_key, None)
-            label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+            label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
             n_pts = min(len(x_seconds), len(metric_list))
             x = x_seconds[:n_pts]
             for ax, metric_key in zip(row_axes, metrics_to_plot):
@@ -1543,7 +1545,7 @@ def plot_metrics_vs_delay(
 
     for cond_key, metric_list in metrics_over_delay.items():
         color = condition_colors.get(cond_key, None)
-        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+        label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
         n_pts = min(len(x_seconds), len(metric_list))
         x = x_seconds[:n_pts]
 
@@ -1586,6 +1588,7 @@ def plot_metrics_vs_amplitude(
     metrics_to_plot: tuple[str, ...] = ("amplitude_mean", "width_mean_deg", "error_from_cue_deg"),
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (14, 5),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
     error_band: str = "sem",
@@ -1629,7 +1632,7 @@ def plot_metrics_vs_amplitude(
     def _plot_conditions_amplitude(keys, row_axes):
         for cond_key in keys:
             color = condition_colors.get(cond_key, None)
-            label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+            label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
             for ax, metric_key in zip(row_axes, metrics_to_plot):
                 means = []
                 errs = []
@@ -3325,6 +3328,7 @@ def plot_oscillation_amp_sweep_lines(
     cond_order: list,
     stats_per_panel: Optional[list] = None,
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Mean ± std connected-dot plot across cue amplitudes.
@@ -3362,7 +3366,7 @@ def plot_oscillation_amp_sweep_lines(
     legend_handles = []
     for ck in cond_order:
         color = CONDITION_COLORS.get(ck, '#888888')
-        name = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        name = (cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck)
         legend_handles.append(
             plt.Line2D([0], [0], color=color, marker='o', markersize=6,
                        linewidth=1.8, label=name)
@@ -3480,6 +3484,7 @@ def plot_oscillation_amp_sweep_violin(
     amplitudes: list,
     cond_order: list,
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin plot: one violin per (condition, amplitude) pair.
@@ -3519,7 +3524,7 @@ def plot_oscillation_amp_sweep_violin(
     legend_handles = []
     for ci, ck in enumerate(cond_order):
         color = CONDITION_COLORS.get(ck, '#888888')
-        name = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        name = (cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck)
         legend_handles.append(
             plt.Line2D([0], [0], marker='o', color='w',
                        markerfacecolor=color, markersize=8, label=name)
@@ -3581,6 +3586,7 @@ def plot_oscillation_violin(
     cond_order: list[str],
     title: str,
     ylabel: str,
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Plot one violin panel for trial-wise oscillation metrics by condition."""
@@ -3596,7 +3602,7 @@ def plot_oscillation_violin(
     else:
         rng = np.random.default_rng(0)
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vp, nonempty = _safe_violinplot(
             ax, vals, list(positions),
@@ -3637,6 +3643,7 @@ def plot_oscillation_multi_violin(
     cond_order: list,
     suptitle: str = "",
     stats_per_panel: Optional[list] = None,  # list (one per panel) of {cond_a, cond_b, q_value} or None
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin figure grouping several metrics for a single amplitude.
@@ -3671,7 +3678,7 @@ def plot_oscillation_multi_violin(
             continue
 
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vals_clean = [arr[np.isfinite(arr)] for arr in vals]
         vp, nonempty = _safe_violinplot(
@@ -3752,6 +3759,7 @@ def plot_study_firing_rates_violin(
     cond_order: list,
     stats_rows: Optional[list] = None,  # list of {metric, cond_a, cond_b, q_value}
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin figure for population firing rates in the ring study.
@@ -3793,7 +3801,7 @@ def plot_study_firing_rates_violin(
             continue
 
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck) for ck in conds]
         vals_clean = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vp, nonempty = _safe_violinplot(
             ax, vals_clean, list(positions),
@@ -4144,6 +4152,7 @@ def plot_pre_cue_power_spectrum(
     data: dict,
     condition_colors: Optional[dict] = None,
     title: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Mean power spectrum ± std across trials per condition (pre-cue baseline).
@@ -4177,7 +4186,7 @@ def plot_pre_cue_power_spectrum(
         mean_p = np.mean(powers, axis=0)
         std_p = np.std(powers, axis=0, ddof=1) if powers.shape[0] > 1 else np.zeros_like(mean_p)
         color = condition_colors.get(cond_key, None)
-        label = cond_key.replace('_', ' ')
+        label = (cond_labels or {}).get(cond_key) or cond_key.replace('_', ' ')
         ax.plot(freqs, mean_p, color=color, linewidth=2.0, label=label)
         ax.fill_between(freqs, mean_p - std_p, mean_p + std_p, color=color, alpha=0.2)
 
@@ -4196,6 +4205,7 @@ def plot_pre_cue_power_metric(
     data: dict,
     title: str = "",
     condition_colors: Optional[dict] = None,
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Boxplot of spectral peakedness metric across conditions with statistical test.
@@ -4285,7 +4295,7 @@ def plot_pre_cue_power_metric(
             bracket_level += step * 1.2
 
     ax.set_xticks(range(n_conds))
-    ax.set_xticklabels([ck.replace('_', ' ') for ck in cond_keys], fontsize=10)
+    ax.set_xticklabels([(cond_labels or {}).get(ck) or ck.replace('_', ' ') for ck in cond_keys], fontsize=10)
     ax.set_ylabel('Spectral peakedness (1 − norm. entropy)', fontsize=9)
     ax.set_title(title or 'Pre-cue spectral peakedness', fontsize=11)
     ax.grid(axis='y', alpha=0.3, linewidth=0.5)
@@ -4713,6 +4723,7 @@ def plot_osc_conditions_boxplot(
     dist_offset_s: float = 0.2,
     max_bins: int = 20,
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     condition_colors: Optional[dict] = None,
 ) -> "plt.Figure":
@@ -4907,12 +4918,15 @@ def plot_osc_conditions_boxplot(
 
     # Legend: conditions
     cond_patches = [
-        Patch(facecolor=eff_colors.get(ck, '#888'), label=ck, alpha=0.8)
+        Patch(facecolor=eff_colors.get(ck, '#888'),
+              label=(cond_labels or {}).get(ck) or ck, alpha=0.8)
         for ck in cond_keys
     ]
     # Legend: sig-strip pairs
     pair_patches = [
-        Patch(facecolor=pc, label=f'{cond_keys[ia]} vs {cond_keys[ib]}', alpha=0.65)
+        Patch(facecolor=pc,
+              label=f'{(cond_labels or {}).get(cond_keys[ia]) or cond_keys[ia]} vs {(cond_labels or {}).get(cond_keys[ib]) or cond_keys[ib]}',
+              alpha=0.65)
         for (ia, ib), pc in pair_colors.items()
     ]
     axes_main[0].legend(
