@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability} [options]
+python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study} [options]
 ```
 
 ---
@@ -17,11 +17,13 @@ python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-oscillation
 5. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
 6. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
 7. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
-8. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-9. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
-10. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
-11. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
-12. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
+8. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
+9. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
+10. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
+11. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
+12. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
+13. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
+14. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
 
 ---
 
@@ -517,6 +519,111 @@ python -m circuit_model ring-osc-distractor-study \
 
 ---
 
+## `ring-osc-phase-distractor`
+
+Phase-dependent distractor experiment. Runs the **same burn-in and cue simulation** (fixed seed, deterministic trajectory) for every trial, then injects a distractor at different points in the ongoing oscillation cycle. The timing offset is expressed in units of **π radians** of the oscillation, so a sweep from 0 to 2π covers exactly one full oscillation cycle.
+
+```bash
+python -m circuit_model ring-osc-phase-distractor [options]
+```
+
+### Phase-Distractor-Specific Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--conditions` | str (list) | `WT` | Conditions to simulate |
+| `--amplitudes` | float (list) | `--amplitude` | Cue amplitude factors (× I\_ext\_pyr) |
+| `--distractor_factors` | float (list) | `1.0` | Distractor amplitude as fraction of cue amplitude |
+| `--offsets_deg` | float (list) | `90.0` | Distractor angular offsets from cue (degrees) |
+| `--delay1_base_ms` | float | `500.0` | Base delay between cue offset and distractor onset (ms). Actual delay1 = `delay1_base + phase_pi × T_osc / 2` |
+| `--distractor_duration_ms` | float | `200.0` | Duration of distractor stimulus (ms) |
+| `--delay2_ms` | float | `2000.0` | Post-distractor delay (ms) |
+| `--n_phase_sweep` | int | `16` | Number of equally-spaced phase values in [0, 2π) for the continuous sweep |
+| `--osc_freq_hz` | float | `5.0` | Fallback oscillation frequency if auto-detection fails (Hz) |
+| `--n_trials` | int | `10` | Distractor trials per (condition × amplitude × factor × offset × phase) |
+| `--n_workers` | int | `None` | Parallel workers (default: auto) |
+| `--min_freq_hz` | float | `2.0` | Lower frequency bound for STFT and PLV bandpass (Hz) |
+| `--max_freq_hz` | float | `12.0` | Upper frequency bound for STFT and PLV bandpass (Hz) |
+| `--tf_window_s` | float | `1.0` | STFT / PLV sliding window length (s) |
+| `--tf_overlap` | float | `0.8` | STFT / PLV window overlap fraction [0, 1) |
+| `--no_cache` | flag | off | Force re-simulation even if cached results exist |
+
+Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
+
+### Protocol Timeline
+
+```
+[burn-in 10 s] → [pre-cue 0.5 s] → [cue 0.25 s] → [delay1(φ)] → [distractor] → [delay2]
+                                                          ↑               ↑            ↑
+                                               delay1_base + φ·T/2      200 ms      2000 ms
+                                               (same deterministic trajectory up to this point)
+```
+
+The oscillation frequency `T` (and thus period `T_osc = 1000/f` ms) is **auto-detected** from a reference no-distractor simulation before the phase grid is built. For each phase value `φ` (in units of π):
+
+```
+delay1(φ) = delay1_base_ms + φ × T_osc / 2
+```
+
+So `φ = 0` → distractor at `delay1_base`; `φ = 1` (π) → distractor half a period later; `φ = 2` (2π) → same as `φ = 0`.
+
+### Identical Pre-Distractor State Guarantee
+
+For a given `phase_pi` value, the network state at distractor onset is **deterministic** — all `n_trials` distractor simulations start from the exact same state, because:
+
+1. The burn-in uses the same fixed seed for all phase values.
+2. Each pre-distractor simulation (burn-in → cue → delay1) uses the same fixed seed.
+3. Since the simulation is deterministic given the seed and initial state, the trajectory is identical up to the respective `delay1` end point.
+
+Only the post-distractor noise realisation differs across trials.
+
+### Metrics
+
+Identical to `ring-osc-distractor-study`: STFT-based dominant power at the cue node and distractor node, and PLV between them. Averaged over the post-distractor delay2 window to produce scalar summary metrics as a function of phase.
+
+### Output Directory
+
+```
+figs/ring/osc_phase_distractor/{network_label}/{condition_key}/factor{F}/amp{X}/offset{Y}/
+```
+
+### Outputs
+
+| File | Description |
+|------|-------------|
+| `osc_phase_trials.csv` | Trial-level CSV: condition, amplitude, factor, offset, phase\_pi, PLV / cue power / dist power mean over delay₂ |
+| `.osc_phase_cache_{key}.pkl` | Pickle cache of raw trial results |
+| `phase_plv_4panel.png` | 2×2 grid of PLV timecourses for phases 0, π/2, π, 3π/2 — each panel shows mean ± SD; black dashed = no-distractor control |
+| `phase_cue_power_4panel.png` | Same layout for cue node dominant power |
+| `phase_dist_power_4panel.png` | Same layout for distractor node dominant power |
+| `phase_sweep.png` | 3-row summary: PLV / cue power / dist power (mean over delay₂) vs. continuous phase (0 to 2π), with SEM bands and no-distractor baseline |
+| `phase_polar.png` | Polar rose version of `phase_sweep.png`; one subplot per metric |
+| `phase_heatmap_plv.png` | Phase × time heatmap of mean PLV (phase on y-axis, time relative to distractor on x-axis) |
+| `phase_heatmap_cue_power.png` | Same for cue node power |
+| `phase_heatmap_dist_power.png` | Same for distractor node power |
+
+### Examples
+
+```bash
+# Default: WT, 90° offset, factor 1.0, 16-phase sweep
+python -m circuit_model ring-osc-phase-distractor --no_show
+
+# Higher-resolution phase sweep, 20 trials
+python -m circuit_model ring-osc-phase-distractor \
+    --amplitude 35 --offsets_deg 90 \
+    --n_phase_sweep 24 --n_trials 20 --no_show
+
+# Compare two conditions and two distractor offsets
+python -m circuit_model ring-osc-phase-distractor \
+    --conditions WT WT_APP \
+    --offsets_deg 90 170 \
+    --distractor_factors 0.75 1.0 \
+    --n_phase_sweep 16 --n_trials 15 \
+    --n_workers 8 --no_show
+```
+
+---
+
 ## `ring-diffusion`
 
 Compute the mean squared displacement (MSD) of the bump center during delay periods across conditions, and extract the diffusion strength $\hat{B}$ (slope of MSD vs time, in $\text{rad}^2/\text{s}$). Based on the drift-diffusion framework of Seeholzer, Deger & Gerstner (2019).
@@ -857,6 +964,83 @@ python -m circuit_model ring-burnin-stability \
 
 # Different asymmetry reference angle
 python -m circuit_model ring-burnin-stability --ref_deg 180 --no_show
+```
+
+---
+
+## `ring-bump-decay-study`
+
+Test whether a post-cue bump is a self-sustained attractor state or a decaying transient. Runs multiple trials per condition and amplitude, records the bump amplitude timecourse over a long delay, and computes whether the amplitude grows, stays flat, or decays relative to a reference window shortly after cue offset.
+
+All oscillatory noise is removed by averaging the amplitude within non-overlapping `--window_ms` bins (default 500 ms). Each trial is normalised by the mean amplitude in the reference bin (the bin whose centre is closest to `cue_offset + ref_offset_ms`).
+
+```
+python -m circuit_model ring-bump-decay-study [options]
+```
+
+### Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--conditions` | `WT WT_APP` | Conditions to simulate (space-separated) |
+| `--amplitudes` | `5 10 15 20 25` | Cue amplitude factors (× I_ext_pyr) |
+| `--delay_ms` | `10000.0` | Delay duration after cue offset (ms) |
+| `--window_ms` | `500.0` | Time-bin width for oscillation averaging and normalisation (ms) |
+| `--ref_offset_ms` | `400.0` | Time after cue offset (ms) used as normalization reference |
+| `--n_trials` | `50` | Trials per condition × amplitude |
+| `--n_workers` | auto | Number of parallel worker processes |
+| `--w_inter_values` | — | Additional w_pyr_pyr_inter values for 2D heatmap sweep |
+| `--no_cache` | — | Ignore existing pickle cache and recompute |
+| `--seed` | 42 | Base random seed |
+| `--no_show` | — | Suppress interactive plot display |
+| `--n_nodes` | 128 | Number of ring nodes |
+| `--w_pyr_pyr_inter` | 4.0 | PYR→PYR inter-node coupling |
+| `--sigma_pyr_deg` | 30.0 | PYR→PYR connectivity width (degrees) |
+| `--w_pv_global` | 4.0 | PV→PYR global inhibition strength |
+| `--params_json` | — | Load local circuit parameters from JSON |
+
+### How normalisation works
+
+1. Each trial's bump amplitude timecourse is binned into non-overlapping `window_ms` windows (starting at cue onset).
+2. The reference bin is the one whose centre is closest to `STIM_DURATION_MS + ref_offset_ms` (default 750 ms from cue onset).
+3. Every bin value is divided by the reference bin value → normalised timecourse where the reference bin = 1.0.
+4. A ratio > 1 at late times indicates a growing or sustained attractor; < 1 indicates decay.
+
+### Outputs
+
+```
+figs/ring/bump_decay/{params}/{connectivity_label}/
+├── bump_decay_trials.csv              # per-trial: ref_amplitude, end_val_normalized
+├── .bump_decay_cache_<hash>.pkl       # simulation cache (auto-reused)
+├── bump_decay_amp_sweep.png           # mean norm. Â at last time bin vs amplitude (all conditions)
+├── amp{X}/
+│   ├── bump_decay_timecourse.png      # mean ± SEM errorbar timecourse per condition
+│   └── bump_decay_boxplot.png         # violin + jitter distributions over time bins per condition
+└── {cond_key}/
+    └── bump_decay_heatmap.png         # 2D heatmap (amplitude × w_inter) — only if w_inter sweep
+```
+
+The `amp{X}/` subdirectory contains `w{W}/` sub-levels only when `--w_inter_values` sweeps more than one value.
+
+### Examples
+
+```bash
+# Standard run: WT vs WT_APP, 10 s delay, 50 trials, 7 amplitude levels
+python -m circuit_model ring-bump-decay-study \
+  --n_nodes 128 --w_pv_global 10 --w_pyr_pyr_inter 8 --sigma_pyr_deg 30 \
+  --conditions WT WT_APP --amplitudes 10 15 20 25 30 35 40 --delay_ms 10000 --n_trials 50 --no_show
+
+# Quick smoke test: 2 amplitudes, 5 trials, short delay
+python -m circuit_model ring-bump-decay-study \
+  --amplitudes 10 20 --delay_ms 3000 --n_trials 5 --no_show --no_cache
+
+# 2D heatmap sweep: vary w_inter alongside amplitude
+python -m circuit_model ring-bump-decay-study \
+  --amplitudes 10 20 30 --w_inter_values 6 7 8 9 --n_trials 50 --no_show
+
+# Finer time bins (250 ms) with a longer reference offset
+python -m circuit_model ring-bump-decay-study \
+  --window_ms 250 --ref_offset_ms 500 --delay_ms 10000 --no_show
 ```
 
 ---

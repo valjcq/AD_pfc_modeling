@@ -48,7 +48,15 @@ This document describes the experimental analysis commands and protocols for the
     - [15.4 Analysis Methods](#154-analysis-methods)
     - [15.5 Outputs](#155-outputs)
     - [15.6 Caching](#156-caching)
-16. [References](#16-references)
+16. [Phase-Dependent Distractor Experiment](#16-phase-dependent-distractor-experiment)
+    - [16.1 Purpose](#161-purpose)
+    - [16.2 Core Design Principle: Identical Pre-Distractor State](#162-core-design-principle-identical-pre-distractor-state)
+    - [16.3 Oscillation Frequency Auto-Detection](#163-oscillation-frequency-auto-detection)
+    - [16.4 Protocol Timeline](#164-protocol-timeline)
+    - [16.5 Measured Quantities](#165-measured-quantities)
+    - [16.6 Outputs](#166-outputs)
+    - [16.7 Caching](#167-caching)
+17. [References](#17-references)
 
 ---
 
@@ -824,7 +832,98 @@ Results are pickled to `.osc_dist_cache_{key}.pkl` in the output root. The cache
 
 ---
 
-## 16. References
+## 16. Phase-Dependent Distractor Experiment
+
+CLI command: `ring-osc-phase-distractor`
+
+### 16.1 Purpose
+
+This experiment addresses a specific question left open by `ring-osc-distractor-study`: **does the oscillation phase at the moment of distractor arrival matter?** Two distractors that are identical in space and amplitude but arrive at opposite phases of the ongoing oscillation (e.g., π apart) may have very different effects on the memory trace.
+
+Key questions:
+- Does PLV between cue and distractor nodes depend on the oscillation phase at distractor onset?
+- Does the cue node lose or maintain its oscillatory power differently depending on whether the distractor arrives at a peak vs. trough of the oscillation?
+- Is there a preferred phase (or anti-phase) at which the distractor is maximally disruptive?
+
+### 16.2 Core Design Principle: Identical Pre-Distractor State
+
+Unlike `ring-osc-distractor-study`, which varies the distractor timing freely, this experiment enforces an **identical pre-distractor network state** for all trials at a given phase value:
+
+1. A single burn-in simulation is run with a **fixed seed**.
+2. For each target phase `φ` (in π units), a separate *pre-distractor simulation* runs from the same burn-in state with the **same fixed seed**, ending at:
+   ```
+   delay1(φ) = delay1_base + φ × T_osc / 2
+   ```
+   Because the seed is fixed, the trajectory is deterministic — all pre-distractor states are snapshots of the **same noise realisation** at different points in time.
+3. `n_trials` distractor simulations then branch from each pre-distractor state with **independent noise seeds**, providing stochastic replicates for statistics.
+
+This ensures that within a given phase value, all trials share the exact same initial conditions for the distractor period, making the phase effect interpretable as the sole cause of any observed differences.
+
+### 16.3 Oscillation Frequency Auto-Detection
+
+Before building the phase grid, a reference no-distractor simulation is run to estimate the dominant oscillation frequency `f_osc`:
+- PYR rate at the cue node is extracted over the post-cue delay.
+- `compute_oscillation_band_timecourse` is applied; the median dominant frequency is taken as `f_osc`.
+- If auto-detection fails (no finite frequency in the band), the value from `--osc_freq_hz` (default 5 Hz) is used as fallback.
+
+The oscillation period is `T_osc = 1000 / f_osc` ms. The phase grid then maps:
+
+| `phase_pi` | Phase (radians) | `delay1` |
+|------------|-----------------|----------|
+| 0          | 0               | `delay1_base` |
+| 0.5        | π/2             | `delay1_base + T_osc/4` |
+| 1.0        | π               | `delay1_base + T_osc/2` |
+| 1.5        | 3π/2            | `delay1_base + 3·T_osc/4` |
+| 2.0        | 2π              | `delay1_base + T_osc` (≡ phase 0) |
+
+`n_phase_sweep` (default 16) equally-spaced values are generated in [0, 2π). The four values 0, 0.5, 1.0, 1.5 are always included for the 4-panel figures.
+
+### 16.4 Protocol Timeline
+
+```
+[burn-in 10 s] → [pre-cue 0.5 s] → [cue 0.25 s] → [delay1(φ)] → [distractor 0.2 s] → [delay2 2 s]
+                ↑_________________________________________________↑
+                      identical deterministic trajectory (fixed seed)
+```
+
+### 16.5 Measured Quantities
+
+Identical to Experiment 15: STFT dominant power at cue and distractor nodes, and PLV between them.
+
+The key output is the **summary scalar per trial**:
+- `plv_mean_delay2`: mean PLV over the post-distractor delay
+- `cue_power_mean_delay2`: mean cue node dominant power over the post-distractor delay
+- `dist_power_mean_delay2`: mean distractor node dominant power over the post-distractor delay
+
+These scalars are computed per trial and then averaged across the `n_trials` replicates to obtain the phase-tuning curves.
+
+### 16.6 Outputs
+
+Output root: `figs/ring/osc_phase_distractor/{network_label}/{condition_key}/factor{F}/amp{X}/offset{Y}/`
+
+| File | Description |
+|------|-------------|
+| `osc_phase_trials.csv` | Trial-level table in the experiment root |
+| `.osc_phase_cache_{key}.pkl` | Pickle cache |
+| **4-panel timecourse grids** | |
+| `phase_plv_4panel.png` | 2×2 grid of PLV timecourses for phases 0, π/2, π, 3π/2 |
+| `phase_cue_power_4panel.png` | Same for cue node dominant power |
+| `phase_dist_power_4panel.png` | Same for distractor node dominant power |
+| **Continuous phase sweep** | |
+| `phase_sweep.png` | 3-row linear plot: PLV / cue power / dist power (mean ± SEM over delay₂) vs. phase from 0 to 2π |
+| `phase_polar.png` | Polar rose version of `phase_sweep.png` (one subplot per metric) |
+| **Phase × time heatmaps** | |
+| `phase_heatmap_plv.png` | Heatmap: phase (y) × time relative to distractor onset (x), color = mean PLV |
+| `phase_heatmap_cue_power.png` | Same for cue node power |
+| `phase_heatmap_dist_power.png` | Same for distractor node power |
+
+### 16.7 Caching
+
+Results are pickled to `.osc_phase_cache_{key}.pkl`. The cache key encodes network parameters, conditions, amplitudes, phase grid, timing, and analysis band. Pass `--no_cache` to force re-simulation.
+
+---
+
+## 17. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.
 
