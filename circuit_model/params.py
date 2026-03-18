@@ -84,7 +84,6 @@ class CircuitParams:
     # --- Connections FROM VIP (inhibitory, disinhibitory) ---
     w_vp: float = 0.0105234  # VIP -> PV:  Weak disinhibition of PV
     w_vs: float = 1.27414    # VIP -> SOM: Core disinhibition pathway (VIP->SOM->PYR)
-    w_vv: float = 24.7962    # VIP -> VIP: Self-inhibition (regulates VIP activity)  This connection doesn't exist in the schematic diagram but is included in the code ? 
 
     # =========================================================================
     # EXTERNAL CURRENTS
@@ -266,7 +265,6 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     b["w_vs"] = w_range(base.w_vs, min_val=0.5)
 
     b["w_ps"] = ParamBound(0.0, 5.0 * base.w_pe, mode="log")
-    b["w_vv"] = ParamBound(0.0, 5.0 * max(base.w_vv, 1.0), mode="log")
 
     # External currents
     b["I0_pyr"] = ParamBound(0.0, 10.0, mode="lin")

@@ -176,11 +176,10 @@ def simulate_circuit(
         )
 
         # --- VIP INPUT ---
-        # VIP receives weak input from PYR and self-inhibits.
+        # VIP receives weak input from PYR.
         # VIP is largely driven by top-down or neuromodulatory inputs.
         I_vip = (
             params.w_ev * r_pyr   # Very weak excitation from PYR
-            - params.w_vv * r_vip  # Self-inhibition
             + I_ext_vip_val        # External (baseline + alpha5 + transient)
         )
 

@@ -338,7 +338,7 @@ def simulate_ring(
         )
 
         # VIP: local only (no inter-node connections)
-        I_vip = p.w_ev * r_pyr - p.w_vv * r_vip + I_ext_vip_val
+        I_vip = p.w_ev * r_pyr + I_ext_vip_val
 
         # === TRANSFER FUNCTION (vectorized) ===
         Phi_pyr = phi_wong_wang(I_pyr, theta=p.Theta_pyr, c=p.alpha_pyr, g=p.g_e)
@@ -487,7 +487,7 @@ def simulate_ring_batch(
     w_ps      = _arr(lambda p: p.w_ps);   w_vs = _arr(lambda p: p.w_vs)
     w_ep      = _arr(lambda p: p.w_ep);   w_pp = _arr(lambda p: p.w_pp)
     w_sp      = _arr(lambda p: p.w_sp);   w_vp = _arr(lambda p: p.w_vp)
-    w_ev      = _arr(lambda p: p.w_ev);   w_vv = _arr(lambda p: p.w_vv)
+    w_ev      = _arr(lambda p: p.w_ev)
     tau_adapt_pyr = _arr(lambda p: p.tau_adapt_pyr)
     J_adapt_pyr   = _arr(lambda p: p.J_adapt_pyr)
     tau_adapt_som = _arr(lambda p: p.tau_adapt_som)
@@ -548,7 +548,7 @@ def simulate_ring_batch(
         I_som  = w_es * r_pyr - ggaba * w_ps * r_pv - w_vs * r_vip - Ias + I_ext_som_k
         I_pv_c = w_ep * r_pyr - ggaba * w_pp * r_pv - ggaba * w_sp * r_som \
                  - w_vp * r_vip + I_ext_pv_k
-        I_vip  = w_ev * r_pyr - w_vv * r_vip + I_ext_vip_k
+        I_vip  = w_ev * r_pyr + I_ext_vip_k
 
         Phi = np.stack([
             _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g_e),

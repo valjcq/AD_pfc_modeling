@@ -65,7 +65,7 @@ def print_parameter_status(
         "Adaptation": ["J_adapt_pyr", "J_adapt_som"],
         "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
-        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs", "w_vv"],
+        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g_e", "g_i"],
@@ -266,26 +266,73 @@ def cmd_study(args: argparse.Namespace) -> None:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Run parameter optimization."""
-    # Build target rates
-    target = TargetRates(
-        mean_r_pyr=args.target_pyr,
-        mean_r_som=args.target_som,
-        mean_r_pv=args.target_pv,
-        mean_r_vip=args.target_vip,
-        alpha7_ko_pyr=args.target_alpha7_ko_pyr,
-        alpha5_ko_pyr=args.target_alpha5_ko_pyr,
-        beta2_ko_pyr=args.target_beta2_ko_pyr,
-    )
+    if not getattr(args, "resume", False):
+        missing = [f"--target_{k}" for k, v in [
+            ("pyr", args.target_pyr), ("som", args.target_som),
+            ("pv", args.target_pv), ("vip", args.target_vip),
+        ] if v is None]
+        if missing:
+            raise SystemExit(f"error: the following arguments are required: {', '.join(missing)}\n"
+                             "(or use --resume to load targets from a previous log)")
 
-    # Load or create base parameters
-    if args.params_json:
-        base = load_params_json(args.params_json)
-        print(f"Loaded base parameters from: {args.params_json}")
+    # Handle --resume: load best params and targets from log, continue from last logged step
+    step_offset = 0
+    append_log = False
+    if getattr(args, "resume", False):
+        resume_json = args.save_best_json or "best_params.json"
+        log_path = args.log_file or "results_log.jsonl"
+        if not os.path.exists(resume_json):
+            raise FileNotFoundError(f"--resume: could not find '{resume_json}'")
+        base = load_params_json(resume_json)
+        print(f"Resuming from: {resume_json}")
+        if not os.path.exists(log_path):
+            raise FileNotFoundError(f"--resume: could not find log file '{log_path}'")
+        import json as _json
+        last_step = 0
+        last_entry = None
+        with open(log_path, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    last_entry = _json.loads(_line)
+                    last_step = last_entry.get("step", last_step)
+        step_offset = last_step
+        append_log = True
+        print(f"Appending to log '{log_path}' from step {last_step}")
+        t = last_entry["target"]
+        target = TargetRates(
+            mean_r_pyr=t["mean_r_pyr"],
+            mean_r_som=t["mean_r_som"],
+            mean_r_pv=t["mean_r_pv"],
+            mean_r_vip=t["mean_r_vip"],
+            alpha7_ko_pyr=t.get("alpha7_ko_pyr"),
+            alpha5_ko_pyr=t.get("alpha5_ko_pyr"),
+            beta2_ko_pyr=t.get("beta2_ko_pyr"),
+        )
+        print(f"Targets loaded from log: pyr={target.mean_r_pyr}, som={target.mean_r_som}, "
+              f"pv={target.mean_r_pv}, vip={target.mean_r_vip}")
     else:
-        base = CircuitParams()
-        print("Using default base parameters")
+        # Build target rates from CLI args
+        target = TargetRates(
+            mean_r_pyr=args.target_pyr,
+            mean_r_som=args.target_som,
+            mean_r_pv=args.target_pv,
+            mean_r_vip=args.target_vip,
+            alpha7_ko_pyr=args.target_alpha7_ko_pyr,
+            alpha5_ko_pyr=args.target_alpha5_ko_pyr,
+            beta2_ko_pyr=args.target_beta2_ko_pyr,
+        )
 
-    # Apply --set overrides (e.g. --set w_vv=0,w_sp=0)
+    # Load or create base parameters (only if not already loaded via --resume)
+    if not getattr(args, "resume", False):
+        if args.params_json:
+            base = load_params_json(args.params_json)
+            print(f"Loaded base parameters from: {args.params_json}")
+        else:
+            base = CircuitParams()
+            print("Using default base parameters")
+
+    # Apply --set overrides (e.g. --set w_sp=0)
     if args.set_params:
         from dataclasses import replace
         overrides = parse_set_params(args.set_params)
@@ -350,6 +397,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         log_interval=args.log_interval,
         n_workers=args.n_workers,
         save_best_json=args.save_best_json or None,
+        step_offset=step_offset,
+        append_log=append_log,
     )
 
     if not best:
@@ -466,14 +515,14 @@ Examples:
                             help="Rate unit for display (default: transients/min)")
 
     # Target firing rates (required)
-    opt_parser.add_argument("--target_pyr", type=float, required=True,
-                            help="Target mean firing rate for PYR")
-    opt_parser.add_argument("--target_som", type=float, required=True,
-                            help="Target mean firing rate for SOM")
-    opt_parser.add_argument("--target_pv", type=float, required=True,
-                            help="Target mean firing rate for PV")
-    opt_parser.add_argument("--target_vip", type=float, required=True,
-                            help="Target mean firing rate for VIP")
+    opt_parser.add_argument("--target_pyr", type=float, default=None,
+                            help="Target mean firing rate for PYR (not needed with --resume)")
+    opt_parser.add_argument("--target_som", type=float, default=None,
+                            help="Target mean firing rate for SOM (not needed with --resume)")
+    opt_parser.add_argument("--target_pv", type=float, default=None,
+                            help="Target mean firing rate for PV (not needed with --resume)")
+    opt_parser.add_argument("--target_vip", type=float, default=None,
+                            help="Target mean firing rate for VIP (not needed with --resume)")
 
     # Optional knockout targets
     opt_parser.add_argument("--target_alpha7_ko_pyr", type=float, default=None,
@@ -514,7 +563,7 @@ Examples:
     opt_parser.add_argument("--freeze", type=str, default="",
                             help="Comma-separated parameter names to freeze")
     opt_parser.add_argument("--set", dest="set_params", type=str, default="",
-                            help="Override parameter values: 'name=val,name=val' (e.g. --set w_vv=0,w_sp=0)")
+                            help="Override parameter values: 'name=val,name=val' (e.g. --set w_sp=0)")
     opt_parser.add_argument("--show_params", action="store_true",
                             help="Show which parameters are free vs frozen")
 
@@ -523,8 +572,10 @@ Examples:
                             help="Save best parameters to JSON file")
     opt_parser.add_argument("--log_file", type=str, default="results_log.jsonl",
                             help="Log results to JSONL file")
-    opt_parser.add_argument("--log_interval", type=int, default=50,
+    opt_parser.add_argument("--log_interval", type=int, default=500,
                             help="Log every N steps")
+    opt_parser.add_argument("--resume", action="store_true",
+                            help="Resume from best_params.json, appending to existing log")
     opt_parser.add_argument("--n_workers", type=int, default=None,
                             help="Parallel workers (auto if None)")
 
@@ -597,6 +648,16 @@ Examples:
         "--condition", type=str, default="WT",
         help="Experimental condition (default: WT). "
              "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_run_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=250.0,
+        help="Distractor stimulus duration in ms (default: 250). "
+             "Only used when --distractor_factor and --distractor_offset_deg are set.",
+    )
+    ring_run_parser.add_argument(
+        "--delay2_ms", type=float, default=5000.0,
+        help="Delay after distractor offset in ms (default: 5000). "
+             "Only used when the distractor is enabled.",
     )
 
     # =========================================================================
@@ -772,6 +833,95 @@ Examples:
     ring_osc_dist_parser.add_argument(
         "--no_cache", action="store_true",
         help="Ignore cached simulation results and re-run from scratch.",
+    )
+
+    # =========================================================================
+    # RING-OSC-PHASE-DISTRACTOR subcommand
+    # =========================================================================
+    ring_osc_phase_parser = subparsers.add_parser(
+        "ring-osc-phase-distractor",
+        help="Phase-dependent distractor study: vary distractor timing relative to oscillation",
+        description=(
+            "Runs burn-in + cue simulation with a FIXED seed, then applies a distractor "
+            "at different points in the ongoing oscillation cycle (in units of π). "
+            "Measures how PLV and oscillatory power over the post-distractor delay "
+            "depend on the oscillation phase at distractor onset."
+        ),
+    )
+    _add_ring_common(ring_osc_phase_parser)
+    ring_osc_phase_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--distractor_factors", type=float, nargs="+", default=[1.0],
+        help="Distractor amplitude as fraction of cue amplitude (default: 1.0)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--offsets_deg", type=float, nargs="+", default=[90.0],
+        help="Distractor angular offsets from cue in degrees (default: 90)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--delay1_base_ms", type=float, default=500.0,
+        help="Base delay between cue offset and distractor onset (default: 500 ms). "
+             "The actual delay1 is delay1_base + phase_pi * T_osc / 2.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=200.0,
+        help="Duration of distractor stimulus (default: 200 ms)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--delay2_ms", type=float, default=2000.0,
+        help="Post-distractor delay duration (default: 2000 ms)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_phase_sweep", type=int, default=16,
+        help="Number of equally-spaced phase values in [0, 2π) for the sweep (default: 16)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--osc_freq_hz", type=float, default=5.0,
+        help="Fallback oscillation frequency used if auto-detection fails (default: 5 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_trials", type=int, default=10,
+        help="Distractor trials per (condition, amplitude, factor, offset, phase) (default: 10)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run from scratch.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--plot_conditions", type=str, nargs="+", default=None,
+        metavar="COND",
+        help=(
+            "Subset of --conditions to include in plots (default: all simulated conditions). "
+            "Does NOT affect the cache key, so you can re-plot a subset without re-simulating. "
+            "Example: --conditions WT WT_APP a7_KO --plot_conditions WT WT_APP"
+        ),
     )
 
     # =========================================================================
@@ -981,6 +1131,112 @@ Examples:
     )
 
     # =========================================================================
+    # RING-BUMP-DECAY-STUDY subcommand
+    # =========================================================================
+    ring_bump_decay_parser = subparsers.add_parser(
+        "ring-bump-decay-study",
+        help="Assess bump decay vs. self-sustained attractor across conditions",
+        description=(
+            "Run cue-only ring simulations across conditions, amplitude factors, "
+            "and optionally excitatory coupling values (--w_inter_values). "
+            "Normalises each trial's bump amplitude timecourse by its mean value "
+            "at a reference time (default: 400 ms after cue offset). "
+            "Produces (1) normalised timecourse plots (mean ± SEM per condition) "
+            "and (2) 2D heatmaps of mean normalised amplitude in the last 200 ms "
+            "of delay, sweeping amplitude × w_inter."
+        ),
+    )
+    _add_ring_common(ring_bump_decay_parser)
+    ring_bump_decay_parser.set_defaults(delay_ms=10000.0)
+    ring_bump_decay_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT WT_APP). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--amplitudes", type=float, nargs="+",
+        default=[5.0, 10.0, 15.0, 20.0, 25.0],
+        help="Cue amplitude factors (× I_ext_pyr, default: 5 10 15 20 25).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Trials per condition × amplitude × w_inter (default: 50)",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--w_inter_values", type=float, nargs="+", default=None,
+        help="w_pyr_pyr_inter values to sweep for the 2D heatmap. "
+             "If omitted, only the base --w_pyr_pyr_inter value is used "
+             "(no heatmap produced).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--ref_offset_ms", type=float, default=400.0,
+        help="Time after cue offset (ms) used as the normalization reference "
+             "(default: 400 ms).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--window_ms", type=float, default=500.0,
+        help="Width (ms) of time windows for averaging out oscillations "
+             "(default: 500 ms). Used both for the normalization reference "
+             "and for all timecourse bins.",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing pickle cache and recompute all simulations.",
+    )
+
+    # =========================================================================
+    # RING-PRE-CUE-POWER subcommand
+    # =========================================================================
+    ring_pre_cue_parser = subparsers.add_parser(
+        "ring-pre-cue-power-study",
+        help="Pre-cue (noise-only) power spectrum and spectral peakedness analysis",
+        description=(
+            "Run noise-only simulations from the burn-in state to characterise "
+            "spontaneous oscillatory power in the pre-cue baseline period. "
+            "Computes the mean PSD across a frequency band, plots the spectrum "
+            "distribution per condition, and compares a spectral peakedness metric "
+            "(1 − normalised entropy) across conditions with a Mann-Whitney U test."
+        ),
+    )
+    _add_ring_common(ring_pre_cue_parser)
+    ring_pre_cue_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--duration_ms", type=float, default=2000.0,
+        help="Duration of each noise-only trial in ms (default: 2000).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_trials", type=int, default=20,
+        help="Trials per condition (default: 20)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT (default: 2 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT (default: 12 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_window_s", type=float, default=0.5,
+        help="STFT window length in seconds (default: 0.5)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+
+    # =========================================================================
     # RING-BURNIN-STABILITY subcommand
     # =========================================================================
     ring_burnin_parser = subparsers.add_parser(
@@ -1030,8 +1286,10 @@ Examples:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
               "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
+              "'ring-osc-phase-distractor', "
               "'ring-diffusion', 'ring-noise-floor', "
-              "'ring-calibrate', 'ring-asymmetry', or 'ring-burnin-stability'.")
+              "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
+              "or 'ring-pre-cue-power-study'.")
         sys.exit(1)
     elif args.command == "run":
         cmd_run(args)
@@ -1051,6 +1309,9 @@ Examples:
     elif args.command == "ring-osc-distractor-study":
         from .ring.cli import cmd_osc_distractor_study as _cmd
         _cmd(args)
+    elif args.command == "ring-osc-phase-distractor":
+        from .ring.cli import cmd_osc_distractor_phase_study as _cmd
+        _cmd(args)
     elif args.command == "ring-diffusion":
         from .ring.cli import cmd_diffusion as cmd_ring_diffusion
         cmd_ring_diffusion(args)
@@ -1063,8 +1324,14 @@ Examples:
     elif args.command == "ring-asymmetry":
         from .ring.cli import cmd_asymmetry as _cmd
         _cmd(args)
+    elif args.command == "ring-bump-decay-study":
+        from .ring.cli import cmd_bump_decay_study as _cmd
+        _cmd(args)
     elif args.command == "ring-burnin-stability":
         from .ring.cli import cmd_burnin_stability as _cmd
+        _cmd(args)
+    elif args.command == "ring-pre-cue-power-study":
+        from .ring.cli import cmd_pre_cue_power_study as _cmd
         _cmd(args)
     else:
         parser.print_help()
