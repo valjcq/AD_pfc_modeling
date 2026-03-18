@@ -59,6 +59,36 @@ CONDITION_COLORS: dict[str, str] = {
 }
 
 
+def _mark_distractor(
+    ax,
+    distractor_window: Optional[tuple[float, float]],
+    t_offset: float = 0.0,
+    orientation: str = "vertical",
+) -> None:
+    """Draw shading for the distractor stimulus window.
+
+    Parameters:
+        ax: Matplotlib axis (or list of axes)
+        distractor_window: (onset_ms, offset_ms) in absolute simulation time
+        t_offset: Display offset subtracted from absolute time
+        orientation: 'vertical' for time-on-x (default), 'horizontal' for heatmap
+    """
+    if distractor_window is None or distractor_window[1] <= distractor_window[0]:
+        return
+    t_start = distractor_window[0] - t_offset
+    t_end = distractor_window[1] - t_offset
+    axes = ax if hasattr(ax, "__len__") else [ax]
+    for a in axes:
+        if orientation == "vertical":
+            a.axvspan(t_start, t_end, alpha=0.14, color="#E69F00", zorder=0)
+            a.axvline(t_start, color="#E69F00", ls="--", lw=0.8, alpha=0.7)
+            a.axvline(t_end, color="#E69F00", ls="--", lw=0.8, alpha=0.7)
+        else:
+            a.axhspan(t_start, t_end, alpha=0.14, color="#E69F00", zorder=0)
+            a.axhline(t_start, color="#E69F00", ls="--", lw=1, alpha=0.7)
+            a.axhline(t_end, color="#E69F00", ls="--", lw=1, alpha=0.7)
+
+
 def _mark_transient(ax, result: "RingSimulationResult", t_offset: float = 0.0,
                     orientation: str = "vertical"):
     """Draw markers for the response transient window if enabled.
@@ -609,6 +639,8 @@ def plot_bump_tracking(
     ax=None,
     show_cue: bool = True,
     t_offset: float = 0.0,
+    distractor_angle_deg: Optional[float] = None,
+    distractor_window: Optional[tuple[float, float]] = None,
 ):
     """
     Plot decoded bump position over time.
@@ -618,6 +650,8 @@ def plot_bump_tracking(
         population: Which population to decode (0=PYR)
         ax: Matplotlib axis (created if None)
         show_cue: Whether to mark stimulus location
+        distractor_angle_deg: Optional distractor position (horizontal dashed line)
+        distractor_window: Optional (onset_ms, offset_ms) for distractor shading
 
     Returns:
         ax: Matplotlib axis
@@ -640,17 +674,24 @@ def plot_bump_tracking(
     # Mark stimulus
     if show_cue and result.stim_window[1] > result.stim_window[0]:
         ax.axhline(
-            result.stim_angle_deg,
-            color="red",
-            linestyle="--",
-            label=f"Cue: {result.stim_angle_deg:.0f}",
+            result.stim_angle_deg, color="red", linestyle="--",
+            label=f"Cue: {result.stim_angle_deg:.0f}°",
         )
         ax.axvspan(
-            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset, alpha=0.2, color="red"
+            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset,
+            alpha=0.15, color="red", zorder=0,
         )
+
+    if distractor_angle_deg is not None:
+        ax.axhline(
+            distractor_angle_deg, color="#E69F00", linestyle="--",
+            label=f"Distractor: {distractor_angle_deg:.0f}°",
+        )
+
+    if show_cue or distractor_angle_deg is not None:
         ax.legend(loc="upper right")
 
-    # Mark response transient
+    _mark_distractor(ax, distractor_window, t_offset=t_offset)
     _mark_transient(ax, result, t_offset=t_offset)
 
     ax.set_xlabel("Time (ms)")
@@ -667,6 +708,8 @@ def plot_node_activity(
     population: int = 0,
     ax=None,
     t_offset: float = 0.0,
+    distractor_node: Optional[int] = None,
+    distractor_window: Optional[tuple[float, float]] = None,
 ):
     """
     Plot activity at specific nodes over time.
@@ -676,6 +719,8 @@ def plot_node_activity(
         nodes: List of node indices to plot (default: stim node and opposite)
         population: Which population (0=PYR)
         ax: Matplotlib axis (created if None)
+        distractor_node: Optional node index for distractor location (plotted in orange)
+        distractor_window: Optional (onset_ms, offset_ms) for distractor shading
 
     Returns:
         ax: Matplotlib axis
@@ -698,17 +743,29 @@ def plot_node_activity(
             result.t_ms - t_offset,
             result.r[:, node, population],
             color=color,
-            label=f"Node {node} ({angle:.0f})",
+            label=f"Node {node} ({angle:.0f}°)",
             linewidth=1,
+        )
+
+    if distractor_node is not None and distractor_node not in nodes:
+        angle = result.ring_params.node_angles_deg[distractor_node]
+        ax.plot(
+            result.t_ms - t_offset,
+            result.r[:, distractor_node, population],
+            color="#E69F00",
+            label=f"Distractor ({angle:.0f}°)",
+            linewidth=1,
+            ls="--",
         )
 
     # Mark stimulus window
     if result.stim_window[1] > result.stim_window[0]:
         ax.axvspan(
-            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset, alpha=0.2, color="gray"
+            result.stim_window[0] - t_offset, result.stim_window[1] - t_offset,
+            alpha=0.15, color="red", zorder=0,
         )
 
-    # Mark response transient
+    _mark_distractor(ax, distractor_window, t_offset=t_offset)
     _mark_transient(ax, result, t_offset=t_offset)
 
     ax.set_xlabel("Time (ms)")
@@ -724,6 +781,8 @@ def plot_population_activity(
     pre_cue_ms: float = 200.0,
     save_path: Optional[str] = None,
     t_offset: float = 0.0,
+    distractor_node: Optional[int] = None,
+    distractor_window: Optional[tuple[float, float]] = None,
 ):
     """
     Plot firing rate time courses at the cue location and opposite side for all populations,
@@ -745,6 +804,8 @@ def plot_population_activity(
         pre_cue_ms: How many ms before cue onset to include
         save_path: If provided, save figure to this path
         t_offset: Subtracted from absolute time for display (typically BURN_IN_MS)
+        distractor_node: Optional node index for distractor (adds orange dotted curve)
+        distractor_window: Optional (onset_ms, offset_ms) for distractor shading
 
     Returns:
         fig: Matplotlib figure
@@ -757,6 +818,8 @@ def plot_population_activity(
     opp_node = (stim_node + n_nodes // 2) % n_nodes
     stim_angle = result.ring_params.node_angles_deg[stim_node]
     opp_angle = result.ring_params.node_angles_deg[opp_node]
+    has_distractor = distractor_node is not None and distractor_node != stim_node
+    dist_angle = result.ring_params.node_angles_deg[distractor_node] if has_distractor else None
 
     t_start_abs = result.stim_window[0] - pre_cue_ms
     mask = (result.t_ms >= t_start_abs) & (result.t_ms <= result.t_ms[-1])
@@ -767,31 +830,40 @@ def plot_population_activity(
 
     has_adapt = result.I_adapt_stored is not None
 
-    # Build row list: (label, y-label, data_fn)
-    # data_fn(node) -> 1-D array for that node
+    # Build row list: (label, y-label, pop_name, fn_cue, fn_opp, fn_dist|None)
     rows = []
     for i, name in enumerate(POPULATION_NAMES):  # PYR, SOM, PV, VIP
         if name == "VIP":
-            # Two separate rows for VIP
             rows.append(("VIP  —  cue", "VIP\n(Hz)", name,
                          lambda m=mask, nd=stim_node, pi=i: result.r[m, nd, pi],
-                         None))
+                         None, None))
             rows.append(("VIP  —  opposite", "VIP\n(Hz)", name,
                          lambda m=mask, nd=opp_node, pi=i: result.r[m, nd, pi],
-                         None))
+                         None, None))
         else:
+            fn_dist = (
+                (lambda m=mask, nd=distractor_node, pi=i: result.r[m, nd, pi])
+                if has_distractor else None
+            )
             rows.append((name, f"{name}\n(Hz)", name,
                          lambda m=mask, nd=stim_node, pi=i: result.r[m, nd, pi],
-                         lambda m=mask, nd=opp_node, pi=i: result.r[m, nd, pi]))
+                         lambda m=mask, nd=opp_node, pi=i: result.r[m, nd, pi],
+                         fn_dist))
 
     if has_adapt:
         for adapt_idx, name in enumerate(["PYR", "SOM"]):
+            fn_dist_adapt = (
+                (lambda m=mask, nd=distractor_node, ai=adapt_idx:
+                     result.I_adapt_stored[m, nd, ai])
+                if has_distractor else None
+            )
             rows.append(
                 (f"{name} adapt.", f"I_adapt\n(a.u.)", name,
                  lambda m=mask, nd=stim_node, ai=adapt_idx:
                      result.I_adapt_stored[m, nd, ai],
                  lambda m=mask, nd=opp_node, ai=adapt_idx:
-                     result.I_adapt_stored[m, nd, ai])
+                     result.I_adapt_stored[m, nd, ai],
+                 fn_dist_adapt)
             )
 
     n_rows = len(rows)
@@ -799,23 +871,24 @@ def plot_population_activity(
     if n_rows == 1:
         axes = [axes]
 
-    for ax, (title, ylabel, pop_name, fn_cue, fn_opp) in zip(axes, rows):
-        # Choose color: population color for firing rates, adaptation color for adapt rows
+    for ax, (title, ylabel, pop_name, fn_cue, fn_opp, fn_dist) in zip(axes, rows):
         if "adapt" in title:
             color = ADAPTATION_COLORS[pop_name]
         else:
             color = POPULATION_COLORS[pop_name]
 
-        data_cue = fn_cue()
-        ax.plot(t_display, data_cue, color=color, lw=1.5, ls="-")
+        ax.plot(t_display, fn_cue(), color=color, lw=1.5, ls="-")
 
         if fn_opp is not None:
-            data_opp = fn_opp()
-            ax.plot(t_display, data_opp, color=color, lw=1.5, ls="--")
+            ax.plot(t_display, fn_opp(), color=color, lw=1.5, ls="--")
+
+        if fn_dist is not None:
+            ax.plot(t_display, fn_dist(), color="#E69F00", lw=1.5, ls=":")
 
         if cue_off_disp > cue_on_disp:
-            ax.axvspan(cue_on_disp, cue_off_disp, alpha=0.2, color="gray")
+            ax.axvspan(cue_on_disp, cue_off_disp, alpha=0.15, color="red", zorder=0)
 
+        _mark_distractor(ax, distractor_window, t_offset=t_offset)
         _mark_transient(ax, result, t_offset=t_offset)
 
         ax.set_ylabel(ylabel, fontsize=9)
@@ -825,15 +898,22 @@ def plot_population_activity(
     # Shared legend in the first subplot
     legend_handles = [
         Line2D([0], [0], color="k", lw=1.5, ls="-",
-               label=f"Cue location ({stim_angle:.0f}°)"),
+               label=f"Cue ({stim_angle:.0f}°)"),
         Line2D([0], [0], color="k", lw=1.5, ls="--",
                label=f"Opposite ({opp_angle:.0f}°)"),
     ]
+    if has_distractor:
+        legend_handles.append(
+            Line2D([0], [0], color="#E69F00", lw=1.5, ls=":",
+                   label=f"Distractor ({dist_angle:.0f}°)")
+        )
     axes[0].legend(handles=legend_handles, loc="upper right", fontsize=8)
 
     axes[-1].set_xlabel("Time (ms)")
-    fig.suptitle("Population Activity: Cue vs. Opposite Location",
-                 fontsize=12, fontweight="bold")
+    title_str = "Population Activity: Cue vs. Opposite"
+    if has_distractor:
+        title_str += f" vs. Distractor ({dist_angle:.0f}°)"
+    fig.suptitle(title_str, fontsize=12, fontweight="bold")
     _tight_layout_suptitle(fig)
 
     if save_path:
@@ -958,6 +1038,9 @@ def plot_ring_dashboard(
     time_range: Optional[tuple[float, float]] = None,
     t_offset: float = 0.0,
     suptitle: Optional[str] = None,
+    distractor_node: Optional[int] = None,
+    distractor_angle_deg: Optional[float] = None,
+    distractor_window: Optional[tuple[float, float]] = None,
 ):
     """
     Comprehensive visualization dashboard for ring attractor simulation.
@@ -968,6 +1051,9 @@ def plot_ring_dashboard(
         save_path: If provided, save figure to this path
         time_range: Optional (start_ms, end_ms) to restrict displayed time
         suptitle: Optional figure super-title (e.g. stimulus amplitude info)
+        distractor_node: Optional node index at distractor location
+        distractor_angle_deg: Optional distractor angle for bump-tracking hline
+        distractor_window: Optional (onset_ms, offset_ms) for distractor shading
 
     Returns:
         fig: Matplotlib figure
@@ -982,21 +1068,31 @@ def plot_ring_dashboard(
     # Top row: Activity heatmap (spans 2 columns)
     ax_heat = fig.add_subplot(gs[0, :2])
     plot_ring_activity_heatmap(result, ax=ax_heat, time_range=time_range, t_offset=t_offset, show_decoded=False)
+    _mark_distractor(ax_heat, distractor_window, t_offset=t_offset, orientation="horizontal")
 
     # Top right: Snapshot at end of delay
     ax_snap = fig.add_subplot(gs[0, 2], projection="polar")
     t_snap = min(result.stim_window[1] + TRANSIENT_SKIP_TIME_MS, result.t_ms[-1])
     plot_ring_snapshot(result, t_snap, ax=ax_snap, t_offset=t_offset)
+    if distractor_angle_deg is not None:
+        dist_rad = np.deg2rad(distractor_angle_deg)
+        ax_snap.axvline(dist_rad, color="#E69F00", ls="--", lw=1.2, alpha=0.8,
+                        label=f"Distractor ({distractor_angle_deg:.0f}°)")
+        ax_snap.legend(loc="lower right", fontsize=7)
 
     # Middle row: Bump tracking
     ax_track = fig.add_subplot(gs[1, :])
-    plot_bump_tracking(result, ax=ax_track, t_offset=t_offset)
+    plot_bump_tracking(result, ax=ax_track, t_offset=t_offset,
+                       distractor_angle_deg=distractor_angle_deg,
+                       distractor_window=distractor_window)
     if time_range:
         ax_track.set_xlim((time_range[0] - t_offset, time_range[1] - t_offset))
 
     # Bottom left: Activity at specific nodes
     ax_nodes = fig.add_subplot(gs[2, :2])
-    plot_node_activity(result, ax=ax_nodes, t_offset=t_offset)
+    plot_node_activity(result, ax=ax_nodes, t_offset=t_offset,
+                       distractor_node=distractor_node,
+                       distractor_window=distractor_window)
     if time_range:
         ax_nodes.set_xlim((time_range[0] - t_offset, time_range[1] - t_offset))
 
@@ -1246,6 +1342,7 @@ def plot_bump_metrics_comparison(
     comparison_data: dict[str, dict],
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (12, 8),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
 ):
@@ -1276,7 +1373,7 @@ def plot_bump_metrics_comparison(
         color = condition_colors.get(cond_key, None)
 
         from ..study import STUDY_CONDITIONS
-        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+        label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
 
         axes[0].plot(data["t_display"], data["center_deg"], color=color, lw=1, alpha=0.7, label=label)
         axes[1].plot(data["t_display"], data["amplitude"], color=color, lw=1, alpha=0.7, label=label)
@@ -1344,6 +1441,7 @@ def plot_metrics_vs_delay(
     metrics_to_plot: tuple[str, ...] = ("amplitude_mean", "width_mean_deg", "error_from_cue_deg"),
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (14, 5),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
     error_band: str = "sem",
@@ -1387,7 +1485,7 @@ def plot_metrics_vs_delay(
                 continue
             metric_list = metrics_over_delay[cond_key]
             color = condition_colors.get(cond_key, None)
-            label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+            label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
             n_pts = min(len(x_seconds), len(metric_list))
             x = x_seconds[:n_pts]
             for ax, metric_key in zip(row_axes, metrics_to_plot):
@@ -1447,7 +1545,7 @@ def plot_metrics_vs_delay(
 
     for cond_key, metric_list in metrics_over_delay.items():
         color = condition_colors.get(cond_key, None)
-        label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+        label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
         n_pts = min(len(x_seconds), len(metric_list))
         x = x_seconds[:n_pts]
 
@@ -1490,6 +1588,7 @@ def plot_metrics_vs_amplitude(
     metrics_to_plot: tuple[str, ...] = ("amplitude_mean", "width_mean_deg", "error_from_cue_deg"),
     condition_colors: Optional[dict[str, str]] = None,
     figsize: tuple[float, float] = (14, 5),
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
     suptitle: Optional[str] = None,
     error_band: str = "sem",
@@ -1533,7 +1632,7 @@ def plot_metrics_vs_amplitude(
     def _plot_conditions_amplitude(keys, row_axes):
         for cond_key in keys:
             color = condition_colors.get(cond_key, None)
-            label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
+            label = (cond_labels or {}).get(cond_key) or (STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key)
             for ax, metric_key in zip(row_axes, metrics_to_plot):
                 means = []
                 errs = []
@@ -3229,6 +3328,7 @@ def plot_oscillation_amp_sweep_lines(
     cond_order: list,
     stats_per_panel: Optional[list] = None,
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Mean ± std connected-dot plot across cue amplitudes.
@@ -3266,7 +3366,7 @@ def plot_oscillation_amp_sweep_lines(
     legend_handles = []
     for ck in cond_order:
         color = CONDITION_COLORS.get(ck, '#888888')
-        name = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        name = (cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck)
         legend_handles.append(
             plt.Line2D([0], [0], color=color, marker='o', markersize=6,
                        linewidth=1.8, label=name)
@@ -3384,6 +3484,7 @@ def plot_oscillation_amp_sweep_violin(
     amplitudes: list,
     cond_order: list,
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin plot: one violin per (condition, amplitude) pair.
@@ -3423,7 +3524,7 @@ def plot_oscillation_amp_sweep_violin(
     legend_handles = []
     for ci, ck in enumerate(cond_order):
         color = CONDITION_COLORS.get(ck, '#888888')
-        name = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        name = (cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck)
         legend_handles.append(
             plt.Line2D([0], [0], marker='o', color='w',
                        markerfacecolor=color, markersize=8, label=name)
@@ -3485,6 +3586,7 @@ def plot_oscillation_violin(
     cond_order: list[str],
     title: str,
     ylabel: str,
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Plot one violin panel for trial-wise oscillation metrics by condition."""
@@ -3500,7 +3602,7 @@ def plot_oscillation_violin(
     else:
         rng = np.random.default_rng(0)
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vp, nonempty = _safe_violinplot(
             ax, vals, list(positions),
@@ -3541,6 +3643,7 @@ def plot_oscillation_multi_violin(
     cond_order: list,
     suptitle: str = "",
     stats_per_panel: Optional[list] = None,  # list (one per panel) of {cond_a, cond_b, q_value} or None
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin figure grouping several metrics for a single amplitude.
@@ -3575,7 +3678,7 @@ def plot_oscillation_multi_violin(
             continue
 
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or STUDY_CONDITIONS[ck].name for ck in conds]
         vals = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vals_clean = [arr[np.isfinite(arr)] for arr in vals]
         vp, nonempty = _safe_violinplot(
@@ -3656,6 +3759,7 @@ def plot_study_firing_rates_violin(
     cond_order: list,
     stats_rows: Optional[list] = None,  # list of {metric, cond_a, cond_b, q_value}
     suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """Multi-panel violin figure for population firing rates in the ring study.
@@ -3697,7 +3801,7 @@ def plot_study_firing_rates_violin(
             continue
 
         positions = np.arange(len(conds))
-        labels = [STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck for ck in conds]
+        labels = [(cond_labels or {}).get(ck) or (STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck) for ck in conds]
         vals_clean = [np.asarray(values_by_cond[ck], dtype=float) for ck in conds]
         vp, nonempty = _safe_violinplot(
             ax, vals_clean, list(positions),
@@ -4039,3 +4143,1084 @@ def plot_osc_distractor_amp_sweep(
         fig.savefig(save_path, dpi=200, bbox_inches='tight')
     return fig
 
+
+# ============================================================================
+# PRE-CUE POWER SPECTRUM
+# ============================================================================
+
+def plot_pre_cue_power_spectrum(
+    data: dict,
+    condition_colors: Optional[dict] = None,
+    title: str = "",
+    cond_labels: dict[str, str] | None = None,
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Mean power spectrum ± std across trials per condition (pre-cue baseline).
+
+    Parameters
+    ----------
+    data : dict
+        {cond_key: {'freqs_hz': np.ndarray, 'powers': np.ndarray (n_trials, n_freqs)}}
+    condition_colors : dict or None
+        Colour mapping per condition key. Defaults to CONDITION_COLORS.
+    title : str
+        Figure title.
+    save_path : str or None
+
+    Returns
+    -------
+    plt.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    for cond_key, d in data.items():
+        freqs = np.asarray(d['freqs_hz'], dtype=float)
+        powers = np.asarray(d['powers'], dtype=float)  # (n_trials, n_freqs)
+        if freqs.size == 0 or powers.size == 0:
+            continue
+        mean_p = np.mean(powers, axis=0)
+        std_p = np.std(powers, axis=0, ddof=1) if powers.shape[0] > 1 else np.zeros_like(mean_p)
+        color = condition_colors.get(cond_key, None)
+        label = (cond_labels or {}).get(cond_key) or cond_key.replace('_', ' ')
+        ax.plot(freqs, mean_p, color=color, linewidth=2.0, label=label)
+        ax.fill_between(freqs, mean_p - std_p, mean_p + std_p, color=color, alpha=0.2)
+
+    ax.set_xlabel('Frequency (Hz)', fontsize=10)
+    ax.set_ylabel('Mean power (a.u.)', fontsize=10)
+    ax.set_title(title or 'Pre-cue power spectrum', fontsize=11)
+    ax.grid(axis='both', alpha=0.3, linewidth=0.5)
+    ax.legend(loc='best', fontsize=9, framealpha=0.85)
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_pre_cue_power_metric(
+    data: dict,
+    title: str = "",
+    condition_colors: Optional[dict] = None,
+    cond_labels: dict[str, str] | None = None,
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Boxplot of spectral peakedness metric across conditions with statistical test.
+
+    Spectral peakedness = 1 − normalised spectral entropy.
+    High (→1) = one frequency dominates; Low (→0) = flat power spectrum.
+
+    Parameters
+    ----------
+    data : dict
+        {cond_key: np.ndarray of per-trial peakedness values}
+    title : str
+        Figure title.
+    condition_colors : dict or None
+        Colour mapping per condition key. Defaults to CONDITION_COLORS.
+    save_path : str or None
+
+    Returns
+    -------
+    plt.Figure
+    """
+    import matplotlib.pyplot as plt
+    from scipy.stats import mannwhitneyu
+
+    if condition_colors is None:
+        condition_colors = CONDITION_COLORS
+
+    cond_keys = list(data.keys())
+    n_conds = len(cond_keys)
+
+    fig, ax = plt.subplots(figsize=(max(4, 1.5 * n_conds + 2), 4))
+
+    values_list = []
+    for i, ck in enumerate(cond_keys):
+        vals = np.asarray(data[ck], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        values_list.append(vals)
+        color = condition_colors.get(ck, '#888888')
+
+        bp = ax.boxplot(
+            vals, positions=[i], widths=0.5,
+            patch_artist=True,
+            boxprops=dict(facecolor=color, alpha=0.6, linewidth=1.2),
+            medianprops=dict(color='black', linewidth=2.0),
+            whiskerprops=dict(linewidth=1.2),
+            capprops=dict(linewidth=1.2),
+            flierprops=dict(marker='o', markersize=3, alpha=0.5, markerfacecolor=color),
+        )
+        _ = bp  # suppress unused warning
+
+        # Jittered individual points
+        rng = np.random.default_rng(42 + i)
+        jitter = rng.uniform(-0.12, 0.12, size=len(vals))
+        ax.scatter(i + jitter, vals, color=color, s=18, alpha=0.7, zorder=3, edgecolors='none')
+
+    # Pairwise Mann-Whitney U with bracket annotations
+    def _sig_label(p: float) -> str:
+        if p < 0.001:
+            return '***'
+        if p < 0.01:
+            return '**'
+        if p < 0.05:
+            return '*'
+        return 'n.s.'
+
+    y_top = max((v.max() for v in values_list if len(v) > 0), default=1.0)
+    y_range = y_top - min((v.min() for v in values_list if len(v) > 0), default=0.0)
+    step = max(y_range * 0.12, 0.02)
+
+    bracket_level = y_top + step * 0.5
+    for i in range(n_conds):
+        for j in range(i + 1, n_conds):
+            v1, v2 = values_list[i], values_list[j]
+            if len(v1) < 2 or len(v2) < 2:
+                continue
+            _, p = mannwhitneyu(v1, v2, alternative='two-sided')
+            sig = _sig_label(p)
+            ax.plot([i, i, j, j],
+                    [bracket_level, bracket_level + step * 0.3,
+                     bracket_level + step * 0.3, bracket_level],
+                    color='black', linewidth=1.0)
+            ax.text(
+                (i + j) / 2, bracket_level + step * 0.35,
+                f'{sig}\np={p:.3g}',
+                ha='center', va='bottom', fontsize=8,
+            )
+            bracket_level += step * 1.2
+
+    ax.set_xticks(range(n_conds))
+    ax.set_xticklabels([(cond_labels or {}).get(ck) or ck.replace('_', ' ') for ck in cond_keys], fontsize=10)
+    ax.set_ylabel('Spectral peakedness (1 − norm. entropy)', fontsize=9)
+    ax.set_title(title or 'Pre-cue spectral peakedness', fontsize=11)
+    ax.grid(axis='y', alpha=0.3, linewidth=0.5)
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+# ============================================================================
+# OSC-PHASE-DISTRACTOR PLOTTING FUNCTIONS
+# ============================================================================
+
+def _phase_label(phi_pi: float) -> str:
+    """Human-readable label for a phase_pi value (multiples of π)."""
+    fracs = {0.0: '0', 0.25: 'π/4', 0.5: 'π/2', 0.75: '3π/4',
+             1.0: 'π', 1.25: '5π/4', 1.5: '3π/2', 1.75: '7π/4', 2.0: '2π'}
+    nearest = min(fracs.keys(), key=lambda k: abs(k - phi_pi))
+    if abs(nearest - phi_pi) < 1e-6:
+        return fracs[nearest]
+    return f'{phi_pi:.2f}π'
+
+
+def _phase_colors(phase_pis):
+    """Return a dict {phase_pi: color} using a cyclic colormap."""
+    import matplotlib.pyplot as plt
+    cmap = plt.get_cmap('hsv')
+    phase_pis_sorted = sorted(set(phase_pis))
+    n = len(phase_pis_sorted)
+    return {p: cmap(i / max(n, 1)) for i, p in enumerate(phase_pis_sorted)}
+
+
+def plot_osc_phase_timecourses_grid(
+    t_rel_axis: np.ndarray,
+    data_by_phase: dict,
+    dist_offset_s: float,
+    metric: str = 'plv',
+    discrete_phases: Optional[list] = None,
+    ctrl_data: Optional[dict] = None,
+    suptitle: str = "",
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Single overlay plot of timecourses for several discrete oscillation phases.
+
+    All discrete phase curves are drawn on the same axes with distinct colors,
+    allowing direct comparison.  The no-distractor control is shown as a black
+    dashed line.
+
+    Parameters
+    ----------
+    t_rel_axis : np.ndarray
+        Time axis relative to distractor onset (s).
+    data_by_phase : dict
+        {phase_pi: {'plv_mean', 'plv_sd', 'cue_mean', 'cue_sd',
+                    'dist_mean', 'dist_sd'}}
+    dist_offset_s : float
+        Distractor duration in seconds (for the end-of-distractor marker).
+    metric : str
+        One of 'plv', 'cue_power', 'dist_power'.
+    discrete_phases : list of float or None
+        Phase_pi values to display (default: [0, 0.5, 1.0, 1.5]).
+    ctrl_data : dict or None
+        No-distractor control data dict (same keys as a data_by_phase entry).
+    suptitle : str
+    save_path : str or None
+    """
+    import matplotlib.pyplot as plt
+
+    if discrete_phases is None:
+        discrete_phases = [0.0, 0.5, 1.0, 1.5]
+
+    metric_keys = {
+        'plv': ('plv_mean', 'plv_sd', 'PLV (cue ↔ distractor node)'),
+        'cue_power': ('cue_mean', 'cue_sd', 'Cue node dominant power'),
+        'dist_power': ('dist_mean', 'dist_sd', 'Distractor node dominant power'),
+    }
+    mean_key, sd_key, ylabel = metric_keys.get(metric, metric_keys['plv'])
+
+    # Distinct colors for each phase using a perceptually uniform cyclic colormap
+    cmap = plt.get_cmap('hsv')
+    n = len(discrete_phases)
+    phase_colors = [cmap(i / max(n, 1)) for i in range(n)]
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+
+    # No-distractor control (black dashed)
+    if ctrl_data is not None:
+        ym = np.asarray(ctrl_data.get(mean_key, []), dtype=float)
+        ys = np.asarray(ctrl_data.get(sd_key, []), dtype=float)
+        t = np.asarray(t_rel_axis, dtype=float)
+        if len(ym) == len(t) and len(ym) > 0:
+            ax.plot(t, ym, color='black', ls='--', lw=1.5,
+                    label='No distractor', zorder=3)
+            ax.fill_between(t, ym - ys, ym + ys, color='black', alpha=0.10)
+
+    # One curve per discrete phase
+    for phi_pi, color in zip(discrete_phases, phase_colors):
+        d = data_by_phase.get(phi_pi, {})
+        ym = np.asarray(d.get(mean_key, []), dtype=float)
+        ys = np.asarray(d.get(sd_key, []), dtype=float)
+        t = np.asarray(t_rel_axis, dtype=float)
+        if len(ym) == len(t) and len(ym) > 0:
+            ax.plot(t, ym, color=color, lw=2.0,
+                    label=f'{_phase_label(phi_pi)}', zorder=4)
+            ax.fill_between(t, ym - ys, ym + ys, color=color, alpha=0.15)
+
+    ax.axvline(0.0, ls='--', color='gray', lw=1.0, zorder=2)
+    ax.axvline(dist_offset_s, ls=':', color='gray', lw=1.0, zorder=2)
+    ax.set_xlabel('Time relative to distractor onset (s)', fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.grid(axis='y', alpha=0.3, linewidth=0.6)
+    ax.legend(title='Phase', fontsize=8, loc='upper right', framealpha=0.85, ncol=2)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold')
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_osc_phase_sweep(
+    phase_pis: list,
+    sweep_data: dict,
+    ctrl_values: Optional[dict] = None,
+    suptitle: str = "",
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Summary metric vs. oscillation phase (continuous sweep).
+
+    Shows three panels: PLV, cue power, and distractor power over delay2, each
+    as a function of distractor onset phase relative to the ongoing oscillation.
+
+    Parameters
+    ----------
+    phase_pis : list of float
+        Phase values in units of π (0 to 2).
+    sweep_data : dict
+        {metric: {'mean': np.ndarray shape (n_phases,),
+                  'sem':  np.ndarray shape (n_phases,)}}
+        where metric ∈ {'plv', 'cue_power', 'dist_power'}.
+    ctrl_values : dict or None
+        {metric: scalar} — no-distractor control baseline.
+    suptitle : str
+    save_path : str or None
+    """
+    import matplotlib.pyplot as plt
+
+    metrics = [
+        ('plv',        'Mean PLV over delay₂',          'steelblue'),
+        ('cue_power',  'Mean cue node power over delay₂',   'darkorange'),
+        ('dist_power', 'Mean distractor node power over delay₂', 'forestgreen'),
+    ]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    x = np.asarray(phase_pis, dtype=float)
+
+    for ax, (mkey, ylabel, color) in zip(axes, metrics):
+        d = sweep_data.get(mkey, {})
+        mean = np.asarray(d.get('mean', np.full(len(x), np.nan)), dtype=float)
+        sd = np.asarray(d.get('sd', np.zeros(len(x))), dtype=float)
+
+        ax.plot(x, mean, '-o', color=color, lw=2.0, ms=5, zorder=4)
+        ax.fill_between(x, mean - sd, mean + sd, color=color, alpha=0.22)
+
+        if ctrl_values is not None and mkey in ctrl_values:
+            cv = float(ctrl_values[mkey])
+            if np.isfinite(cv):
+                ax.axhline(cv, ls='--', color='black', lw=1.2,
+                           label='No distractor', zorder=3)
+                ax.legend(fontsize=8, loc='upper right', framealpha=0.85)
+
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.grid(alpha=0.35, linewidth=0.6)
+
+    # Phase tick labels: 0, π/2, π, 3π/2, 2π
+    tick_vals = [0.0, 0.5, 1.0, 1.5, 2.0]
+    tick_labels = ['0', 'π/2', 'π', '3π/2', '2π']
+    axes[-1].set_xticks(tick_vals)
+    axes[-1].set_xticklabels(tick_labels, fontsize=10)
+    axes[-1].set_xlabel('Distractor onset phase (relative to cue-onset oscillation)', fontsize=9)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold')
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_osc_phase_polar(
+    phase_pis: list,
+    sweep_data: dict,
+    ctrl_values: Optional[dict] = None,
+    suptitle: str = "",
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Polar rose plot of summary metrics as a function of oscillation phase.
+
+    Three subplots (one per metric) on a polar axis, with radius = metric value.
+    The first point is duplicated to close the circle.
+
+    No baseline circle is drawn for PLV because there is no meaningful
+    no-distractor reference for PLV (no bump exists in that condition).
+    A baseline circle is drawn for cue and distractor node power.
+
+    Parameters
+    ----------
+    phase_pis : list of float
+        Phase values in units of π (0 to 2).
+    sweep_data : dict
+        Same format as for ``plot_osc_phase_sweep``.
+    ctrl_values : dict or None
+        {metric: scalar} — used only for cue_power and dist_power baselines.
+    suptitle : str
+    save_path : str or None
+    """
+    import matplotlib.pyplot as plt
+
+    # (metric_key, title, color, show_baseline)
+    metrics = [
+        ('plv',        'PLV',              'steelblue',   False),
+        ('cue_power',  'Cue power',        'darkorange',  True),
+        ('dist_power', 'Distractor power', 'forestgreen', True),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5),
+                             subplot_kw={'projection': 'polar'})
+
+    x_rad = np.asarray(phase_pis, dtype=float) * np.pi  # π-units → radians
+    x_rad_c = np.append(x_rad, x_rad[0]) if len(x_rad) > 0 else x_rad
+
+    for ax, (mkey, title, color, show_baseline) in zip(axes, metrics):
+        d = sweep_data.get(mkey, {})
+        mean = np.asarray(d.get('mean', np.full(len(x_rad), np.nan)), dtype=float)
+        sd = np.asarray(d.get('sd', np.zeros(len(x_rad))), dtype=float)
+
+        mean_c = np.append(mean, mean[0]) if len(mean) > 0 else mean
+        sem_c = np.append(sd, sd[0]) if len(sd) > 0 else sd
+
+        ax.plot(x_rad_c, mean_c, '-', color=color, lw=2.0, zorder=4)
+        ax.fill_between(x_rad_c, np.maximum(mean_c - sem_c, 0),
+                        mean_c + sem_c, color=color, alpha=0.22)
+
+        if show_baseline and ctrl_values is not None and mkey in ctrl_values:
+            cv = float(ctrl_values[mkey])
+            if np.isfinite(cv):
+                theta_full = np.linspace(0, 2 * np.pi, 200)
+                ax.plot(theta_full, np.full_like(theta_full, cv),
+                        ls='--', color='black', lw=1.0, label='No distractor')
+                ax.legend(fontsize=7, loc='lower right')
+
+        ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2])
+        ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=9)
+        ax.set_title(title, fontsize=10, fontweight='bold', pad=12)
+        ax.grid(alpha=0.35)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold', y=1.02)
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_osc_phase_heatmap(
+    phase_pis: list,
+    t_rel_axis: np.ndarray,
+    heatmap_data: np.ndarray,
+    dist_offset_s: float,
+    metric: str = 'plv',
+    suptitle: str = "",
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Phase × time heatmap of a post-distractor metric.
+
+    Parameters
+    ----------
+    phase_pis : list of float
+        Phase values in units of π (rows of heatmap).
+    t_rel_axis : np.ndarray
+        Time axis relative to distractor onset (s) (columns of heatmap).
+    heatmap_data : np.ndarray, shape (n_phases, n_times)
+        Mean metric value for each (phase, time) bin.
+    dist_offset_s : float
+        Distractor duration (for the end-of-distractor marker).
+    metric : str
+        Label string for the colorbar title.
+    suptitle : str
+    save_path : str or None
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+
+    metric_labels = {
+        'plv':        'PLV',
+        'cue_power':  'Cue node power',
+        'dist_power': 'Distractor node power',
+    }
+    cbar_label = metric_labels.get(metric, metric)
+
+    data = np.asarray(heatmap_data, dtype=float)
+    if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        return fig
+
+    t = np.asarray(t_rel_axis, dtype=float)
+    phases = np.asarray(phase_pis, dtype=float)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    vmin = float(np.nanmin(data))
+    vmax = float(np.nanmax(data))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin, vmax = 0.0, 1.0
+
+    im = ax.pcolormesh(t, phases, data, shading='auto',
+                       cmap='viridis', vmin=vmin, vmax=vmax)
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(cbar_label, fontsize=9)
+
+    ax.axvline(0.0, ls='--', color='white', lw=1.2, label='Distractor on')
+    ax.axvline(dist_offset_s, ls=':', color='white', lw=1.2, label='Distractor off')
+
+    # Phase tick labels
+    tick_vals = [p for p in [0.0, 0.5, 1.0, 1.5, 2.0] if phases[0] <= p <= phases[-1]]
+    tick_labels = ['0', 'π/2', 'π', '3π/2', '2π'][:len(tick_vals)]
+    ax.set_yticks(tick_vals)
+    ax.set_yticklabels(tick_labels, fontsize=9)
+    ax.set_ylabel('Distractor onset phase', fontsize=9)
+    ax.set_xlabel('Time relative to distractor onset (s)', fontsize=9)
+
+    handles = [
+        plt.Line2D([0], [0], ls='--', color='white', lw=1.2, label='Distractor on'),
+        plt.Line2D([0], [0], ls=':', color='white', lw=1.2, label='Distractor off'),
+    ]
+    ax.legend(handles=handles, fontsize=8, loc='upper right', framealpha=0.7)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold')
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_osc_phase_sweep_offsets(
+    phase_pis: list,
+    sweep_data_by_offset: dict,
+    ctrl_values_by_offset: Optional[dict] = None,
+    suptitle: str = "",
+    save_path: Optional[str] = None,
+) -> "plt.Figure":
+    """Summary phase sweep with all distractor angular offsets on the same axes.
+
+    Three rows (PLV, cue power, distractor power), one colored line per
+    offset angle.  This gives an overview of how the phase dependence differs
+    across distractor locations.
+
+    Parameters
+    ----------
+    phase_pis : list of float
+        Phase values in units of π (0 to 2), shared x-axis.
+    sweep_data_by_offset : dict
+        {offset_deg: {metric: {'mean': ndarray, 'sem': ndarray}}}
+        where metric ∈ {'plv', 'cue_power', 'dist_power'}.
+    ctrl_values_by_offset : dict or None
+        {offset_deg: {metric: scalar}} — no-distractor baselines drawn as
+        horizontal dashed lines matching each offset color (power only).
+    suptitle : str
+    save_path : str or None
+    """
+    import matplotlib.pyplot as plt
+
+    offsets = sorted(sweep_data_by_offset.keys(), key=float)
+    colors = _offset_colors(offsets)
+
+    metrics = [
+        ('plv',        'Mean PLV over delay₂',                    False),
+        ('cue_power',  'Mean cue node power over delay₂',         True),
+        ('dist_power', 'Mean distractor node power over delay₂',  True),
+    ]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    x = np.asarray(phase_pis, dtype=float)
+    tick_vals = [0.0, 0.5, 1.0, 1.5, 2.0]
+    tick_labels = ['0', 'π/2', 'π', '3π/2', '2π']
+
+    for ax, (mkey, ylabel, show_ctrl) in zip(axes, metrics):
+        for off in offsets:
+            d = sweep_data_by_offset[off].get(mkey, {})
+            mean = np.asarray(d.get('mean', np.full(len(x), np.nan)), dtype=float)
+            sd = np.asarray(d.get('sd', np.zeros(len(x))), dtype=float)
+            c = colors[off]
+            lbl = f'{int(off)}°'
+            ax.plot(x, mean, '-o', color=c, lw=2.0, ms=4, label=lbl, zorder=4)
+            ax.fill_between(x, mean - sd, mean + sd, color=c, alpha=0.15)
+
+            if show_ctrl and ctrl_values_by_offset is not None:
+                cv = float(ctrl_values_by_offset.get(off, {}).get(mkey, np.nan))
+                if np.isfinite(cv):
+                    ax.axhline(cv, ls='--', color=c, lw=0.9, alpha=0.6, zorder=3)
+
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.grid(alpha=0.35, linewidth=0.6)
+        ax.legend(title='Offset', fontsize=8, loc='upper right',
+                  framealpha=0.85, ncol=min(len(offsets), 4))
+
+    axes[-1].set_xticks(tick_vals)
+    axes[-1].set_xticklabels(tick_labels, fontsize=10)
+    axes[-1].set_xlabel('Distractor onset phase (relative to cue-onset oscillation)', fontsize=9)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold')
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+def plot_osc_conditions_boxplot(
+    t_axis: np.ndarray,
+    data_by_condition: dict,
+    dist_offset_s: float = 0.2,
+    max_bins: int = 20,
+    suptitle: str = "",
+    cond_labels: dict[str, str] | None = None,
+    save_path: Optional[str] = None,
+    condition_colors: Optional[dict] = None,
+) -> "plt.Figure":
+    """Grouped box plots per STFT time bin comparing experimental conditions.
+
+    Three rows (PLV, cue node power, distractor node power).  At each time bin
+    a compact box plot is drawn for every condition side-by-side.  Pairwise
+    Mann-Whitney U tests are computed between all condition pairs at each bin;
+    a significance strip below each row marks bins where at least one pair
+    differs significantly (α = 0.05, uncorrected).
+
+    Parameters
+    ----------
+    t_axis : np.ndarray, shape (n_times,)
+        STFT time bin centres in seconds relative to distractor onset.
+    data_by_condition : dict
+        {cond_key: {metric: np.ndarray shape (n_trials, n_times)}}
+        where metric ∈ {'plv', 'cue_power', 'dist_power'}.
+        Missing / all-NaN entries are silently skipped.
+    dist_offset_s : float
+        Distractor duration in seconds (for the 2nd vertical marker).
+    max_bins : int
+        Maximum number of time bins to display; bins are sub-sampled uniformly
+        if the STFT produces more than this many.
+    suptitle : str
+    save_path : str or None
+    condition_colors : dict or None
+        Optional {cond_key: color} mapping.  When provided, overrides the
+        default CONDITION_COLORS palette (e.g. for phase labels or any
+        arbitrary grouping variable).  Keys are ordered as given.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+    from itertools import combinations
+
+    t_full = np.asarray(t_axis, dtype=float)
+    n_full = len(t_full)
+    if n_full == 0:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                transform=ax.transAxes)
+        return fig
+
+    # Sub-sample time bins if needed
+    if n_full > max_bins:
+        step = int(np.ceil(n_full / max_bins))
+        sel_idx = np.arange(0, n_full, step)
+    else:
+        sel_idx = np.arange(n_full)
+    t_sel = t_full[sel_idx]
+    n_bins = len(t_sel)
+
+    eff_colors = condition_colors if condition_colors is not None else CONDITION_COLORS
+    if condition_colors is not None:
+        # Use caller-supplied order, then append any unlisted keys
+        cond_keys = [ck for ck in condition_colors if ck in data_by_condition]
+        cond_keys += [ck for ck in data_by_condition if ck not in cond_keys]
+    else:
+        cond_keys = [ck for ck in CONDITION_COLORS if ck in data_by_condition]
+        cond_keys += [ck for ck in data_by_condition if ck not in cond_keys]
+    n_cond = len(cond_keys)
+    if n_cond == 0:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'No conditions', ha='center', va='center',
+                transform=ax.transAxes)
+        return fig
+
+    metrics = [
+        ('plv',        'PLV'),
+        ('cue_power',  'Cue node power'),
+        ('dist_power', 'Distractor node power'),
+    ]
+    n_metrics = len(metrics)
+
+    # Adaptive box width
+    if n_bins > 1:
+        dt = float(np.median(np.diff(t_sel)))
+    else:
+        dt = 1.0
+    box_w = dt * 0.65 / max(n_cond, 1)
+    cond_offsets = (np.arange(n_cond) - (n_cond - 1) / 2.0) * box_w * 1.15
+
+    fig_w = max(10, n_bins * n_cond * 0.35 + 2)
+    # gridspec: 3 metric rows + 3 thin significance strips
+    import matplotlib.gridspec as gridspec
+    fig = plt.figure(figsize=(fig_w, n_metrics * 2.8 + 1.0))
+    gs = gridspec.GridSpec(
+        n_metrics * 2, 1,
+        height_ratios=[4, 0.4] * n_metrics,
+        hspace=0.08,
+    )
+    axes_main = [fig.add_subplot(gs[i * 2])     for i in range(n_metrics)]
+    axes_sig  = [fig.add_subplot(gs[i * 2 + 1]) for i in range(n_metrics)]
+
+    pair_colors = {}
+    if n_cond > 1:
+        pair_cmap = plt.get_cmap('tab10')
+        pairs = list(combinations(range(n_cond), 2))
+        for k, (ia, ib) in enumerate(pairs):
+            pair_colors[(ia, ib)] = pair_cmap(k % 10)
+
+    for row_i, (metric, ylabel) in enumerate(metrics):
+        ax = axes_main[row_i]
+        ax_sig = axes_sig[row_i]
+        ax_sig.set_xlim(ax.get_xlim())  # will sync later
+
+        sig_x = []
+        sig_colors_at_x = []
+
+        for bin_i, (ti, src_i) in enumerate(zip(t_sel, sel_idx)):
+            for cond_j, ck in enumerate(cond_keys):
+                arr2d = data_by_condition.get(ck, {}).get(metric)
+                if arr2d is None or arr2d.ndim != 2 or src_i >= arr2d.shape[1]:
+                    continue
+                vals = arr2d[:, src_i]
+                vals = vals[np.isfinite(vals)]
+                if len(vals) == 0:
+                    continue
+
+                pos = ti + cond_offsets[cond_j]
+                c = eff_colors.get(ck, '#888888')
+                ax.boxplot(
+                    vals,
+                    positions=[pos],
+                    widths=box_w * 0.85,
+                    patch_artist=True,
+                    boxprops=dict(facecolor=c, alpha=0.65, linewidth=0.7),
+                    medianprops=dict(color='black', lw=1.4),
+                    whiskerprops=dict(lw=0.7, color='#444'),
+                    capprops=dict(lw=0.7, color='#444'),
+                    flierprops=dict(marker='.', ms=2.5, alpha=0.45,
+                                    markerfacecolor=c),
+                    manage_ticks=False,
+                )
+
+            # Pairwise significance at this time bin
+            bin_sig_colors = []
+            for (ia, ib), pc in pair_colors.items():
+                cka, ckb = cond_keys[ia], cond_keys[ib]
+                a2 = data_by_condition.get(cka, {}).get(metric)
+                b2 = data_by_condition.get(ckb, {}).get(metric)
+                if a2 is None or b2 is None:
+                    continue
+                if a2.ndim != 2 or b2.ndim != 2:
+                    continue
+                if src_i >= a2.shape[1] or src_i >= b2.shape[1]:
+                    continue
+                av = a2[:, src_i]; av = av[np.isfinite(av)]
+                bv = b2[:, src_i]; bv = bv[np.isfinite(bv)]
+                if len(av) < 3 or len(bv) < 3:
+                    continue
+                try:
+                    from scipy.stats import mannwhitneyu
+                    _, p = mannwhitneyu(av, bv, alternative='two-sided')
+                    if p < 0.05:
+                        bin_sig_colors.append(pc)
+                except Exception:
+                    pass
+
+            if bin_sig_colors:
+                sig_x.append(ti)
+                sig_colors_at_x.append(bin_sig_colors)
+
+        # Significance strip
+        half_dt = dt / 2.0
+        for ti, colors_list in zip(sig_x, sig_colors_at_x):
+            n_strips = len(colors_list)
+            sub_h = 1.0 / max(n_strips, 1)
+            for k, sc in enumerate(colors_list):
+                ax_sig.axvspan(
+                    ti - half_dt, ti + half_dt,
+                    ymin=k * sub_h, ymax=(k + 1) * sub_h,
+                    color=sc, alpha=0.65,
+                )
+
+        ax.axvline(0.0, ls='--', color='gray', lw=0.9, zorder=2)
+        ax.axvline(dist_offset_s, ls=':', color='gray', lw=0.9, zorder=2)
+        ax.set_xlim(t_sel[0] - dt, t_sel[-1] + dt)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.grid(axis='y', alpha=0.3, linewidth=0.5)
+        ax.tick_params(labelbottom=False)
+
+        ax_sig.axvline(0.0, ls='--', color='gray', lw=0.7, zorder=2)
+        ax_sig.axvline(dist_offset_s, ls=':', color='gray', lw=0.7, zorder=2)
+        ax_sig.set_xlim(t_sel[0] - dt, t_sel[-1] + dt)
+        ax_sig.set_yticks([])
+        ax_sig.set_ylabel('sig.', fontsize=6, rotation=0, labelpad=18, va='center')
+        if row_i < n_metrics - 1:
+            ax_sig.tick_params(labelbottom=False)
+        else:
+            ax_sig.set_xlabel('Time relative to distractor onset (s)', fontsize=9)
+
+    # Legend: conditions
+    cond_patches = [
+        Patch(facecolor=eff_colors.get(ck, '#888'),
+              label=(cond_labels or {}).get(ck) or ck, alpha=0.8)
+        for ck in cond_keys
+    ]
+    # Legend: sig-strip pairs
+    pair_patches = [
+        Patch(facecolor=pc,
+              label=f'{(cond_labels or {}).get(cond_keys[ia]) or cond_keys[ia]} vs {(cond_labels or {}).get(cond_keys[ib]) or cond_keys[ib]}',
+              alpha=0.65)
+        for (ia, ib), pc in pair_colors.items()
+    ]
+    axes_main[0].legend(
+        handles=cond_patches + pair_patches,
+        fontsize=7.5, loc='upper right', framealpha=0.85,
+        ncol=max(1, (len(cond_patches) + len(pair_patches)) // 3),
+        title='Conditions / significance strips',
+        title_fontsize=7,
+    )
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=11, fontweight='bold')
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    return fig
+
+
+# ============================================================================
+# BUMP DECAY STUDY
+# ============================================================================
+
+def plot_bump_decay_timecourse(
+    lines_data: dict,
+    condition_keys: list,
+    stim_duration_ms: float,
+    ref_bin_center: float,
+    delay_ms=None,
+    title: str = "",
+    save_path=None,
+):
+    """Plot window-averaged normalised bump amplitude, one line per condition.
+
+    Parameters
+    ----------
+    lines_data : dict
+        {cond_key: {'bin_centers': array, 'mean_bins': array, 'sem_bins': array,
+                    'n_trials': int}}
+    condition_keys : list[str]
+        Ordered list of conditions to plot.
+    stim_duration_ms : float
+        Duration of cue stimulus (ms) — marks cue offset on x-axis.
+    ref_bin_center : float
+        Center of the normalisation reference bin (ms from cue onset).
+    delay_ms : float, optional
+        If given, draws a vertical line at cue_onset + stim_duration + delay_ms.
+    title : str
+        Figure title.
+    save_path : str, optional
+        If provided, figure is saved here.
+
+    Returns
+    -------
+    fig : matplotlib.Figure
+    """
+    import matplotlib.pyplot as plt
+    from ..study import STUDY_CONDITIONS
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+
+    for ck in condition_keys:
+        d = lines_data.get(ck)
+        if d is None:
+            continue
+        color   = CONDITION_COLORS.get(ck, "#888888")
+        t_ms    = np.asarray(d["bin_centers"])
+        mean    = np.asarray(d["mean_bins"])
+        sem     = np.asarray(d["sem_bins"])
+        label   = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        n       = d.get("n_trials", "")
+        ax.errorbar(t_ms, mean, yerr=sem, color=color,
+                    marker="o", markersize=5, linewidth=1.8,
+                    capsize=4, capthick=1.2, elinewidth=1.0,
+                    label=f"{label} (n={n})")
+
+    ax.axvline(0.0, color="gray", ls=":", lw=1.0, label="Cue onset")
+    ax.axvline(stim_duration_ms, color="gray", ls="--", lw=1.0, label="Cue offset")
+    ax.axvline(ref_bin_center, color="black", ls="-.", lw=1.2, alpha=0.6,
+               label=f"Ref bin ({ref_bin_center:.0f} ms)")
+    ax.axhline(1.0, color="black", ls=":", lw=0.8, alpha=0.4)
+
+    if delay_ms is not None:
+        ax.axvline(stim_duration_ms + delay_ms, color="red", ls=":", lw=0.8, alpha=0.5,
+                   label="Delay end")
+
+    ax.set_xlabel("Time since cue onset (ms)")
+    ax.set_ylabel("Normalised bump amplitude ($\\hat{A}$)")
+    ax.set_title(title)
+    ax.legend(fontsize=8, framealpha=0.85)
+    ax.grid(alpha=0.3, linewidth=0.6)
+
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_bump_decay_boxplot(
+    lines_data: dict,
+    condition_keys: list,
+    stim_duration_ms: float,
+    ref_bin_center: float,
+    title: str = "",
+    save_path=None,
+):
+    """Boxplot of normalised bump amplitude at each time bin, comparing conditions.
+
+    Each x-position is a time bin centre.  Within each bin, conditions are
+    drawn side-by-side as violin plots with jittered individual trial points,
+    identical in style to the oscillation violin plots.
+
+    Parameters
+    ----------
+    lines_data : dict
+        {cond_key: {'bin_centers': array, 'per_bin_vals': list[array],
+                    'n_trials': int}}
+    condition_keys : list[str]
+        Ordered list of conditions to plot.
+    stim_duration_ms : float
+        Duration of cue stimulus (ms) — marks cue offset.
+    ref_bin_center : float
+        Centre of the normalisation reference bin (ms).
+    title : str
+        Figure title.
+    save_path : str, optional
+        If provided, figure is saved here.
+
+    Returns
+    -------
+    fig : matplotlib.Figure
+    """
+    import matplotlib.pyplot as plt
+    from ..study import STUDY_CONDITIONS
+
+    # Collect bin centres from first available group
+    bin_centers = None
+    for ck in condition_keys:
+        d = lines_data.get(ck)
+        if d is not None:
+            bin_centers = np.asarray(d["bin_centers"])
+            break
+    if bin_centers is None:
+        fig, ax = plt.subplots()
+        return fig
+
+    n_bins  = len(bin_centers)
+    n_conds = len(condition_keys)
+
+    # Condition x-offsets within each bin (mirror oscillation violin style)
+    if n_conds == 1:
+        offsets = [0.0]
+    else:
+        half    = 0.28
+        offsets = list(np.linspace(-half, half, n_conds))
+
+    # Figure width scales with number of bins
+    fig_w = max(10, n_bins * 0.6 * max(1, n_conds * 0.5))
+    fig, ax = plt.subplots(figsize=(fig_w, 4.5))
+
+    rng = np.random.default_rng(0)
+
+    legend_handles = []
+    for ci, ck in enumerate(condition_keys):
+        color = CONDITION_COLORS.get(ck, "#888888")
+        name  = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        legend_handles.append(
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor=color, markersize=8, label=name)
+        )
+
+        d = lines_data.get(ck)
+        if d is None:
+            continue
+        per_bin_vals = d["per_bin_vals"]
+
+        xpos_list, vals_list = [], []
+        for bi in range(n_bins):
+            vals = np.asarray(per_bin_vals[bi], dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if len(vals) == 0:
+                continue
+            xpos_list.append(bi + offsets[ci])
+            vals_list.append(vals)
+
+        if not vals_list:
+            continue
+
+        vp, _ = _safe_violinplot(
+            ax, vals_list, xpos_list,
+            showmedians=True, widths=0.30, showextrema=False,
+        )
+        if vp is not None:
+            for body in vp["bodies"]:
+                body.set_facecolor(color)
+                body.set_alpha(0.40)
+                body.set_edgecolor("none")
+            vp["cmedians"].set_color("black")
+            vp["cmedians"].set_linewidth(1.5)
+
+        for xpos, vals in zip(xpos_list, vals_list):
+            jitter = rng.uniform(-0.06, 0.06, size=len(vals))
+            ax.scatter(xpos + jitter, vals, s=6, color=color,
+                       alpha=0.35, linewidths=0, zorder=3)
+
+    ax.set_xticks(range(n_bins))
+    ax.set_xticklabels([f"{int(c)}" for c in bin_centers], rotation=45, ha="right", fontsize=7)
+    ax.set_xlabel("Bin centre — time since cue onset (ms)")
+    ax.set_ylabel("Normalised bump amplitude ($\\hat{A}$)")
+    ax.set_title(title)
+
+    # Mark cue offset and reference bin
+    ref_bin_idx = int(np.argmin(np.abs(bin_centers - ref_bin_center)))
+    ax.axvline(ref_bin_idx, color="black", ls="-.", lw=1.2, alpha=0.6,
+               label=f"Ref bin ({ref_bin_center:.0f} ms)")
+    ax.axhline(1.0, color="black", ls=":", lw=0.8, alpha=0.4)
+
+    # Find bin closest to cue offset
+    cue_off_idx = int(np.argmin(np.abs(bin_centers - stim_duration_ms)))
+    ax.axvline(cue_off_idx, color="gray", ls="--", lw=1.0, label="Cue offset")
+
+    ax.legend(handles=legend_handles, fontsize=8, framealpha=0.85)
+    ax.grid(axis="y", alpha=0.3, linewidth=0.6)
+
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_bump_decay_heatmap(
+    heatmap_data: dict,
+    amplitudes: list,
+    w_inter_values: list,
+    condition: str = "",
+    figsize: tuple = (8, 6),
+    save_path=None,
+):
+    """2D heatmap of mean normalised bump amplitude in the last time bin.
+
+    Parameters
+    ----------
+    heatmap_data : dict
+        Maps (amplitude, w_inter) -> scalar (mean normalised A_hat, last bin).
+    amplitudes : list[float]
+        Amplitude values (x-axis).
+    w_inter_values : list[float]
+        w_pyr_pyr_inter values (y-axis).
+    condition : str
+        Condition name for the title.
+    figsize : tuple
+        Figure size.
+    save_path : str, optional
+        If provided, figure is saved here.
+
+    Returns
+    -------
+    fig : matplotlib.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    n_amp = len(amplitudes)
+    n_w   = len(w_inter_values)
+    mat   = np.full((n_w, n_amp), np.nan)
+
+    for i, w in enumerate(w_inter_values):
+        for j, amp in enumerate(amplitudes):
+            val = heatmap_data.get((amp, w), np.nan)
+            mat[i, j] = val
+
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.imshow(mat, aspect="auto", cmap="RdYlGn", origin="lower",
+                   vmin=0.0, vmax=1.5)
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("Mean normalised $\\hat{A}$ (last time bin)")
+
+    ax.set_xticks(range(n_amp))
+    ax.set_xticklabels([f"{a:.0f}" for a in amplitudes])
+    ax.set_yticks(range(n_w))
+    ax.set_yticklabels([f"{w:.2f}" for w in w_inter_values])
+    ax.set_xlabel("Stimulus amplitude (× $I_{ext,pyr}$)")
+    ax.set_ylabel("$w_{pyr \\to pyr}^{inter}$")
+
+    mid = (np.nanmax(mat) + np.nanmin(mat)) / 2.0 if not np.all(np.isnan(mat)) else 0.75
+    for i in range(n_w):
+        for j in range(n_amp):
+            val = mat[i, j]
+            if not np.isnan(val):
+                text_color = "white" if val < mid else "black"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=8, color=text_color)
+
+    suptitle = f"Bump Decay — {condition}" if condition else "Bump Decay"
+    fig.suptitle(suptitle, fontsize=13, fontweight="bold")
+    _tight_layout_suptitle(fig)
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig

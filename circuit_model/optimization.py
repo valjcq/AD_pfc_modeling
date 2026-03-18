@@ -14,11 +14,12 @@ This module contains:
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, fields, replace
 from typing import Any, Optional
 import os
+from pathlib import Path
 
 import nevergrad as ng
 import numpy as np
@@ -93,58 +94,34 @@ def run_condition(args: tuple[str, CircuitParams, FitConfig, int]) -> ConditionR
     return name, ok, means
 
 
-def evaluate_params(
+def _build_conditions(
     params: CircuitParams,
     target: TargetRates,
     cfg: FitConfig,
-    *,
     rng: np.random.Generator,
-    executor: Optional[ProcessPoolExecutor] = None,
-) -> tuple[float, np.ndarray, KOMeans]:
-    """
-    Evaluate a parameter set under baseline and knockout conditions.
-
-    Runs simulations for:
-    1. Base condition (all receptors active)
-    2. alpha7 KO (if target specified): removes alpha7 currents AND GABA enhancement
-    3. alpha5 KO (if target specified): removes alpha5 currents to VIP
-    4. beta2 KO (if target specified): removes beta2 currents to SOM
-
-    Returns total loss, base mean rates, and knockout mean rates.
-    """
+) -> list[tuple[str, CircuitParams, FitConfig, int]]:
+    """Build list of (name, params, cfg, seed) conditions to simulate."""
     conditions: list[tuple[str, CircuitParams, FitConfig, int]] = [
         ("base", params, cfg, int(rng.integers(0, 2**31 - 1))),
     ]
-
-    # alpha7 KO: Simulates genetic knockout or pharmacological blockade of alpha7 nAChRs
-    # Effects: (1) Remove alpha7-mediated currents to PV and SOM
-    #          (2) Remove alpha7-dependent GABA enhancement (g_alpha7 -> 0)
-    # Typically causes disinhibition -> increased PYR firing
+    # alpha7 KO: remove alpha7-mediated currents AND GABA enhancement
     if target.alpha7_ko_pyr is not None:
-        conditions.append(
-            (
-                "alpha7_ko",
-                replace(params, act_alpha7=0.0, g_alpha7=0.0),
-                cfg,
-                int(rng.integers(0, 2**31 - 1)),
-            )
-        )
-
-    # alpha5 KO: Removes alpha5 nAChR contribution to VIP
-    # Effects: Reduced VIP activity -> less SOM inhibition -> more SOM -> less PYR
+        conditions.append(("alpha7_ko", replace(params, act_alpha7=0.0, g_alpha7=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
+    # alpha5 KO: remove alpha5 contribution to VIP
     if target.alpha5_ko_pyr is not None:
         conditions.append(("alpha5_ko", replace(params, act_alpha5=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
-
-    # beta2 KO: Removes beta2 nAChR contribution to SOM
-    # Effects: Reduced SOM activity -> less dendritic inhibition -> increased PYR
+    # beta2 KO: remove beta2 contribution to SOM
     if target.beta2_ko_pyr is not None:
         conditions.append(("beta2_ko", replace(params, act_beta2=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
+    return conditions
 
-    if executor is not None and len(conditions) > 1:
-        results = list(executor.map(run_condition, conditions))
-    else:
-        results = [run_condition(c) for c in conditions]
 
+def _loss_from_results(
+    results: list[ConditionResult],
+    target: TargetRates,
+    cfg: FitConfig,
+) -> tuple[float, np.ndarray, KOMeans]:
+    """Compute total loss from a list of condition simulation results."""
     ko_means = KOMeans()
     base_means = np.zeros(4, dtype=float)
 
@@ -165,30 +142,41 @@ def evaluate_params(
 
     if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
         total += loss_from_ko_pyr(
-            float(ko_means.alpha7_ko[0]),
-            target.alpha7_ko_pyr,
-            base_pyr,
+            float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
     if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
         total += loss_from_ko_pyr(
-            float(ko_means.alpha5_ko[0]),
-            target.alpha5_ko_pyr,
-            base_pyr,
+            float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
     if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
         total += loss_from_ko_pyr(
-            float(ko_means.beta2_ko[0]),
-            target.beta2_ko_pyr,
-            base_pyr,
+            float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
 
     return total, base_means, ko_means
+
+
+def evaluate_params(
+    params: CircuitParams,
+    target: TargetRates,
+    cfg: FitConfig,
+    *,
+    rng: np.random.Generator,
+    executor: Optional[ProcessPoolExecutor] = None,
+) -> tuple[float, np.ndarray, KOMeans]:
+    """Evaluate a parameter set under baseline and knockout conditions."""
+    conditions = _build_conditions(params, target, cfg, rng)
+    if executor is not None and len(conditions) > 1:
+        results = list(executor.map(run_condition, conditions))
+    else:
+        results = [run_condition(c) for c in conditions]
+    return _loss_from_results(results, target, cfg)
 
 
 def build_nevergrad_parametrization(
@@ -238,6 +226,8 @@ def nevergrad_optimize(
     log_interval: int = 50,
     n_workers: Optional[int] = None,
     save_best_json: Optional[str] = None,
+    step_offset: int = 0,
+    append_log: bool = False,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -260,82 +250,112 @@ def nevergrad_optimize(
     """
     rng = np.random.default_rng(seed)
 
+    n_conditions = 1 + sum([
+        target.alpha7_ko_pyr is not None,
+        target.alpha5_ko_pyr is not None,
+        target.beta2_ko_pyr is not None,
+    ])
+
+    # Compute how many candidates to evaluate in parallel (batch mode).
+    # total_workers = total concurrent simulation slots;
+    # batch_size = candidates per step = total_workers // n_conditions.
+    if n_workers in (None, 0):
+        total_workers = os.cpu_count() or 4
+    elif n_workers == 1:
+        total_workers = 1
+    else:
+        total_workers = n_workers
+
+    use_parallel = total_workers > 1
+    batch_size = max(1, total_workers // n_conditions)
+    max_workers = batch_size * n_conditions
+
     parametrization = build_nevergrad_parametrization(base, bounds, freeze)
     optimizer = ng.optimizers.TwoPointsDE(
         parametrization=parametrization,
         budget=n_samples,
-        num_workers=1,
+        num_workers=batch_size,
     )
 
     if seed is not None:
         optimizer.parametrization.random_state = np.random.RandomState(seed)
 
-    n_conditions = 1 + sum(
-        [
-            target.alpha7_ko_pyr is not None,
-            target.alpha5_ko_pyr is not None,
-            target.beta2_ko_pyr is not None,
-        ]
-    )
-    use_parallel = n_conditions > 1 and (n_workers is None or n_workers not in (0, 1))
-
-    if n_workers is None:
-        max_workers = min(n_conditions, os.cpu_count() or 4)
-    else:
-        max_workers = min(n_conditions, n_workers)
-
     if log_file:
-        open(log_file, "w", encoding="utf-8").close()
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        if not append_log:
+            open(log_file, "w", encoding="utf-8").close()
+
+    if save_best_json:
+        Path(save_best_json).parent.mkdir(parents=True, exist_ok=True)
 
     pool_cm = ProcessPoolExecutor(max_workers=max_workers) if use_parallel else nullcontext(None)
+
+    if use_parallel:
+        print(f"Using {max_workers} workers ({batch_size} candidates × {n_conditions} conditions)")
 
     best: list[Candidate] = []
 
     with pool_cm as executor:
-        if use_parallel:
-            print(f"Using {max_workers} workers for {n_conditions} conditions")
-
         last_step = 0
         stopped_early = False
-        pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
+        # Steps counted per candidate, not per batch
+        pbar = tqdm(range(1, n_samples + 1, batch_size), desc="Optimizing", unit="step")
 
         for step in pbar:
             last_step = step
-            x = optimizer.ask()
-            params = params_from_ng_dict(x.value, base)
 
-            L, means, ko_means = evaluate_params(params, target, fit_cfg, rng=rng, executor=executor)
-            optimizer.tell(x, L)
+            # Ask batch_size candidates from the optimizer
+            xs = [optimizer.ask() for _ in range(batch_size)]
+            params_list = [params_from_ng_dict(x.value, base) for x in xs]
 
-            cand = Candidate(loss=L, means=means, ko_means=ko_means, params=params)
+            if use_parallel:
+                # Submit all candidate × condition tasks at once for maximum throughput
+                tagged_futures: list[tuple[int, Future[ConditionResult]]] = []
+                for i, p in enumerate(params_list):
+                    for cond in _build_conditions(p, target, fit_cfg, rng):
+                        tagged_futures.append((i, executor.submit(run_condition, cond)))
+
+                results_by_cand: list[list[ConditionResult]] = [[] for _ in range(batch_size)]
+                for i, fut in tagged_futures:
+                    results_by_cand[i].append(fut.result())
+            else:
+                results_by_cand = [
+                    [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
+                    for p in params_list
+                ]
 
             prev_best_loss = best[0].loss if best else float("inf")
 
-            if len(best) < top_k:
-                best.append(cand)
-                best.sort(key=lambda c: c.loss)
-            elif L < best[-1].loss:
-                best[-1] = cand
-                best.sort(key=lambda c: c.loss)
+            for x, p, cond_results in zip(xs, params_list, results_by_cand):
+                L, means, ko_means = _loss_from_results(cond_results, target, fit_cfg)
+                optimizer.tell(x, L)
 
-            pbar.set_postfix(loss=f"{L:.4g}", best=f"{best[0].loss:.4g}")
+                cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)
+                if len(best) < top_k:
+                    best.append(cand)
+                    best.sort(key=lambda c: c.loss)
+                elif L < best[-1].loss:
+                    best[-1] = cand
+                    best.sort(key=lambda c: c.loss)
 
-            if save_best_json and best[0].loss < prev_best_loss:
+            pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", step=step)
+
+            if save_best_json and best and best[0].loss < prev_best_loss:
                 save_params_json(save_best_json, best[0].params)
 
             if log_file and step % log_interval == 0 and best:
-                _log_candidate(log_file, step, best[0], target)
+                _log_candidate(log_file, step + step_offset, best[0], target)
 
             if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
                 if log_file:
-                    _log_candidate(log_file, step, best[0], target)
+                    _log_candidate(log_file, step + step_offset, best[0], target)
                 stopped_early = True
                 break
 
         pbar.close()
 
         if log_file and best and (not stopped_early) and last_step % log_interval != 0:
-            _log_candidate(log_file, last_step, best[0], target)
+            _log_candidate(log_file, last_step + step_offset, best[0], target)
 
     return best
 

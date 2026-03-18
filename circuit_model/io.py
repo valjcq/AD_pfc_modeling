@@ -50,6 +50,7 @@ def load_params_json(path: str) -> "CircuitParams":
 
 def save_params_json(path: str, params: "CircuitParams") -> None:
     """Save CircuitParams to a JSON file."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(asdict(params), f, indent=2, sort_keys=True)
 

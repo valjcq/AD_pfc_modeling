@@ -66,6 +66,14 @@ from .plotting import (
     plot_osc_distractor_timecourses,
     plot_osc_distractor_spectrograms,
     plot_osc_distractor_amp_sweep,
+    plot_osc_phase_timecourses_grid,
+    plot_osc_phase_sweep,
+    plot_osc_phase_polar,
+    plot_osc_phase_heatmap,
+    plot_osc_phase_sweep_offsets,
+    plot_osc_conditions_boxplot,
+    plot_pre_cue_power_spectrum,
+    plot_pre_cue_power_metric,
     plot_study_firing_rates_violin,
 )
 
@@ -93,6 +101,29 @@ STIM_DURATION_MS = 250.0
 STIM_CENTER_DEG = 180.0
 STIM_SIGMA_DEG = 18.0
 
+BUMP_DECAY_REF_OFFSET_MS: float = 400.0  # ms after cue offset used as normalization reference
+
+
+def _has_distractor(args) -> bool:
+    """Return True when both distractor_factor and distractor_offset_deg are set."""
+    return (
+        getattr(args, 'distractor_factor', None) is not None
+        and getattr(args, 'distractor_offset_deg', None) is not None
+    )
+
+
+def _compute_delay_end_ms(args, stim_offset_ms: float) -> float:
+    """Return the end-of-delay time (ms) used for response-transient placement.
+
+    Without distractor: stim_offset + delay_ms
+    With distractor:    stim_offset + delay1 + distractor_duration + delay2
+    """
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_offset_ms = dist_onset_ms + args.distractor_duration_ms
+        return dist_offset_ms + args.delay2_ms
+    return stim_offset_ms + args.delay_ms
+
 
 def _build_common(args, amp_factor: float | None = None):
     """Build base params, ring params, T_ms, and stimuli from parsed args.
@@ -111,17 +142,17 @@ def _build_common(args, amp_factor: float | None = None):
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
     )
 
-    factor = amp_factor if amp_factor is not None else args.amplitude
+    factor = amp_factor if amp_factor is not None else args.amplitude[0]
     actual_current = factor * base_params.I_ext_pyr()
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
+    delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
 
     response_onset_ms = getattr(args, 'response_onset_ms', 0.0)
     response_duration_ms = getattr(args, 'response_duration_ms', 500.0)
@@ -147,6 +178,20 @@ def _build_common(args, amp_factor: float | None = None):
         ),
     ]
 
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_center_deg = (STIM_CENTER_DEG + args.distractor_offset_deg) % 360.0
+        dist_current = args.distractor_factor * actual_current
+        stimuli.append(
+            RingStimulus(
+                center_deg=dist_center_deg,
+                amplitude=dist_current,
+                sigma_deg=STIM_SIGMA_DEG,
+                onset_ms=dist_onset_ms,
+                duration_ms=args.distractor_duration_ms,
+            )
+        )
+
     return base_params, ring_params, T_ms, stimuli, factor
 
 
@@ -166,26 +211,127 @@ def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) 
 
 
 def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: float,
-                  ring_params: RingParams | None = None):
-    """Print configuration summary."""
+                  ring_params: RingParams | None = None,
+                  experiment_info: list[str] | None = None,
+                  save_path: str | None = None):
+    """Print a comprehensive configuration summary and optionally save it to a file."""
+    import datetime
+    sep = "═" * 66
+    thin = "─" * 66
+
+    lines: list[str] = []
+
+    def emit(s: str = "") -> None:
+        print(s)
+        lines.append(s)
+
+    emit(f"\n{sep}")
+    emit(f"  Run started: {datetime.datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}")
+    emit(sep)
+
+    # ── Circuit parameters ───────────────────────────────────────────────
+    emit("  CIRCUIT PARAMETERS")
+
+    emit("  ── Time constants (ms)")
+    emit(f"       tau_s         = {base_params.tau_s:.4g}")
+    emit(f"       tau_adapt_pyr = {base_params.tau_adapt_pyr:.4g}")
+    emit(f"       tau_adapt_som = {base_params.tau_adapt_som:.4g}")
+
+    emit("  ── Adaptation")
+    emit(f"       J_adapt_pyr   = {base_params.J_adapt_pyr:.4g}")
+    emit(f"       J_adapt_som   = {base_params.J_adapt_som:.4g}")
+
+    emit("  ── Noise")
+    emit(f"       sigma_s       = {base_params.sigma_s:.4g}")
+
+    emit("  ── GABA scaling")
+    emit(f"       g_gaba_base   = {base_params.g_gaba_base:.4g}")
+    emit(f"       g_alpha7      = {base_params.g_alpha7:.4g}")
+    emit(f"       g_gaba (total)= {base_params.g_gaba():.4g}")
+
+    emit("  ── Receptor activation")
+    emit(f"       act_alpha7    = {base_params.act_alpha7:.4g}"
+         f"   act_beta2 = {base_params.act_beta2:.4g}"
+         f"   act_alpha5 = {base_params.act_alpha5:.4g}")
+
+    emit("  ── Synaptic weights")
+    emit(f"       w_ee={base_params.w_ee:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
+         f"  w_es={base_params.w_es:<8.4g}  w_ev={base_params.w_ev:.2e}")
+    emit(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:<8.4g}  w_ps={base_params.w_ps:.4g}")
+    emit(f"       w_se={base_params.w_se:<8.4g}  w_sp={base_params.w_sp:.2e}")
+    emit(f"       w_vp={base_params.w_vp:<8.4g}  w_vs={base_params.w_vs:.4g}")
+
+    emit("  ── External currents")
+    emit(f"       PYR: I0={base_params.I0_pyr:.4g}"
+         f"  → I_ext_pyr={base_params.I_ext_pyr():.4g}")
+    emit(f"       PV:  I0={base_params.I0_pv:.4g}"
+         f"  + act_alpha7×{base_params.I_alpha7_pv:.4g}"
+         f"  → I_ext_pv={base_params.I_ext_pv():.4g}")
+    emit(f"       SOM: I0={base_params.I0_som:.4g}"
+         f"  + act_alpha7×{base_params.I_alpha7_som:.4g}"
+         f"  + act_beta2×{base_params.I_beta2_som:.4g}"
+         f"  → I_ext_som={base_params.I_ext_som():.4g}")
+    emit(f"       VIP: I0={base_params.I0_vip:.4g}"
+         f"  + act_alpha5×{base_params.I_alpha5_vip:.4g}"
+         f"  → I_ext_vip={base_params.I_ext_vip():.4g}")
+
+    if base_params.trans_enabled:
+        emit("  ── Transient current")
+        emit(f"       trans_factor={base_params.trans_factor:.4g}"
+             f"   start={base_params.trans_start_ms:.0f} ms"
+             f"   duration={base_params.trans_duration_ms:.0f} ms")
+
+    emit("  ── Transfer function")
+    emit(f"       PYR: Theta={base_params.Theta_pyr:.4g}  alpha={base_params.alpha_pyr:.4g}"
+         f"  g_e={base_params.g_e:.4g}")
+    emit(f"       PV:  Theta={base_params.Theta_pv:.4g}  alpha={base_params.alpha_pv:.4g}"
+         f"  g_i={base_params.g_i:.4g}")
+    emit(f"       SOM: Theta={base_params.Theta_som:.4g}  alpha={base_params.alpha_som:.4g}")
+    emit(f"       VIP: Theta={base_params.Theta_vip:.4g}  alpha={base_params.alpha_vip:.4g}")
+
+    # ── Ring network ─────────────────────────────────────────────────────
+    if ring_params is not None:
+        emit(thin)
+        emit("  RING NETWORK")
+        emit(f"       n_nodes         = {ring_params.n_nodes}")
+        emit(f"       w_pyr_pyr_inter = {ring_params.w_pyr_pyr_inter:.4g}")
+        emit(f"       sigma_pyr_deg   = {ring_params.sigma_pyr_deg:.4g} deg")
+        emit(f"       w_pv_global     = {ring_params.w_pv_global:.4g}")
+
+    # ── Stimulus ─────────────────────────────────────────────────────────
+    emit(thin)
+    emit("  STIMULUS")
     I_baseline = base_params.I_ext_pyr()
     actual_current = amp_factor * I_baseline
-    print(f"Stimulus: {amp_factor:.1f}× I_ext_pyr  "
-          f"(= {actual_current:.2f}, baseline = {I_baseline:.2f})")
-    print(f"          Gaussian sigma={STIM_SIGMA_DEG:.0f} deg, "
-          f"duration={STIM_DURATION_MS:.0f} ms")
-
-    if ring_params is not None:
-        print(f"Connectivity: Gaussian profile, w_inter = {ring_params.w_pyr_pyr_inter:.2f}, "
-              f"sigma = {ring_params.sigma_pyr_deg:.1f} deg")
-        print(f"Inhibition:   Uniform PV, w_pv = {ring_params.w_pv_global:.2f}")
+    emit(f"       amplitude     = {amp_factor:.4g}× I_ext_pyr = {actual_current:.4g}"
+         f"   (I_ext_pyr baseline = {I_baseline:.4g})")
+    emit(f"       sigma         = {STIM_SIGMA_DEG:.0f} deg"
+         f"   duration = {STIM_DURATION_MS:.0f} ms"
+         f"   onset = {STIM_ONSET_MS:.0f} ms")
+    if T_ms > 0:
+        emit(f"       total sim time= {T_ms:.0f} ms")
 
     response_onset = getattr(args, 'response_onset_ms', 0.0)
     if response_onset > 0:
         response_factor = getattr(args, 'response_factor', 0.5)
         response_duration = getattr(args, 'response_duration_ms', 500.0)
-        print(f"Response transient: +{response_factor:.0%} of I0 to all populations, "
-              f"{response_onset:.0f} ms after delay end, duration={response_duration:.0f} ms")
+        emit(f"       response transient: +{response_factor:.0%} × I0"
+             f"   onset={response_onset:.0f} ms after delay end"
+             f"   duration={response_duration:.0f} ms")
+
+    # ── Experiment-specific ───────────────────────────────────────────────
+    if experiment_info:
+        emit(thin)
+        emit("  EXPERIMENT")
+        for line in experiment_info:
+            emit(f"       {line}")
+
+    emit(sep)
+
+    if save_path:
+        with open(save_path, "w") as _f:
+            _f.write("\n".join(lines) + "\n")
+        print(f"  Config saved → {save_path}")
 
 
 def _fmt(v: float) -> str:
@@ -245,16 +391,24 @@ def _start_mp4_progress(
 
 
 def _network_label(rp: RingParams) -> str:
-    """Build a directory-safe label encoding n_nodes and connectivity weights.
+    """Build a directory-safe label encoding n_nodes, connectivity weights, and Gaussian sigma.
 
-    Example: 128_inhib_10_excit_7
+    Example: 128_inhib_10_excit_7_sigma_30
     """
-    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_excit_{_fmt(rp.w_pyr_pyr_inter)}"
+    return (
+        f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}"
+        f"_excit_{_fmt(rp.w_pyr_pyr_inter)}"
+        f"_sigma_{_fmt(rp.sigma_pyr_deg)}"
+    )
 
 
 def _calibration_network_label(rp: RingParams) -> str:
-    """Label used for calibration/noise-floor output directories."""
-    return _network_label(rp)
+    """Label for calibration directories: inhibition + Gaussian sigma only.
+
+    Excitation is excluded because calibration is the process that determines it.
+    Example: 128_inhib_10_sigma_30
+    """
+    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_sigma_{_fmt(rp.sigma_pyr_deg)}"
 
 
 def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
@@ -272,24 +426,20 @@ def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
     return (k * step) % 360.0
 
 
-def _calibration_network_label(rp: RingParams) -> str:
-    """Label used for calibration/noise-floor output directories."""
-    return _network_label(rp)
+def _run_type_label(args) -> str:
+    """Return a folder name encoding the experiment type for ring-run outputs.
 
-
-def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
-    """Place cue at a location that balances left/right node counts when possible.
-
-    For even node counts, use half-step locations (between two nodes).
-    For odd node counts, snap to nearest node (already balanced by design).
+    Possible values: cue, cue_transient, cue_distractor, cue_distractor_transient
     """
-    n = int(rp.n_nodes)
-    step = 360.0 / max(1, n)
-    if n % 2 == 0:
-        k = int(np.round((target_deg - 0.5 * step) / step))
-        return (k * step + 0.5 * step) % 360.0
-    k = int(np.round(target_deg / step))
-    return (k * step) % 360.0
+    has_dist = _has_distractor(args)
+    has_trans = getattr(args, 'response_onset_ms', 0.0) > 0
+    if has_dist and has_trans:
+        return "cue_distractor_transient"
+    if has_dist:
+        return "cue_distractor"
+    if has_trans:
+        return "cue_transient"
+    return "cue"
 
 
 def _stim_label(amp_factor: float) -> str:
@@ -298,8 +448,8 @@ def _stim_label(amp_factor: float) -> str:
 
 
 def _weights_label(rp: RingParams) -> str:
-    """Short label for PYR and PV weights, used in plot titles."""
-    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}"
+    """Short label for PYR and PV weights and sigma, used in plot titles."""
+    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}, σ={_fmt(rp.sigma_pyr_deg)}°"
 
 
 def _parse_seed(value: str) -> int | None:
@@ -328,6 +478,53 @@ def _snapshot_animation_quality_kwargs(args: argparse.Namespace) -> dict[str, in
     return {"dpi": 100, "av1_crf": 35, "av1_preset": 8}
 
 
+def _resolve_per_cond_param(
+    values: list[float],
+    condition_keys: list[str],
+    param_name: str,
+) -> dict[str, float]:
+    """Map per-condition parameter values.
+
+    If a single value is provided it is broadcast to all conditions.
+    If N values are provided they must match the N conditions in order.
+    """
+    if len(values) == 1:
+        return {ck: values[0] for ck in condition_keys}
+    if len(values) != len(condition_keys):
+        print(
+            f"Error: --{param_name} has {len(values)} values but "
+            f"{len(condition_keys)} conditions ({', '.join(condition_keys)})."
+        )
+        sys.exit(1)
+    return dict(zip(condition_keys, values))
+
+
+def _build_cond_labels(
+    condition_keys: list[str],
+    cond_excit: dict[str, float],
+    cond_amp: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """Build legend labels annotated with per-condition parameters.
+
+    When all conditions share the same excitation weight (and amplitude),
+    no annotation is added and the result is identical to the default
+    ``STUDY_CONDITIONS[ck].name`` labels.  When values differ, each label
+    gets a short suffix, e.g. ``"WT APP (e=7.5)"``.
+    """
+    all_same_excit = len(set(cond_excit.values())) == 1
+    all_same_amp = cond_amp is None or len(set(cond_amp.values())) == 1
+    labels: dict[str, str] = {}
+    for ck in condition_keys:
+        base = STUDY_CONDITIONS[ck].name if ck in STUDY_CONDITIONS else ck
+        extras: list[str] = []
+        if not all_same_excit:
+            extras.append(f"e={_fmt(cond_excit[ck])}")
+        if not all_same_amp and cond_amp is not None:
+            extras.append(f"a={_fmt(cond_amp[ck])}")
+        labels[ck] = f"{base} ({', '.join(extras)})" if extras else base
+    return labels
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add common arguments shared by ring-run and ring-study."""
     parser.add_argument(
@@ -348,8 +545,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="Number of ring nodes (default: 128)",
     )
     parser.add_argument(
-        "--w_pyr_pyr_inter", type=float, default=8.0,
-        help="Inter-node PYR->PYR weight (default: 8.0)",
+        "--w_pyr_pyr_inter", nargs="+", type=float, default=[8.0],
+        help="Inter-node PYR->PYR weight (default: 8.0). "
+             "Accepts one value (shared) or one per condition for per-condition excitation.",
     )
     parser.add_argument(
         "--sigma_pyr_deg", type=float, default=30.0,
@@ -361,12 +559,24 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
-        "--amplitude", type=float, default=10.0,
-        help="Cue amplitude factor (multiplier of I_ext_pyr)",
+        "--amplitude", nargs="+", type=float, default=[10.0],
+        help="Cue amplitude factor (multiplier of I_ext_pyr). "
+             "Accepts one value (shared) or one per condition in ring-study.",
     )
     parser.add_argument(
         "--delay_ms", type=float, default=5000.0,
-        help="Delay duration after cue offset in ms (default: 5000)",
+        help="Delay duration after cue offset in ms (default: 5000). "
+             "When a distractor is enabled this becomes delay1 (cue offset → distractor onset).",
+    )
+    parser.add_argument(
+        "--distractor_offset_deg", type=float, default=None,
+        help="Distractor angular offset from cue in degrees. "
+             "If set together with --distractor_factor, enables the distractor.",
+    )
+    parser.add_argument(
+        "--distractor_factor", type=float, default=None,
+        help="Distractor amplitude as a fraction of cue amplitude (e.g. 0.75). "
+             "If set together with --distractor_offset_deg, enables the distractor.",
     )
     parser.add_argument(
         "--total_time_ms", type=float, default=None,
@@ -574,8 +784,8 @@ _ring_sim_args: Optional[dict] = None
 def _ring_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     delay_eval_times: list[float],
     T_ms_full: float,
@@ -585,8 +795,8 @@ def _ring_init_worker(
     _ring_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'delay_eval_times': delay_eval_times,
         'T_ms_full': T_ms_full,
@@ -601,8 +811,8 @@ def _ring_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
     T_ms_full = cfg['T_ms_full']
 
     condition = STUDY_CONDITIONS[cond_key]
@@ -747,6 +957,47 @@ def _args_to_dict(args: argparse.Namespace) -> dict:
 
 
 # ============================================================================
+# BUMP DECAY STUDY: CACHE HELPER
+# ============================================================================
+
+def _bump_decay_cache_key(
+    args,
+    base_params: "CircuitParams",
+    ring_params: "RingParams",
+    condition_keys: list,
+    amplitudes: list,
+    w_inter_values: list,
+) -> str:
+    """Return a 16-char hex key uniquely identifying one set of bump-decay simulation inputs."""
+    import dataclasses
+    import hashlib
+    import json
+
+    def _to_json(obj):
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
+        if hasattr(obj, '__dict__'):
+            return vars(obj)
+        return str(obj)
+
+    params = {
+        'base_params':    _to_json(base_params),
+        'ring_params':    _to_json(ring_params),
+        'condition_keys': sorted(condition_keys),
+        'amplitudes':     sorted(amplitudes),
+        'w_inter_values': sorted(w_inter_values),
+        'n_trials':       int(args.n_trials),
+        'seed':           int(args.seed),
+        'delay_ms':       float(args.delay_ms),
+        'ref_offset_ms':  float(getattr(args, 'ref_offset_ms', BUMP_DECAY_REF_OFFSET_MS)),
+        'window_ms':      float(getattr(args, 'window_ms', 500.0)),
+        'record_dt_ms':   float(getattr(args, 'record_dt_ms', 5.0)),
+    }
+    blob = json.dumps(params, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+# ============================================================================
 # OSCILLATION STUDY: CACHE HELPERS
 # ============================================================================
 
@@ -793,6 +1044,135 @@ def _osc_cache_key(
 
 
 # ============================================================================
+# BUMP DECAY STUDY: PARALLEL WORKER
+# ============================================================================
+
+_bump_decay_sim_args: Optional[dict] = None
+
+
+def _bump_decay_init_worker(
+    base_params: "CircuitParams",
+    per_cond_rp: dict,
+    connectivity_map: dict,
+    burnin_states: dict,
+    delay_ms: float,
+    ref_offset_ms: float,
+    window_ms: float,
+    record_dt_ms: float,
+    T_ms_full: float,
+) -> None:
+    """Initialise worker process for bump-decay-study jobs."""
+    global _bump_decay_sim_args
+    _bump_decay_sim_args = {
+        'base_params':      base_params,
+        'per_cond_rp':      per_cond_rp,
+        'connectivity_map': connectivity_map,
+        'burnin_states':    burnin_states,
+        'delay_ms':         delay_ms,
+        'ref_offset_ms':    ref_offset_ms,
+        'window_ms':        window_ms,
+        'record_dt_ms':     record_dt_ms,
+        'T_ms_full':        T_ms_full,
+    }
+
+
+def _bump_decay_run_single(job: tuple) -> dict:
+    """Run one bump-decay trial; return amplitude timecourse relative to cue onset.
+
+    job = (cond_key, amp_factor, w_inter, trial_idx, seed)
+    """
+    from .analysis import decode_bump_center
+
+    global _bump_decay_sim_args
+    cfg = _bump_decay_sim_args
+
+    cond_key, amp_factor, w_inter, trial_idx, seed = job
+
+    base_params   = cfg['base_params']
+    ring_params   = cfg['per_cond_rp'][cond_key]
+    T_ms_full     = cfg['T_ms_full']
+    ref_offset_ms = cfg['ref_offset_ms']
+    window_ms     = cfg['window_ms']
+
+    # Look up precomputed connectivity for this w_inter
+    connectivity = cfg['connectivity_map'][w_inter]
+
+    # Build matching RingParams if w_inter differs from this condition's base
+    if w_inter != ring_params.w_pyr_pyr_inter:
+        ring_params = RingParams(
+            n_nodes=ring_params.n_nodes,
+            w_pyr_pyr_inter=w_inter,
+            sigma_pyr_deg=ring_params.sigma_pyr_deg,
+            w_pv_global=ring_params.w_pv_global,
+        )
+
+    condition    = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(base_params, condition)
+
+    r0, I_adapt0 = cfg['burnin_states'][cond_key]
+    cue_current  = amp_factor * base_params.I_ext_pyr()
+
+    T_ms_short        = T_ms_full - BURN_IN_MS
+    stim_onset_short  = STIM_ONSET_MS - BURN_IN_MS  # = 500 ms inside short sim
+
+    stimuli = [RingStimulus(
+        center_deg=STIM_CENTER_DEG,
+        amplitude=cue_current,
+        sigma_deg=STIM_SIGMA_DEG,
+        onset_ms=stim_onset_short,
+        duration_ms=STIM_DURATION_MS,
+    )]
+
+    result = simulate_ring(
+        local_params,
+        ring_params,
+        T_ms=T_ms_short,
+        stimuli=stimuli,
+        r0=r0,
+        I_adapt0=I_adapt0,
+        seed=seed,
+        connectivity=connectivity,
+        record_dt_ms=cfg['record_dt_ms'],
+    )
+    result.t_ms = result.t_ms + BURN_IN_MS  # restore absolute time axis
+
+    _, bump_amplitude = decode_bump_center(result, population=0)
+
+    # Time relative to cue onset
+    t_rel = result.t_ms - STIM_ONSET_MS  # 0 at cue onset
+
+    # Reference: mean amplitude in the window_ms bin centred at STIM_DURATION_MS + ref_offset_ms
+    ref_center_rel = STIM_DURATION_MS + ref_offset_ms
+    half_win = window_ms / 2.0
+    ref_mask = (t_rel >= ref_center_rel - half_win) & (t_rel < ref_center_rel + half_win)
+
+    if ref_mask.any():
+        ref_amplitude = float(np.mean(bump_amplitude[ref_mask]))
+    else:
+        # Fallback: use single nearest timestep
+        idx = int(np.argmin(np.abs(t_rel - ref_center_rel)))
+        ref_amplitude = float(bump_amplitude[idx])
+
+    # Keep only from cue onset onward (t_rel >= 0)
+    delay_mask = t_rel >= 0.0
+    t_ms_out  = t_rel[delay_mask].tolist()
+    amp_out   = bump_amplitude[delay_mask].tolist()
+
+    del result
+
+    return {
+        'cond_key':             cond_key,
+        'amplitude':            float(amp_factor),
+        'w_inter':              float(w_inter),
+        'trial_idx':            int(trial_idx),
+        'seed':                 int(seed),
+        't_ms':                 t_ms_out,
+        'amplitude_timecourse': amp_out,
+        'ref_amplitude':        ref_amplitude,
+    }
+
+
+# ============================================================================
 # OSCILLATION STUDY: PARALLEL WORKER
 # ============================================================================
 
@@ -802,8 +1182,8 @@ _osc_sim_args: Optional[dict] = None
 def _osc_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     T_ms_full: float,
 ):
@@ -812,8 +1192,8 @@ def _osc_init_worker(
     _osc_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'T_ms_full': T_ms_full,
     }
@@ -827,8 +1207,8 @@ def _osc_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
     T_ms_full = cfg['T_ms_full']
 
     condition = STUDY_CONDITIONS[cond_key]
@@ -940,6 +1320,360 @@ def _osc_run_single(job: tuple) -> dict:
     }
 
 
+# ============================================================================
+# BUMP DECAY STUDY: MAIN COMMAND
+# ============================================================================
+
+def cmd_bump_decay_study(args: argparse.Namespace) -> None:
+    """Bump decay / attractor stability study across conditions, amplitudes, and w_inter."""
+    _resolve_seed(args)
+    from collections import defaultdict
+    import csv as _csv
+    import pickle as _pickle
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    condition_keys = list(args.conditions) if args.conditions else ['WT', 'WT_APP']
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'.\n"
+                  f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+            sys.exit(1)
+
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amplitudes     = list(args.amplitudes) if args.amplitudes else [5.0, 10.0, 15.0, 20.0, 25.0]
+    w_inter_values = list(args.w_inter_values) if args.w_inter_values else [args.w_pyr_pyr_inter[0]]
+    n_trials       = int(args.n_trials)
+    n_workers      = _resolve_workers(args)
+    delay_ms       = float(args.delay_ms)
+    ref_offset_ms  = float(getattr(args, 'ref_offset_ms', BUMP_DECAY_REF_OFFSET_MS))
+    window_ms      = float(getattr(args, 'window_ms', 500.0))
+    record_dt_ms   = float(getattr(args, 'record_dt_ms', 5.0))
+
+    stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
+    T_ms_full      = stim_offset_ms + delay_ms
+
+    # Build time bins (relative to cue onset, step = window_ms)
+    max_t_rel    = STIM_DURATION_MS + delay_ms
+    bin_edges    = np.arange(0.0, max_t_rel + window_ms, window_ms)
+    bin_centers  = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    n_bins       = len(bin_centers)
+
+    # Reference bin: the bin whose center is closest to STIM_DURATION_MS + ref_offset_ms
+    ref_center_rel = STIM_DURATION_MS + ref_offset_ms  # e.g. 650 ms
+    ref_bin_idx    = int(np.argmin(np.abs(bin_centers - ref_center_rel)))
+
+    conn_label = _calibration_network_label(base_rp)
+    out_dir = os.path.join(
+        _output_dir("figs/ring/bump_decay", args.params_json),
+        conn_label,
+    )
+    os.makedirs(out_dir, exist_ok=True)
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
+
+    _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params,
+                  experiment_info=[
+                      f"Conditions:    {', '.join(condition_keys)}",
+                      f"Amplitudes:    {', '.join(_fmt(a) for a in amplitudes)}× I_ext_pyr",
+                      f"w_inter sweep: {', '.join(_fmt(w) for w in w_inter_values)}",
+                      f"Delay:         {delay_ms:.0f} ms",
+                      f"Trials:        {n_trials}   seed={args.seed}   workers={n_workers}",
+                      f"Window:        {window_ms:.0f} ms   ref bin center={bin_centers[ref_bin_idx]:.0f} ms",
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
+
+    # ── Burn-in states (one per condition, using per-condition ring_params) ───
+    print("\nComputing burn-in states...")
+    burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
+        local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
+        burnin_states[cond_key] = _compute_burnin_state(
+            local_params, per_cond_rp[cond_key], per_cond_conn[cond_key], seed=args.seed,
+        )
+
+    # ── Precompute connectivity map {w_inter: RingConnectivity} ─────────────
+    connectivity_map: dict[float, RingConnectivity] = {}
+    for w in w_inter_values:
+        rp_w = RingParams(
+            n_nodes=base_rp.n_nodes,
+            w_pyr_pyr_inter=w,
+            sigma_pyr_deg=base_rp.sigma_pyr_deg,
+            w_pv_global=base_rp.w_pv_global,
+        )
+        connectivity_map[w] = RingConnectivity.from_params(rp_w)
+
+    trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+    jobs = [
+        (ck, amp, w, ti, trial_seeds[ti])
+        for ck in condition_keys
+        for amp in amplitudes
+        for w in w_inter_values
+        for ti in range(n_trials)
+    ]
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
+    use_cache  = not getattr(args, 'no_cache', False)
+    cache_key  = _bump_decay_cache_key(args, base_params, base_rp,
+                                        condition_keys, amplitudes, w_inter_values)
+    cache_file = os.path.join(out_dir, f'.bump_decay_cache_{cache_key}.pkl')
+
+    all_results: list[dict] = []
+    if use_cache and os.path.exists(cache_file):
+        print(f"\nLoading cached results (key={cache_key})...")
+        with open(cache_file, 'rb') as _cf:
+            all_results = _pickle.load(_cf)
+        print(f"  Loaded {len(all_results)} trials from cache.")
+    else:
+        init_args = (
+            base_params, per_cond_rp, connectivity_map,
+            burnin_states, delay_ms, ref_offset_ms,
+            window_ms, record_dt_ms, T_ms_full,
+        )
+        if n_workers > 1 and len(jobs) > 1:
+            with ProcessPoolExecutor(
+                mp_context=_MP_CONTEXT,
+                max_workers=n_workers,
+                initializer=_bump_decay_init_worker,
+                initargs=init_args,
+            ) as executor:
+                futures = {executor.submit(_bump_decay_run_single, job): job
+                           for job in jobs}
+                with tqdm(total=len(jobs), desc="Simulations",
+                          unit="sim", smoothing=0) as pbar:
+                    for future in as_completed(futures):
+                        all_results.append(future.result())
+                        pbar.update()
+        else:
+            _bump_decay_init_worker(*init_args)
+            for job in tqdm(jobs, desc="Simulations", unit="sim"):
+                all_results.append(_bump_decay_run_single(job))
+
+        with open(cache_file, 'wb') as _cf:
+            _pickle.dump(all_results, _cf, protocol=_pickle.HIGHEST_PROTOCOL)
+        print(f"\nSimulation results cached → {cache_file}")
+
+    # ── Aggregate: bin into windows, normalize, collect distributions ────────
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for r in all_results:
+        groups[(r['cond_key'], r['amplitude'], r['w_inter'])].append(r)
+
+    aggregated: dict[tuple, dict] = {}
+    for key, trials in groups.items():
+        per_trial_bins = []
+        skipped        = 0
+
+        for tr in trials:
+            t_arr = np.array(tr['t_ms'])
+            a_arr = np.array(tr['amplitude_timecourse'])
+
+            # Bin the raw timecourse into window_ms bins
+            binned = np.full(n_bins, np.nan)
+            for bi in range(n_bins):
+                mask = (t_arr >= bin_edges[bi]) & (t_arr < bin_edges[bi + 1])
+                if mask.any():
+                    binned[bi] = float(np.mean(a_arr[mask]))
+
+            # Normalization: use the reference bin
+            ref_amp = binned[ref_bin_idx] if np.isfinite(binned[ref_bin_idx]) else 0.0
+            if ref_amp > 1e-10:
+                per_trial_bins.append(binned / ref_amp)
+            else:
+                skipped += 1
+
+        if skipped:
+            ck, amp, w = key
+            print(f"  [{ck} amp={amp:g} w={w:g}] {skipped}/{len(trials)} trials"
+                  f" had ref_amplitude≈0 and were excluded.")
+        if not per_trial_bins:
+            continue
+
+        bins_arr  = np.array(per_trial_bins)   # (n_valid, n_bins)
+        mean_bins = np.nanmean(bins_arr, axis=0)
+        n_valid   = bins_arr.shape[0]
+        sem_bins  = (np.nanstd(bins_arr, axis=0, ddof=1) / np.sqrt(n_valid)
+                     if n_valid > 1 else np.zeros(n_bins))
+
+        # Per-bin trial distributions for boxplots
+        per_bin_vals = [bins_arr[:, bi] for bi in range(n_bins)]
+
+        # Scalar: mean of last bin
+        end_val = float(np.nanmean(bins_arr[:, -1]))
+
+        aggregated[key] = {
+            'bin_centers':   bin_centers,
+            'mean_bins':     mean_bins,
+            'sem_bins':      sem_bins,
+            'per_bin_vals':  per_bin_vals,
+            'bins_arr':      bins_arr,       # (n_trials, n_bins) for amp sweep
+            'end_val':       end_val,
+            'n_trials':      n_valid,
+        }
+
+    # ── Save trial summary CSV ───────────────────────────────────────────────
+    summary_csv = os.path.join(out_dir, "bump_decay_trials.csv")
+    with open(summary_csv, 'w', newline='') as _f:
+        writer = _csv.DictWriter(_f, fieldnames=[
+            'condition', 'amplitude', 'w_inter', 'trial_idx', 'seed',
+            'ref_amplitude', 'end_val_normalized',
+        ])
+        writer.writeheader()
+        for r in sorted(all_results,
+                        key=lambda x: (x['cond_key'], x['amplitude'],
+                                       x['w_inter'], x['trial_idx'])):
+            key = (r['cond_key'], r['amplitude'], r['w_inter'])
+            agg = aggregated.get(key, {})
+            writer.writerow({
+                'condition':          r['cond_key'],
+                'amplitude':          r['amplitude'],
+                'w_inter':            r['w_inter'],
+                'trial_idx':          r['trial_idx'],
+                'seed':               r['seed'],
+                'ref_amplitude':      r['ref_amplitude'],
+                'end_val_normalized': agg.get('end_val', float('nan')),
+            })
+    print(f"\nTrial summary → {summary_csv}")
+
+    # ── Plotting ─────────────────────────────────────────────────────────────
+    from .plotting import (
+        plot_bump_decay_timecourse,
+        plot_bump_decay_boxplot,
+        plot_bump_decay_heatmap,
+        plot_oscillation_amp_sweep_lines,
+    )
+
+    # Helper: build amp subdirectory path (includes w_label only when >1 w_inter)
+    multi_w = len(w_inter_values) > 1
+
+    def _amp_dir(amp, w):
+        sub = f"amp{amp:g}"
+        if multi_w:
+            sub = os.path.join(sub, f"w{w:g}")
+        return os.path.join(out_dir, sub)
+
+    conn_lbl = _weights_label(base_rp)
+
+    # ── Per-amplitude: timecourse overlay + boxplot over time ────────────────
+    for amp in amplitudes:
+        for w in w_inter_values:
+            lines_data = {
+                ck: aggregated[(ck, amp, w)]
+                for ck in condition_keys
+                if (ck, amp, w) in aggregated
+            }
+            if not lines_data:
+                continue
+
+            amp_dir = _amp_dir(amp, w)
+            os.makedirs(amp_dir, exist_ok=True)
+            w_suffix = f" | w_inter={w:g}" if multi_w else ""
+
+            # Timecourse overlay (mean ± SEM, windowed)
+            tc_path = os.path.join(amp_dir, "bump_decay_timecourse.png")
+            fig = plot_bump_decay_timecourse(
+                lines_data=lines_data,
+                condition_keys=condition_keys,
+                stim_duration_ms=STIM_DURATION_MS,
+                ref_bin_center=bin_centers[ref_bin_idx],
+                delay_ms=delay_ms,
+                title=f"Bump decay | amp={amp:g}{w_suffix}",
+                save_path=tc_path,
+            )
+            if not args.no_show:
+                plt.show()
+            plt.close(fig)
+
+            # Boxplot over time
+            bx_path = os.path.join(amp_dir, "bump_decay_boxplot.png")
+            fig = plot_bump_decay_boxplot(
+                lines_data=lines_data,
+                condition_keys=condition_keys,
+                stim_duration_ms=STIM_DURATION_MS,
+                ref_bin_center=bin_centers[ref_bin_idx],
+                title=f"Bump decay (boxplot) | amp={amp:g}{w_suffix}",
+                save_path=bx_path,
+            )
+            if not args.no_show:
+                plt.show()
+            plt.close(fig)
+
+    # ── Amplitude sweep summary (like oscillation_amp_sweep_variance.png) ────
+    # X = amplitude, Y = end-of-delay normalized A_hat, one line per condition
+    sweep_data: dict[str, dict[float, np.ndarray]] = {ck: {} for ck in condition_keys}
+    for ck in condition_keys:
+        for amp in amplitudes:
+            vals_list = [
+                aggregated[(ck, amp, w)]['bins_arr'][:, -1]
+                for w in w_inter_values
+                if (ck, amp, w) in aggregated
+            ]
+            if vals_list:
+                sweep_data[ck][amp] = np.concatenate(vals_list)
+
+    fig_sweep = plot_oscillation_amp_sweep_lines(
+        panels=[(
+            "Mean norm. $\\hat{A}$ (last window)",
+            "Normalised bump amplitude",
+            sweep_data,
+        )],
+        amplitudes=amplitudes,
+        cond_order=condition_keys,
+        cond_labels=cond_labels,
+        suptitle=f"Bump decay vs cue amplitude — {conn_lbl}",
+        save_path=os.path.join(out_dir, "bump_decay_amp_sweep.png"),
+    )
+    if not args.no_show:
+        plt.show()
+    plt.close(fig_sweep)
+
+    # ── 2D heatmap per condition (only when w_inter sweep > 1) ───────────────
+    if multi_w:
+        for cond_key in condition_keys:
+            heatmap_data = {
+                (amp, w): aggregated[(cond_key, amp, w)]['end_val']
+                for amp in amplitudes
+                for w in w_inter_values
+                if (cond_key, amp, w) in aggregated
+            }
+            if not heatmap_data:
+                continue
+            hm_dir  = os.path.join(out_dir, cond_key)
+            os.makedirs(hm_dir, exist_ok=True)
+            hm_path = os.path.join(hm_dir, "bump_decay_heatmap.png")
+            fig = plot_bump_decay_heatmap(
+                heatmap_data=heatmap_data,
+                amplitudes=amplitudes,
+                w_inter_values=w_inter_values,
+                condition=cond_key,
+                save_path=hm_path,
+            )
+            if not args.no_show:
+                plt.show()
+            plt.close(fig)
+
+    print("\nDone.")
+
+
 def cmd_oscillation_study(args: argparse.Namespace) -> None:
     """Cue-only oscillation analysis across conditions and amplitudes."""
     _resolve_seed(args)
@@ -957,13 +1691,6 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     if args.conditions is None:
         condition_keys = ['WT', 'WT_APP']
     else:
@@ -974,29 +1701,41 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude]
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for suptitle / config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
     n_trials = int(args.n_trials)
     n_workers = _resolve_workers(args)
 
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
     T_ms_full = stim_offset_ms + args.delay_ms
 
-    conn_label = _network_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
     out_dir = os.path.join(
         _output_dir("figs/ring/oscillation", args.params_json),
         conn_label,
     )
     os.makedirs(out_dir, exist_ok=True)
 
-    _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params)
-    print("\nOscillation study configuration:")
-    print(f"  Conditions: {', '.join(condition_keys)}")
-    print(f"  Amplitudes (x I_ext_pyr): {', '.join(_fmt(a) for a in amplitudes)}")
-    print(f"  Trials: {n_trials}, workers: {n_workers}")
-    print(f"  Band: [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz")
-    print(f"  TF window: {args.tf_window_s:.3f} s, overlap: {args.tf_overlap:.2f}")
-
-    connectivity = RingConnectivity.from_params(ring_params)
+    _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params,
+                  experiment_info=[
+                      f"Conditions:  {', '.join(condition_keys)}",
+                      f"Amplitudes:  {', '.join(_fmt(a) for a in amplitudes)}× I_ext_pyr",
+                      f"Delay:       {args.delay_ms:.0f} ms",
+                      f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
+                      f"Freq band:   [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
+                      f"   window={args.tf_window_s:.3f} s   overlap={args.tf_overlap:.2f}",
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -1004,8 +1743,8 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
         local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
         burnin_states[cond_key] = _compute_burnin_state(
             local_params,
-            ring_params,
-            connectivity,
+            per_cond_rp[cond_key],
+            per_cond_conn[cond_key],
             seed=args.seed,
         )
 
@@ -1036,7 +1775,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     import pickle as _pickle
     use_cache = not getattr(args, 'no_cache', False)
-    cache_key = _osc_cache_key(args, base_params, ring_params, condition_keys, amplitudes)
+    cache_key = _osc_cache_key(args, base_params, base_rp, condition_keys, amplitudes)
     cache_file = os.path.join(out_dir, f'.osc_cache_{cache_key}.pkl')
 
     all_results: list[dict] = []
@@ -1048,10 +1787,10 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
         print(f"  Pass --no_cache to force re-computation.")
     else:
         if n_workers > 1 and len(jobs) > 1:
-            with ProcessPoolExecutor(mp_context=_MP_CONTEXT, 
+            with ProcessPoolExecutor(mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
                 initializer=_osc_init_worker,
-                initargs=(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full),
+                initargs=(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full),
             ) as executor:
                 futures = {executor.submit(_osc_run_single, job): job for job in jobs}
                 with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
@@ -1059,7 +1798,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                         all_results.append(future.result())
                         pbar.update()
         else:
-            _osc_init_worker(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full)
+            _osc_init_worker(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full)
             for job in tqdm(jobs, desc="Simulations", unit="sim"):
                 all_results.append(_osc_run_single(job))
 
@@ -1397,7 +2136,8 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 return {'cond_a': r['cond_a'], 'cond_b': r['cond_b'], 'q_value': r['q_value']}
         return None
 
-    conn_lbl = _weights_label(ring_params)
+    conn_lbl = _weights_label(base_rp)
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
     for amp, pd_amp in amp_plot_data.items():
         amp_dir = pd_amp['amp_dir']
         pick_lbl = pd_amp['pick_lbl']
@@ -1422,6 +2162,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 ),
             ],
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             suptitle=(
                 f"Dominant power | amp={_fmt(amp)}x | {conn_lbl}"
                 + (f" | f: {pick_lbl}" if pick_lbl != "NA" else "")
@@ -1459,6 +2200,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                 ),
             ],
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             suptitle=f"Oscillation stability & spectral focus | amp={_fmt(amp)}x | {conn_lbl}",
             stats_per_panel=[
                 _amp_stat(amp, 'power_var'),
@@ -1496,6 +2238,7 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
             ],
             amplitudes=amplitudes,
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             stats_per_panel=[_sweep_stats('power_median'), _sweep_stats('power_sample')],
             suptitle=f"Dominant power vs cue amplitude — {conn_lbl}",
             save_path=os.path.join(out_dir, "oscillation_amp_sweep_power.png"),
@@ -1527,13 +2270,14 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
             ],
             amplitudes=amplitudes,
             cond_order=condition_keys,
+            cond_labels=cond_labels,
             stats_per_panel=[
                 _sweep_stats('power_var'),
                 _sweep_stats('power_dvar'),
                 _sweep_stats('spec_concentration'),
                 _sweep_stats('spec_entropy'),
             ],
-            suptitle=f"Oscillation stability & spectral focus vs cue amplitude — {conn_lbl}",
+            suptitle=f"Oscillation stability & spectral focus\nvs cue amplitude — {conn_lbl}",
             save_path=os.path.join(out_dir, "oscillation_amp_sweep_variance.png"),
         )
         plt.close(fig_sw2)
@@ -1556,8 +2300,8 @@ _osc_dist_sim_args: Optional[dict] = None
 def _osc_dist_init_worker(
     args_dict: dict,
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict[str, RingParams],
+    per_cond_conn: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     T_ms_full: float,
 ):
@@ -1566,8 +2310,8 @@ def _osc_dist_init_worker(
     _osc_dist_sim_args = {
         'args_dict': args_dict,
         'base_params': base_params,
-        'ring_params': ring_params,
-        'connectivity': connectivity,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
         'burnin_states': burnin_states,
         'T_ms_full': T_ms_full,
     }
@@ -1581,8 +2325,8 @@ def _osc_dist_run_single(job: tuple) -> dict:
 
     args_d = cfg['args_dict']
     base_params = cfg['base_params']
-    ring_params = cfg['ring_params']
-    connectivity = cfg['connectivity']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
 
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(base_params, condition)
@@ -1654,7 +2398,7 @@ def _osc_dist_run_single(job: tuple) -> dict:
         ang_diff = np.minimum(ang_diff, 360.0 - ang_diff)
         dist_idx = int(np.argmin(ang_diff))
     else:
-        dist_idx = cue_idx  # placeholder; dist metrics meaningless for control
+        dist_idx = (cue_idx + len(angles_deg) // 2) % len(angles_deg)  # antipodal node for no-distractor control
 
     # ------------------------------------------------------------------
     # Extract timecourses over full post-cue window
@@ -1793,13 +2537,6 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
     if args.conditions is None:
         condition_keys = ['WT']
     else:
@@ -1809,37 +2546,56 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
             print(f"Error: unknown condition '{k}'.\nValid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude]
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
     distractor_factors = list(args.distractor_factors)
     offsets_deg = list(args.offsets_deg)
     n_trials = int(args.n_trials)
     n_workers = _resolve_workers(args)
 
-    conn_label = _network_label(ring_params)
-    conn_lbl = _weights_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
     out_root = os.path.join(
         _output_dir("figs/ring/osc_distractor", args.params_json),
         conn_label,
     )
     os.makedirs(out_root, exist_ok=True)
 
-    print("\nOscillation-distractor study configuration:")
-    print(f"  Conditions:          {', '.join(condition_keys)}")
-    print(f"  Amplitudes (×I_ext): {', '.join(_fmt(a) for a in amplitudes)}")
-    print(f"  Distractor factors:  {', '.join(str(f) for f in distractor_factors)}")
-    print(f"  Offsets (deg):       {', '.join(str(o) for o in offsets_deg)}")
-    print(f"  Delay1/Dist/Delay2:  {args.delay1_ms:.0f}/{args.distractor_duration_ms:.0f}/{args.delay2_ms:.0f} ms")
-    print(f"  Trials: {n_trials}, workers: {n_workers}")
-    print(f"  Band: [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz")
-
     # ------------------------------------------------------------------
     # Cache key — computed before burn-in so we can skip it on cache hit
     # ------------------------------------------------------------------
     import pickle as _pickle
     use_cache = not getattr(args, 'no_cache', False)
-    cache_key = _osc_dist_cache_key(args, base_params, ring_params, condition_keys, amplitudes)
+    cache_key = _osc_dist_cache_key(args, base_params, base_rp, condition_keys, amplitudes)
     cache_file = os.path.join(out_root, f'.osc_dist_cache_{cache_key}.pkl')
-    print(f"  Cache key:           {cache_key}")
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
+
+    _print_config(args, amplitudes[0], base_params, 0.0, ring_params,
+                  experiment_info=[
+                      f"Conditions:        {', '.join(condition_keys)}",
+                      f"Amplitudes:        {', '.join(_fmt(a) for a in amplitudes)}× I_ext_pyr",
+                      f"Distractor factors:{', '.join(str(f) for f in distractor_factors)}",
+                      f"Offsets (deg):     {', '.join(str(o) for o in offsets_deg)}",
+                      f"Timing:            delay1={args.delay1_ms:.0f} ms"
+                      f"   distractor={args.distractor_duration_ms:.0f} ms"
+                      f"   delay2={args.delay2_ms:.0f} ms",
+                      f"Trials:            {n_trials}   seed={args.seed}   workers={n_workers}",
+                      f"Freq band:         [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
+                      f"   window={args.tf_window_s:.3f} s   overlap={args.tf_overlap:.2f}",
+                      f"Cache key:         {cache_key}",
+                  ],
+                  save_path=os.path.join(out_root, "experiment_config.txt"))
 
     all_results: list[dict] = []
     if use_cache and os.path.exists(cache_file):
@@ -1850,16 +2606,14 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         print(f"  Pass --no_cache to force re-computation.")
     else:
         # Burn-in and simulation — only run when no valid cache exists
-        connectivity = RingConnectivity.from_params(ring_params)
-
         print("\nComputing burn-in states...")
         burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
             local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
             burnin_states[cond_key] = _compute_burnin_state(
                 local_params,
-                ring_params,
-                connectivity,
+                per_cond_rp[cond_key],
+                per_cond_conn[cond_key],
                 seed=args.seed,
             )
 
@@ -1893,10 +2647,10 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
         T_ms_full = cue_offset_post_burnin + args.delay1_ms + args.distractor_duration_ms + args.delay2_ms
 
         if n_workers > 1 and len(jobs) > 1:
-            with ProcessPoolExecutor(mp_context=_MP_CONTEXT, 
+            with ProcessPoolExecutor(mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
                 initializer=_osc_dist_init_worker,
-                initargs=(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full),
+                initargs=(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full),
             ) as executor:
                 futures = {executor.submit(_osc_dist_run_single, job): job for job in jobs}
                 with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
@@ -1904,7 +2658,7 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                         all_results.append(future.result())
                         pbar.update()
         else:
-            _osc_dist_init_worker(args_dict, base_params, ring_params, connectivity, burnin_states, T_ms_full)
+            _osc_dist_init_worker(args_dict, base_params, per_cond_rp, per_cond_conn, burnin_states, T_ms_full)
             for job in tqdm(jobs, desc="Simulations", unit="sim"):
                 all_results.append(_osc_dist_run_single(job))
 
@@ -2178,10 +2932,395 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                 )
                 plt.close(fig_sw)
 
+    # ------------------------------------------------------------------
+    # Cross-condition box plots (only when multiple conditions are compared)
+    # ------------------------------------------------------------------
+    if len(condition_keys) > 1:
+        def _stack_full_osc(rows, val_key, time_key):
+            valid = [r for r in rows if len(r.get(val_key, [])) > 0]
+            if not valid:
+                return np.array([]), np.zeros((0, 0))
+            t_rows = [np.asarray(r.get(time_key, []), dtype=float) for r in valid]
+            t_ref = max(t_rows, key=len)
+            n = len(t_ref)
+            stack = np.full((len(valid), n), np.nan)
+            for j, r in enumerate(valid):
+                v = np.asarray(r[val_key], dtype=float)
+                stack[j, :len(v)] = v
+            return t_ref, stack
+
+        for factor in distractor_factors:
+            factor_label = f"factor{_fmt(factor)}"
+            for amp in amplitudes:
+                amp_label = f"amp{_fmt(amp)}"
+                amp_dir = os.path.join(out_root, condition_keys[0], factor_label, amp_label)
+                for off in offsets_deg:
+                    data_by_cond: dict = {}
+                    t_ref_bp = np.array([])
+                    dist_off_s_bp = 0.2
+                    for ck in condition_keys:
+                        rows_bp = [
+                            r for r in all_results
+                            if r['cond_key'] == ck
+                            and abs(r['amplitude'] - amp) < 1e-9
+                            and abs(r['distractor_factor'] - factor) < 1e-9
+                            and r['offset_deg'] == off
+                        ]
+                        if not rows_bp:
+                            continue
+                        t_cue, stack_cue = _stack_full_osc(
+                            rows_bp, 'cue_dominant_power', 'cue_times_s')
+                        _, stack_dst = _stack_full_osc(
+                            rows_bp, 'dist_dominant_power', 'dist_times_s')
+                        _, stack_plv = _stack_full_osc(
+                            rows_bp, 'plv', 'plv_times_s')
+                        dist_onset_s = rows_bp[0].get('dist_onset_rel_s', 0.0)
+                        dist_off_s_bp = (
+                            rows_bp[0].get('dist_offset_rel_s', dist_onset_s + 0.2)
+                            - dist_onset_s
+                        )
+                        t_cue_rel = t_cue - dist_onset_s
+                        if len(t_cue_rel) >= len(t_ref_bp):
+                            t_ref_bp = t_cue_rel
+                        data_by_cond[ck] = {
+                            'plv':        stack_plv,
+                            'cue_power':  stack_cue,
+                            'dist_power': stack_dst,
+                        }
+                    if len(data_by_cond) < 2:
+                        continue
+                    cmp_dir = os.path.join(out_root, "comparison", factor_label, amp_label)
+                    os.makedirs(cmp_dir, exist_ok=True)
+                    fig_bp = plot_osc_conditions_boxplot(
+                        t_axis=t_ref_bp,
+                        data_by_condition=data_by_cond,
+                        dist_offset_s=dist_off_s_bp,
+                        cond_labels=cond_labels,
+                        suptitle=(
+                            f"Condition comparison | {amp_label}× | {factor_label} | "
+                            f"offset={int(off)}° | {conn_lbl}"
+                        ),
+                        save_path=os.path.join(
+                            cmp_dir,
+                            f"conditions_boxplot_offset{int(off)}.png",
+                        ),
+                    )
+                    plt.close(fig_bp)
+
     print("\nOscillation-distractor study complete.")
     print(f"  Trial CSV:  {trials_csv}")
     print(f"  Figures:    {out_root}")
     print(f"  Cache file: {cache_file}  (key={cache_key})")
+
+
+# ============================================================================
+# PRE-CUE POWER STUDY: PARALLEL WORKERS
+# ============================================================================
+
+_pre_cue_power_sim_args: Optional[dict] = None
+
+
+def _pre_cue_power_init_worker(
+    base_params: "CircuitParams",
+    per_cond_rp: dict,
+    per_cond_conn: dict,
+    burnin_states: dict,
+    duration_ms: float,
+    record_dt_ms: float,
+    min_freq_hz: float,
+    max_freq_hz: float,
+    tf_window_s: float,
+    tf_overlap: float,
+) -> None:
+    """Initialise worker process for pre-cue power study jobs."""
+    global _pre_cue_power_sim_args
+    _pre_cue_power_sim_args = {
+        'base_params': base_params,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
+        'burnin_states': burnin_states,
+        'duration_ms': duration_ms,
+        'record_dt_ms': record_dt_ms,
+        'min_freq_hz': min_freq_hz,
+        'max_freq_hz': max_freq_hz,
+        'tf_window_s': tf_window_s,
+        'tf_overlap': tf_overlap,
+    }
+
+
+def _pre_cue_power_run_single(job: tuple) -> dict:
+    """Run one noise-only trial from burn-in state and return mean PSD per frequency."""
+    global _pre_cue_power_sim_args
+    cfg = _pre_cue_power_sim_args
+    cond_key, trial_idx, seed = job
+
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(cfg['base_params'], condition)
+    r0, I_adapt0 = cfg['burnin_states'][cond_key]
+
+    rp = cfg['per_cond_rp'][cond_key]
+    result = simulate_ring(
+        local_params,
+        rp,
+        T_ms=cfg['duration_ms'],
+        stimuli=None,
+        r0=r0,
+        I_adapt0=I_adapt0,
+        seed=seed,
+        connectivity=cfg['per_cond_conn'][cond_key],
+        record_dt_ms=cfg['record_dt_ms'],
+    )
+
+    t_s = result.t_ms / 1000.0
+    _, amp_t = population_vector_decode(result.r[:, :, 0], rp.node_angles_rad)
+
+    try:
+        osc = compute_oscillation_band_timecourse(
+            amp_t, t_s,
+            min_freq_hz=cfg['min_freq_hz'],
+            max_freq_hz=cfg['max_freq_hz'],
+            window_s=cfg['tf_window_s'],
+            overlap_frac=cfg['tf_overlap'],
+        )
+        if osc['power'].size > 0:
+            mean_power = np.mean(osc['power'], axis=1)  # (n_freqs,): average over time
+        else:
+            mean_power = np.zeros(len(osc['freqs_hz']))
+        freqs_hz = osc['freqs_hz']
+    except ValueError:
+        freqs_hz = np.array([], dtype=float)
+        mean_power = np.array([], dtype=float)
+
+    return {
+        'cond_key': cond_key,
+        'trial_idx': trial_idx,
+        'seed': seed,
+        'freqs_hz': freqs_hz,
+        'mean_power': mean_power,
+    }
+
+
+# ============================================================================
+# PRE-CUE POWER STUDY: SUBCOMMAND
+# ============================================================================
+
+def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
+    """Pre-cue (noise-driven) power spectrum analysis across conditions.
+
+    Runs noise-only simulations from the burn-in state, computes the mean
+    power spectral density (PSD) across the specified frequency band, and
+    compares spectral peakedness (1 − normalised entropy) between conditions.
+
+    Outputs
+    -------
+    - pre_cue_power_spectrum.png  : mean PSD ± std per condition
+    - pre_cue_power_metric.png    : boxplot of spectral peakedness per condition
+    - pre_cue_power_trials.csv    : per-trial spectral peakedness values
+    """
+    _resolve_seed(args)
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    if args.conditions is None:
+        condition_keys = ['WT']
+    else:
+        condition_keys = args.conditions
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'.\nValid: {', '.join(STUDY_CONDITIONS.keys())}")
+            sys.exit(1)
+
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    n_trials = int(args.n_trials)
+    n_workers = _resolve_workers(args)
+    duration_ms = float(args.duration_ms)
+    record_dt_ms = float(getattr(args, 'record_dt_ms', 5.0))
+
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
+    freq_label = f"{_fmt(args.min_freq_hz)}-{_fmt(args.max_freq_hz)}hz"
+    out_root = os.path.join(
+        _output_dir("figs/ring/pre_cue_power", args.params_json),
+        conn_label,
+        freq_label,
+    )
+    os.makedirs(out_root, exist_ok=True)
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
+
+    _print_config(args, args.amplitude[0], base_params, 0.0, ring_params,
+                  experiment_info=[
+                      f"Conditions:  {', '.join(condition_keys)}",
+                      f"Duration:    {duration_ms:.0f} ms (noise-only per trial)",
+                      f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
+                      f"Freq band:   [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
+                      f"   window={args.tf_window_s:.2f} s   overlap={args.tf_overlap:.2f}",
+                  ],
+                  save_path=os.path.join(out_root, "experiment_config.txt"))
+
+    print("\nComputing burn-in states...")
+    burnin_states: dict = {}
+    for ck in tqdm(condition_keys, desc="Burn-in", unit="cond"):
+        local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+        burnin_states[ck] = _compute_burnin_state(
+            local_params, per_cond_rp[ck], per_cond_conn[ck], seed=args.seed,
+        )
+
+    trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+    jobs = [
+        (ck, ti, trial_seeds[ti])
+        for ck in condition_keys
+        for ti in range(n_trials)
+    ]
+
+    init_args = (
+        base_params, per_cond_rp, per_cond_conn, burnin_states,
+        duration_ms, record_dt_ms,
+        args.min_freq_hz, args.max_freq_hz, args.tf_window_s, args.tf_overlap,
+    )
+
+    all_results: list[dict] = []
+    if n_workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(
+            mp_context=_MP_CONTEXT,
+            max_workers=n_workers,
+            initializer=_pre_cue_power_init_worker,
+            initargs=init_args,
+        ) as executor:
+            futures = {executor.submit(_pre_cue_power_run_single, job): job for job in jobs}
+            with tqdm(total=len(jobs), desc="Simulations", unit="sim", smoothing=0) as pbar:
+                for future in as_completed(futures):
+                    all_results.append(future.result())
+                    pbar.update()
+    else:
+        _pre_cue_power_init_worker(*init_args)
+        for job in tqdm(jobs, desc="Simulations", unit="sim"):
+            all_results.append(_pre_cue_power_run_single(job))
+
+    # ------------------------------------------------------------------
+    # Spectral peakedness metric: 1 − normalised Shannon entropy of PSD
+    # High = power concentrated at one frequency; Low = flat spectrum
+    # ------------------------------------------------------------------
+    def _spectral_peakedness(power: np.ndarray) -> float:
+        p = np.abs(power)
+        total = p.sum()
+        if total < 1e-30 or len(p) < 2:
+            return 0.0
+        p_norm = p / total
+        H = -float(np.sum(p_norm * np.log(p_norm + 1e-30)))
+        H_max = float(np.log(len(p)))
+        return 0.0 if H_max < 1e-30 else 1.0 - H / H_max
+
+    # ------------------------------------------------------------------
+    # Organise per condition
+    # ------------------------------------------------------------------
+    spectrum_data: dict = {}  # {cond_key: {'freqs_hz': ..., 'powers': (n_trials, n_freqs)}}
+    metric_data: dict = {}    # {cond_key: np.ndarray of peakedness values}
+
+    for ck in condition_keys:
+        rows = [r for r in all_results if r['cond_key'] == ck and r['freqs_hz'].size > 0]
+        if not rows:
+            continue
+        freqs_hz = rows[0]['freqs_hz']
+        powers, metrics = [], []
+        for r in rows:
+            p = np.asarray(r['mean_power'], dtype=float)
+            if p.shape == freqs_hz.shape:
+                powers.append(p)
+                metrics.append(_spectral_peakedness(p))
+        if powers:
+            spectrum_data[ck] = {
+                'freqs_hz': freqs_hz,
+                'powers': np.stack(powers, axis=0),  # (n_trials, n_freqs)
+            }
+            metric_data[ck] = np.array(metrics)
+
+    # ------------------------------------------------------------------
+    # Save CSV
+    # ------------------------------------------------------------------
+    csv_path = os.path.join(out_root, "pre_cue_power_trials.csv")
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['condition', 'trial_idx', 'seed', 'spectral_peakedness'])
+        writer.writeheader()
+        for r in sorted(all_results, key=lambda x: (x['cond_key'], x['trial_idx'])):
+            ck = r['cond_key']
+            metrics = metric_data.get(ck, np.array([]))
+            # Find index of this trial in the per-condition results
+            rows_ck = [x for x in all_results if x['cond_key'] == ck and x['freqs_hz'].size > 0]
+            row_idx = next((i for i, x in enumerate(rows_ck) if x['trial_idx'] == r['trial_idx']), None)
+            peak = float(metrics[row_idx]) if row_idx is not None and row_idx < len(metrics) else float('nan')
+            writer.writerow({
+                'condition': ck,
+                'trial_idx': r['trial_idx'],
+                'seed': r['seed'],
+                'spectral_peakedness': peak,
+            })
+
+    # ------------------------------------------------------------------
+    # Statistical tests (pairwise Mann-Whitney U)
+    # ------------------------------------------------------------------
+    from scipy.stats import mannwhitneyu as _mwu
+
+    def _sig(p: float) -> str:
+        return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'n.s.'
+
+    cond_keys_valid = [ck for ck in condition_keys if ck in metric_data]
+    print("\nSpectral peakedness statistics:")
+    for ci, ck1 in enumerate(cond_keys_valid):
+        v1 = metric_data[ck1]
+        print(f"  {ck1}: mean={v1.mean():.4f} ± {v1.std(ddof=1):.4f} (n={len(v1)})")
+    for ci, ck1 in enumerate(cond_keys_valid):
+        for ck2 in cond_keys_valid[ci + 1:]:
+            v1, v2 = metric_data[ck1], metric_data[ck2]
+            if len(v1) >= 2 and len(v2) >= 2:
+                _, p = _mwu(v1, v2, alternative='two-sided')
+                print(f"  Mann-Whitney U — {ck1} vs {ck2}: p={p:.4g} {_sig(p)}")
+
+    # ------------------------------------------------------------------
+    # Figures
+    # ------------------------------------------------------------------
+    if spectrum_data:
+        fig_spec = plot_pre_cue_power_spectrum(
+            data=spectrum_data,
+            title=f"Pre-cue power spectrum | {conn_lbl}",
+            save_path=os.path.join(out_root, "pre_cue_power_spectrum.png"),
+        )
+        plt.close(fig_spec)
+
+    if metric_data:
+        fig_met = plot_pre_cue_power_metric(
+            data=metric_data,
+            title=f"Pre-cue spectral peakedness | {conn_lbl}",
+            save_path=os.path.join(out_root, "pre_cue_power_metric.png"),
+        )
+        plt.close(fig_met)
+
+    print("\nPre-cue power study complete.")
+    print(f"  CSV:    {csv_path}")
+    print(f"  Figs:   {out_root}")
+
+    if not args.no_show:
+        plt.show()
 
 
 # ============================================================================
@@ -2210,12 +3349,58 @@ def cmd_run(args: argparse.Namespace) -> None:
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(base_params, condition)
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
+    delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
     local_params = _apply_response_transient(local_params, args, delay_end_ms)
 
-    _print_config(args, amp_factor, base_params, T_ms, ring_params=ring_params)
-    print(f"Condition: {cond_key}")
-    print(f"Seed: {args.seed}")
+    # ------------------------------------------------------------------
+    # Output directory (needed before _print_config for save_path)
+    # ------------------------------------------------------------------
+    out_dir_parts = [
+        _output_dir("figs/ring/run", args.params_json),
+        _run_type_label(args),
+        _network_label(ring_params),
+    ]
+    if _has_distractor(args):
+        out_dir_parts.append(
+            f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
+        )
+    out_dir_parts.append(cond_key)
+    out_dir = os.path.join(*out_dir_parts)
+    os.makedirs(out_dir, exist_ok=True)
+
+    _run_info = [
+        f"Condition: {cond_key}   seed={args.seed}",
+        f"Delay:     {args.delay_ms:.0f} ms",
+    ]
+    if _has_distractor(args):
+        _dist_extra = (f"   delay3={args.response_onset_ms:.0f} ms"
+                       if getattr(args, 'response_onset_ms', 0.0) > 0 else "")
+        _run_info.append(
+            f"Distractor: offset={args.distractor_offset_deg:.1f} deg"
+            f"   factor={args.distractor_factor:.2f}×cue"
+            f"   duration={args.distractor_duration_ms:.0f} ms"
+            f"   delay1={args.delay_ms:.0f} ms   delay2={args.delay2_ms:.0f} ms"
+            + _dist_extra
+        )
+    _print_config(args, amp_factor, base_params, T_ms, ring_params=ring_params,
+                  experiment_info=_run_info,
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
+
+    # ------------------------------------------------------------------
+    # Distractor geometry (computed once, used for both plots and MP4)
+    # ------------------------------------------------------------------
+    dist_node: Optional[int] = None
+    dist_center_deg: Optional[float] = None
+    dist_window: Optional[tuple[float, float]] = None
+    if _has_distractor(args):
+        dist_onset_ms = stim_offset_ms + args.delay_ms
+        dist_offset_ms = dist_onset_ms + args.distractor_duration_ms
+        dist_window = (dist_onset_ms, dist_offset_ms)
+        dist_center_deg = (STIM_CENTER_DEG + args.distractor_offset_deg) % 360.0
+        angles_deg = np.rad2deg(ring_params.node_angles_rad)
+        ang_diff = np.abs(angles_deg - dist_center_deg)
+        ang_diff = np.minimum(ang_diff, 360.0 - ang_diff)
+        dist_node = int(np.argmin(ang_diff))
 
     connectivity = RingConnectivity.from_params(ring_params)
     result = simulate_ring(
@@ -2229,15 +3414,11 @@ def cmd_run(args: argparse.Namespace) -> None:
         record_adaptation=True,
     )
 
-    out_dir = os.path.join(
-        _output_dir("figs/ring/run", args.params_json),
-        _network_label(ring_params),
-    )
-    os.makedirs(out_dir, exist_ok=True)
-
     suptitle = (
         f"{condition.label} -- {_stim_label(amp_factor)}, {_weights_label(ring_params)}"
     )
+    if dist_center_deg is not None:
+        suptitle += f" | distractor {dist_center_deg:.0f}°"
     t_offset = BURN_IN_MS
     time_range = (BURN_IN_MS, result.t_ms[-1])
 
@@ -2247,6 +3428,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         time_range=time_range,
         t_offset=t_offset,
         suptitle=suptitle,
+        distractor_node=dist_node,
+        distractor_angle_deg=dist_center_deg,
+        distractor_window=dist_window,
     )
     plt.close(fig_dash)
 
@@ -2268,6 +3452,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         result,
         t_offset=t_offset,
         save_path=os.path.join(out_dir, "population_activity.png"),
+        distractor_node=dist_node,
+        distractor_window=dist_window,
     )
     plt.close(fig_pop)
 
@@ -2295,12 +3481,16 @@ def cmd_run(args: argparse.Namespace) -> None:
                 frame_step_ms=args.snapshot_anim_step_ms,
                 fps=args.snapshot_anim_fps,
                 suptitle=f"{condition.label} -- snapshot evolution",
-                show_asymmetry=True,
+                show_asymmetry=dist_node is None,  # asymmetry panel only without distractor
+                distractor_window=dist_window,
+                distractor_angle_deg=dist_center_deg,
                 **anim_quality_kwargs,
             )
             plt.close(fig_anim)
         except Exception as exc:
+            import traceback
             print(f"Warning: snapshot animation export failed: {exc}")
+            traceback.print_exc()
 
     print(f"\nFigures saved to {out_dir}/")
 
@@ -2329,15 +3519,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
-
-    # Determine conditions
+    # Determine conditions first (needed for per-cond param resolution)
     if args.conditions is None:
         condition_keys = list(CONDITION_ORDER)
     else:
@@ -2351,18 +3533,36 @@ def cmd_study(args: argparse.Namespace) -> None:
                         f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
                     sys.exit(1)
 
-    if args.amplitudes is None:
-        amplitudes = [args.amplitude]
-    elif isinstance(args.amplitudes, (list, tuple)):
+    # Per-condition excitation weight
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp   = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # for suptitle / _weights_label (shared params)
+
+    # Per-condition or sweep amplitudes
+    if args.amplitudes is not None:
+        # Amplitude sweep applied uniformly to all conditions
         amplitudes = list(args.amplitudes)
+        cond_amp: dict[str, float] | None = None
     else:
-        amplitudes = [float(args.amplitudes)]
+        # Per-condition (or shared) base amplitude
+        cond_amp = _resolve_per_cond_param(args.amplitude, condition_keys, 'amplitude')
+        amplitudes = [args.amplitude[0]]  # used for timing; one loop iteration
     n_trials = getattr(args, 'n_trials', 1)
     n_workers = _resolve_workers(args)
     no_cache = getattr(args, 'no_cache', False)
     error_band = getattr(args, 'error_band', 'sem')
 
-    conn_label = _network_label(ring_params)
+    # Legend labels (annotated when per-cond params differ)
+    cond_labels = _build_cond_labels(condition_keys, cond_excit, cond_amp)
+
+    conn_label = _calibration_network_label(base_rp)
     out_dir = os.path.join(
         _output_dir("figs/ring/run", args.params_json),
         conn_label,
@@ -2371,27 +3571,27 @@ def cmd_study(args: argparse.Namespace) -> None:
     csv_path = os.path.join(out_dir, "study_metrics.csv")
 
     # Compute T_ms using first amplitude (timing is same for all amplitudes)
-    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=amplitudes[0])
+    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=args.amplitude[0])
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
 
-    _print_config(args, amplitudes[0], base_params, T_ms_full, ring_params)
+    _print_config(args, args.amplitude[0], base_params, T_ms_full, base_rp,
+                  experiment_info=[
+                      f"Conditions:  {', '.join(condition_keys)}",
+                      f"Excit/cond:  {', '.join(f'{ck}={_fmt(cond_excit[ck])}' for ck in condition_keys)}",
+                      f"Amp/cond:    {', '.join(f'{ck}={_fmt(cond_amp[ck])}' for ck in condition_keys) if cond_amp else ', '.join(_fmt(a) for a in amplitudes) + '× I_ext_pyr'}",
+                      f"Delay:       {args.delay_ms:.0f} ms",
+                      f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
-    print(f"\nStudy configuration:")
-    print(f"  Conditions: {', '.join(condition_keys)}")
-    print(f"  Amplitudes (× I_ext_pyr): {', '.join(_fmt(a) for a in amplitudes)}")
-    print(f"  Delay = {args.delay_ms:.0f} ms, trials = {n_trials}, workers = {n_workers}")
-
-    # --- Pre-compute connectivity (once) ---
-    connectivity = RingConnectivity.from_params(ring_params)
-
-    # --- Burn-in states (once per condition) ---
+    # --- Burn-in states (once per condition, using per-condition ring_params) ---
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for cond_key in tqdm(condition_keys, desc="Burn-in", unit="cond"):
         condition = STUDY_CONDITIONS[cond_key]
         local_params = apply_condition(base_params, condition)
         burnin_states[cond_key] = _compute_burnin_state(
-            local_params, ring_params, connectivity, seed=args.seed,
+            local_params, per_cond_rp[cond_key], per_cond_conn[cond_key], seed=args.seed,
         )
 
     # --- Trial seeds ---
@@ -2412,12 +3612,16 @@ def cmd_study(args: argparse.Namespace) -> None:
     # --- Build jobs ---
     jobs = []
     for cond_key in condition_keys:
-        for amp in amplitudes:
+        amps_for_cond = [cond_amp[cond_key]] if cond_amp else amplitudes
+        for amp in amps_for_cond:
             for trial_idx, seed in enumerate(trial_seeds):
                 if (cond_key, amp, trial_idx) not in completed:
                     jobs.append((cond_key, amp, trial_idx, seed))
 
-    total_jobs = len(condition_keys) * len(amplitudes) * n_trials
+    if cond_amp:
+        total_jobs = len(condition_keys) * n_trials
+    else:
+        total_jobs = len(condition_keys) * len(amplitudes) * n_trials
     cached_jobs = total_jobs - len(jobs)
     print(f"\nJobs: {len(jobs)} to run, {cached_jobs} cached")
 
@@ -2427,7 +3631,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     if jobs:
         args_dict = _args_to_dict(args)
         init_args = (
-            args_dict, base_params, ring_params, connectivity,
+            args_dict, base_params, per_cond_rp, per_cond_conn,
             burnin_states, delay_eval_times, T_ms_full,
         )
 
@@ -2509,16 +3713,17 @@ def cmd_study(args: argparse.Namespace) -> None:
         for amp in amplitudes:
             amp_out = os.path.join(out_dir, f"amp{_fmt(amp)}")
             os.makedirs(amp_out, exist_ok=True)
-            suptitle = f"{_stim_label(amp)}, {_weights_label(ring_params)}"
+            suptitle = f"{_stim_label(amp)}, {_weights_label(base_rp)}"
 
             metrics_over_delay_agg: dict[str, list[dict]] = {}
             delay_end_metrics_agg: dict[str, dict] = {}
             comparison_data: dict[str, dict] = {}
 
             for cond_key in condition_keys:
+                ck_amp = cond_amp[cond_key] if cond_amp else amp
                 trial_results = [
                     r for r in all_results
-                    if r['cond_key'] == cond_key and r['amplitude'] == amp
+                    if r['cond_key'] == cond_key and abs(r['amplitude'] - ck_amp) < 1e-9
                 ]
                 if not trial_results:
                     continue
@@ -2548,6 +3753,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                     suptitle=f"Bump Metrics During Delay  ({suptitle}{band_tag})",
                     error_band=error_band,
                     separate_app=False,  # all conditions on same plot for delay time course
+                    cond_labels=cond_labels,
                 )
                 plt.close()
 
@@ -2556,6 +3762,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                     comparison_data,
                     save_path=os.path.join(amp_out, "bump_metrics_comparison.png"),
                     suptitle=f"Bump Metrics Comparison  ({suptitle})",
+                    cond_labels=cond_labels,
                 )
                 plt.close()
 
@@ -2620,6 +3827,7 @@ def cmd_study(args: argparse.Namespace) -> None:
                         stats_rows=rate_stats_rows,
                         suptitle=_title,
                         save_path=os.path.join(amp_out, _fname),
+                        cond_labels=cond_labels,
                     )
                     plt.close()
 
@@ -2694,7 +3902,8 @@ def cmd_study(args: argparse.Namespace) -> None:
                     local_params = apply_condition(base_params, condition)
                     delay_end_ms = stim_offset_ms + args.delay_ms
                     local_params = _apply_response_transient(local_params, args, delay_end_ms)
-                    cue_current = amp * base_params.I_ext_pyr()
+                    ck_amp_vis = cond_amp[cond_key] if cond_amp else amp
+                    cue_current = ck_amp_vis * base_params.I_ext_pyr()
                     stimuli = [
                         RingStimulus(
                             center_deg=STIM_CENTER_DEG,
@@ -2707,11 +3916,11 @@ def cmd_study(args: argparse.Namespace) -> None:
                     vis_seed = trial_seeds[0] if trial_seeds else args.seed
                     vis_result = simulate_ring(
                         local_params,
-                        ring_params,
+                        per_cond_rp[cond_key],
                         T_ms=T_ms_full,
                         stimuli=stimuli,
                         seed=vis_seed,
-                        connectivity=connectivity,
+                        connectivity=per_cond_conn[cond_key],
                         record_dt_ms=args.record_dt_ms,
                     )
                     anim_path = os.path.join(anim_dir, f"{cond_key}.mp4")
@@ -2743,9 +3952,10 @@ def cmd_study(args: argparse.Namespace) -> None:
             all_delay_metrics_agg,
             amplitude_values=amplitudes,
             save_path=os.path.join(out_dir, f"metrics_vs_amplitude_{error_band}.png"),
-            suptitle=f"Metrics vs Amplitude (full delay){band_tag}  [{_weights_label(ring_params)}]",
+            suptitle=f"Metrics vs Amplitude (full delay){band_tag}  [{_weights_label(base_rp)}]",
             error_band=error_band,
             separate_app=False,  # all conditions on same plot for amplitude comparison
+            cond_labels=cond_labels,
         )
         plt.close()
 
@@ -3084,7 +4294,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -3117,12 +4327,13 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
     )
     os.makedirs(out_dir, exist_ok=True)
 
-    _print_config(args, amp_factor, base_params, T_ms_full, ring_params)
-
-    print(f"\nDiffusion analysis:")
-    print(f"  Conditions: {', '.join(condition_keys)}")
-    print(f"  Trials per condition: {n_trials}")
-    print(f"  Delay = {args.delay_ms:.0f} ms")
+    _print_config(args, amp_factor, base_params, T_ms_full, ring_params,
+                  experiment_info=[
+                      f"Conditions:  {', '.join(condition_keys)}",
+                      f"Delay:       {args.delay_ms:.0f} ms",
+                      f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # --- Pre-compute connectivity and burn-in ---
     connectivity = RingConnectivity.from_params(ring_params)
@@ -3821,6 +5032,55 @@ def _load_calibrate_baseline(
     return thresholds, baseline, saturated
 
 
+_noise_floor_sim_args: dict = {}
+
+
+def _noise_floor_init_worker(
+    base_params: "CircuitParams",
+    ring_params_base: "RingParams",
+    delay_ms: float,
+    record_dt_ms: float,
+) -> None:
+    global _noise_floor_sim_args
+    _noise_floor_sim_args = {
+        'base_params': base_params,
+        'ring_params_base': ring_params_base,
+        'delay_ms': delay_ms,
+        'record_dt_ms': record_dt_ms,
+    }
+
+
+def _noise_floor_run_single(job: tuple) -> dict:
+    """Run one no-stimulus baseline trial. Called by ProcessPoolExecutor."""
+    global _noise_floor_sim_args
+    cfg = _noise_floor_sim_args
+    cond_key, cond_idx, w, trial_idx, trial_seed, noise_percentile = job
+
+    rp = replace(cfg['ring_params_base'], w_pyr_pyr_inter=float(w))
+    conn = RingConnectivity.from_params(rp)
+    local_params = apply_condition(cfg['base_params'], STUDY_CONDITIONS[cond_key])
+
+    result = simulate_ring(
+        local_params,
+        rp,
+        T_ms=max(BURN_IN_MS, float(cfg['delay_ms'])),
+        stimuli=None,
+        seed=trial_seed,
+        connectivity=conn,
+        record_dt_ms=max(10.0, float(cfg['record_dt_ms'])),
+    )
+    _, a_hat = population_vector_decode(result.r[-1, :, 0], rp.node_angles_rad)
+    return {
+        "condition": cond_key,
+        "w_inter": f"{float(w):.8g}",
+        "trial_idx": str(trial_idx),
+        "seed": str(trial_seed),
+        "A_hat": f"{float(a_hat):.10g}",
+        "noise_percentile": f"{float(noise_percentile):.8g}",
+        "noise_threshold": "",
+    }
+
+
 def _run_noise_floor_for_conditions(
     conditions_to_run: list[str],
     w_inter_values: list[float],
@@ -3840,11 +5100,14 @@ def _run_noise_floor_for_conditions(
     preserve_existing_cache: bool = True,
 ) -> tuple[dict[tuple[str, float], float], dict[tuple[str, float], np.ndarray]]:
     """Compute baseline no-stimulus amplitudes and thresholds for conditions."""
-    del n_workers, batch_chunk_size  # sequential fallback implementation
+    from tqdm import tqdm
 
     all_thresholds: dict[tuple[str, float], float] = {}
     all_baseline: dict[tuple[str, float], np.ndarray] = {}
 
+    # Build all jobs and load existing rows per condition.
+    existing_rows_by_cond: dict[str, list[dict]] = {}
+    jobs: list[tuple] = []
     for cond_idx, ck in enumerate(conditions_to_run):
         cond_dir = os.path.join(out_dir, ck)
         os.makedirs(cond_dir, exist_ok=True)
@@ -3854,6 +5117,7 @@ def _run_noise_floor_for_conditions(
         if preserve_existing_cache and os.path.exists(csv_path):
             with open(csv_path, newline="") as f:
                 existing_rows = list(csv.DictReader(f))
+        existing_rows_by_cond[ck] = existing_rows
 
         target_ws = (
             w_inter_values_by_condition.get(ck, w_inter_values)
@@ -3861,7 +5125,6 @@ def _run_noise_floor_for_conditions(
             else w_inter_values
         )
 
-        new_rows: list[dict] = []
         for w in target_ws:
             key = (ck, float(w))
             n_add = (
@@ -3872,41 +5135,40 @@ def _run_noise_floor_for_conditions(
                 int(trial_start_idx_by_key.get(key, 0))
                 if trial_start_idx_by_key is not None else 0
             )
-            if n_add <= 0:
-                continue
-
-            rp = replace(ring_params_base, w_pyr_pyr_inter=float(w))
-            conn = RingConnectivity.from_params(rp)
-            local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
-
             for i in range(n_add):
                 trial_idx = start_idx + i
                 trial_seed = int(seed + cond_idx * 100000 + int(round(w * 1000)) * 10 + trial_idx)
-                result = simulate_ring(
-                    local_params,
-                    rp,
-                    T_ms=max(BURN_IN_MS, float(delay_ms)),
-                    stimuli=None,
-                    seed=trial_seed,
-                    connectivity=conn,
-                    record_dt_ms=max(10.0, float(record_dt_ms)),
-                )
-                _, a_hat = population_vector_decode(result.r[-1, :, 0], rp.node_angles_rad)
-                new_rows.append(
-                    {
-                        "condition": ck,
-                        "w_inter": f"{float(w):.8g}",
-                        "trial_idx": str(trial_idx),
-                        "seed": str(trial_seed),
-                        "A_hat": f"{float(a_hat):.10g}",
-                        "noise_percentile": f"{float(noise_percentile):.8g}",
-                        "noise_threshold": "",
-                    }
-                )
+                jobs.append((ck, cond_idx, float(w), trial_idx, trial_seed, noise_percentile))
 
-        rows = existing_rows + new_rows
+    # Run simulations (parallel or sequential).
+    init_args = (base_params, ring_params_base, delay_ms, record_dt_ms)
+    new_rows_by_cond: dict[str, list[dict]] = {ck: [] for ck in conditions_to_run}
 
-        # Compute thresholds per w_inter and write back.
+    if n_workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(
+            mp_context=_MP_CONTEXT,
+            max_workers=n_workers,
+            initializer=_noise_floor_init_worker,
+            initargs=init_args,
+        ) as executor:
+            futures = {executor.submit(_noise_floor_run_single, job): job for job in jobs}
+            with tqdm(total=len(jobs), desc="Noise floor", unit="trial", smoothing=0) as pbar:
+                for future in as_completed(futures):
+                    row = future.result()
+                    new_rows_by_cond[row["condition"]].append(row)
+                    pbar.update(1)
+    else:
+        _noise_floor_init_worker(*init_args)
+        for job in tqdm(jobs, desc="Noise floor", unit="trial"):
+            row = _noise_floor_run_single(job)
+            new_rows_by_cond[row["condition"]].append(row)
+
+    # Per-condition: aggregate, compute thresholds, write CSV.
+    for ck in conditions_to_run:
+        cond_dir = os.path.join(out_dir, ck)
+        csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
+        rows = existing_rows_by_cond[ck] + new_rows_by_cond[ck]
+
         vals_by_w: dict[float, list[float]] = {}
         for row in rows:
             if row.get("condition", ck) != ck:
@@ -4033,8 +5295,8 @@ _asym_sim_args: Optional[dict] = None
 
 def _asym_init_worker(
     base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
+    per_cond_rp: dict,
+    per_cond_conn: dict,
     amplitude: float,
     delay_ms: float,
     record_dt_ms: float,
@@ -4046,8 +5308,8 @@ def _asym_init_worker(
     global _asym_sim_args
     _asym_sim_args = {
         "base_params": base_params,
-        "ring_params": ring_params,
-        "connectivity": connectivity,
+        "per_cond_rp": per_cond_rp,
+        "per_cond_conn": per_cond_conn,
         "amplitude": amplitude,
         "delay_ms": delay_ms,
         "record_dt_ms": record_dt_ms,
@@ -4067,7 +5329,7 @@ def _asym_run_single(job: tuple) -> dict:
     cond_key, trial_idx, seed = job
     condition = STUDY_CONDITIONS[cond_key]
     local_params = apply_condition(cfg["base_params"], condition)
-    rp = cfg["ring_params"]
+    rp = cfg["per_cond_rp"][cond_key]
 
     if cfg["random_cue_location"]:
         rng = np.random.default_rng(int(seed) ^ 0xA51A51)
@@ -4098,443 +5360,7 @@ def _asym_run_single(job: tuple) -> dict:
         T_ms=T_ms,
         stimuli=stimuli,
         seed=seed,
-        connectivity=cfg["connectivity"],
-        record_dt_ms=cfg["record_dt_ms"],
-        record_adaptation=False,
-    )
-
-    asym = compute_bump_asymmetry(result)
-    _, amp_trace = decode_bump_center(result, population=0)
-
-    pre_mask = (result.t_ms >= (stim_onset - ASYM_PRE_CUE_WINDOW_MS)) & (result.t_ms < stim_onset)
-    delay_start = stim_offset + TRANSIENT_SKIP_TIME_MS
-    delay_mask = (result.t_ms >= delay_start) & (result.t_ms <= T_ms)
-
-    def _window_asym(mask: np.ndarray) -> float:
-        if not mask.any():
-            return float("nan")
-        a = asym[mask]
-        if not cfg["correct_asymmetry"]:
-            return float(np.mean(a))
-        amp_w = amp_trace[mask]
-        denom = float(np.sum(amp_w))
-        if denom <= 1e-10:
-            return 0.0
-        return float(np.sum(a * amp_w) / denom)
-
-    pre_cue_asym = _window_asym(pre_mask)
-    last_pre_vals = asym[pre_mask]
-    last_pre_cue_asym = float(last_pre_vals[-1]) if len(last_pre_vals) > 0 else float("nan")
-    delay_asym = _window_asym(delay_mask)
-
-    m_delay = compute_asymmetry_temporal_metrics(asym[delay_mask], result.t_ms[delay_mask])
-    m_pre = compute_asymmetry_temporal_metrics(asym[pre_mask], result.t_ms[pre_mask])
-
-    return {
-        "cond_key": cond_key,
-        "trial_idx": int(trial_idx),
-        "seed": int(seed),
-        "cue_deg": float(cue_deg),
-        "pre_cue_asym": float(pre_cue_asym),
-        "last_pre_cue_asym": float(last_pre_cue_asym),
-        "delay_asym": float(delay_asym),
-        "mean_abs_asym": float(m_delay.get("mean_abs_asym", np.nan)),
-        "asym_std": float(m_delay.get("asym_std", np.nan)),
-        "mean_abs_asym_precue": float(m_pre.get("mean_abs_asym", np.nan)),
-        "asym_std_precue": float(m_pre.get("asym_std", np.nan)),
-    }
-
-def _unique_path(path: str) -> str:
-    """Return a non-colliding path by appending _N when needed."""
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    k = 1
-    while True:
-        candidate = f"{base}_{k}{ext}"
-        if not os.path.exists(candidate):
-            return candidate
-        k += 1
-
-
-def _is_calibrate_cached(
-    cond_dir: str,
-    cond_key: str,
-    amplitudes: list[float],
-    w_inter_values: list[float],
-    n_trials: int,
-) -> bool:
-    """Check whether calibration summary already has all requested grid points."""
-    csv_path = os.path.join(cond_dir, "calibration_summary.csv")
-    if not os.path.exists(csv_path):
-        return False
-    needed = {(float(a), float(w)) for a in amplitudes for w in w_inter_values}
-    found: set[tuple[float, float]] = set()
-    try:
-        with open(csv_path, newline="") as f:
-            for row in csv.DictReader(f):
-                a = float(row.get("amplitude", "nan"))
-                w = float(row.get("w_inter", "nan"))
-                tr = int(float(row.get("n_trials", 0)))
-                if (a, w) in needed and tr >= n_trials:
-                    found.add((a, w))
-    except Exception:
-        return False
-    return found == needed
-
-
-def _load_baseline_trial_counts(
-    cond_dir: str,
-    cond_key: str,
-) -> tuple[dict[tuple[str, float], int], bool]:
-    """Return cached baseline trial counts and whether trial metadata is present."""
-    csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
-    if not os.path.exists(csv_path):
-        return {}, False
-    counts: dict[tuple[str, float], int] = {}
-    has_trial_idx = False
-    with open(csv_path, newline="") as f:
-        rows = list(csv.DictReader(f))
-    if rows and "trial_idx" in rows[0]:
-        has_trial_idx = True
-    for row in rows:
-        ck = row.get("condition", cond_key)
-        if ck != cond_key:
-            continue
-        try:
-            w = float(row["w_inter"])
-        except Exception:
-            continue
-        key = (ck, w)
-        if has_trial_idx:
-            counts[key] = counts.get(key, 0) + 1
-        else:
-            counts[key] = max(counts.get(key, 0), 1)
-    return counts, has_trial_idx
-
-
-def _load_calibrate_baseline(
-    cond_dir: str,
-    cond_key: str,
-    w_inter_values: list[float],
-    noise_percentile: float,
-) -> tuple[dict[tuple[str, float], float], dict[tuple[str, float], np.ndarray], set[float]]:
-    """Load baseline amplitudes and thresholds for one condition."""
-    csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
-    if not os.path.exists(csv_path):
-        return {}, {}, set()
-
-    allowed_w = {float(w) for w in w_inter_values}
-    samples: dict[tuple[str, float], list[float]] = {}
-    thresholds: dict[tuple[str, float], float] = {}
-    with open(csv_path, newline="") as f:
-        rows = list(csv.DictReader(f))
-    for row in rows:
-        ck = row.get("condition", cond_key)
-        if ck != cond_key:
-            continue
-        try:
-            w = float(row["w_inter"])
-            if w not in allowed_w:
-                continue
-            a_hat = float(row["A_hat"])
-        except Exception:
-            continue
-        key = (ck, w)
-        samples.setdefault(key, []).append(a_hat)
-        if row.get("noise_threshold", "") != "":
-            try:
-                thresholds[key] = float(row["noise_threshold"])
-            except Exception:
-                pass
-
-    baseline = {k: np.asarray(v, dtype=float) for k, v in samples.items()}
-    for key, vals in baseline.items():
-        if key not in thresholds:
-            thresholds[key] = compute_noise_floor(vals, percentile=noise_percentile)
-
-    saturated = {w for (ck, w), th in thresholds.items() if ck == cond_key and th <= 1e-6}
-    return thresholds, baseline, saturated
-
-
-def _run_noise_floor_for_conditions(
-    conditions_to_run: list[str],
-    w_inter_values: list[float],
-    ring_params_base: RingParams,
-    base_params: CircuitParams,
-    n_baseline: int,
-    noise_percentile: float,
-    out_dir: str,
-    n_workers: int,
-    batch_chunk_size: int,
-    seed: int,
-    delay_ms: float,
-    record_dt_ms: float,
-    w_inter_values_by_condition: dict[str, list[float]] | None = None,
-    trials_to_add_by_key: dict[tuple[str, float], int] | None = None,
-    trial_start_idx_by_key: dict[tuple[str, float], int] | None = None,
-    preserve_existing_cache: bool = True,
-) -> tuple[dict[tuple[str, float], float], dict[tuple[str, float], np.ndarray]]:
-    """Compute baseline no-stimulus amplitudes and thresholds for conditions."""
-    del n_workers, batch_chunk_size  # sequential fallback implementation
-
-    all_thresholds: dict[tuple[str, float], float] = {}
-    all_baseline: dict[tuple[str, float], np.ndarray] = {}
-
-    for cond_idx, ck in enumerate(conditions_to_run):
-        cond_dir = os.path.join(out_dir, ck)
-        os.makedirs(cond_dir, exist_ok=True)
-        csv_path = os.path.join(cond_dir, "baseline_A_hat.csv")
-
-        existing_rows: list[dict] = []
-        if preserve_existing_cache and os.path.exists(csv_path):
-            with open(csv_path, newline="") as f:
-                existing_rows = list(csv.DictReader(f))
-
-        target_ws = (
-            w_inter_values_by_condition.get(ck, w_inter_values)
-            if w_inter_values_by_condition is not None
-            else w_inter_values
-        )
-
-        new_rows: list[dict] = []
-        for w in target_ws:
-            key = (ck, float(w))
-            n_add = (
-                int(trials_to_add_by_key.get(key, n_baseline))
-                if trials_to_add_by_key is not None else n_baseline
-            )
-            start_idx = (
-                int(trial_start_idx_by_key.get(key, 0))
-                if trial_start_idx_by_key is not None else 0
-            )
-            if n_add <= 0:
-                continue
-
-            rp = replace(ring_params_base, w_pyr_pyr_inter=float(w))
-            conn = RingConnectivity.from_params(rp)
-            local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
-
-            for i in range(n_add):
-                trial_idx = start_idx + i
-                trial_seed = int(seed + cond_idx * 100000 + int(round(w * 1000)) * 10 + trial_idx)
-                result = simulate_ring(
-                    local_params,
-                    rp,
-                    T_ms=max(BURN_IN_MS, float(delay_ms)),
-                    stimuli=None,
-                    seed=trial_seed,
-                    connectivity=conn,
-                    record_dt_ms=max(10.0, float(record_dt_ms)),
-                )
-                _, a_hat = population_vector_decode(result.r[-1, :, 0], rp.node_angles_rad)
-                new_rows.append(
-                    {
-                        "condition": ck,
-                        "w_inter": f"{float(w):.8g}",
-                        "trial_idx": str(trial_idx),
-                        "seed": str(trial_seed),
-                        "A_hat": f"{float(a_hat):.10g}",
-                        "noise_percentile": f"{float(noise_percentile):.8g}",
-                        "noise_threshold": "",
-                    }
-                )
-
-        rows = existing_rows + new_rows
-
-        # Compute thresholds per w_inter and write back.
-        vals_by_w: dict[float, list[float]] = {}
-        for row in rows:
-            if row.get("condition", ck) != ck:
-                continue
-            try:
-                w = float(row["w_inter"])
-                vals_by_w.setdefault(w, []).append(float(row["A_hat"]))
-            except Exception:
-                continue
-
-        thresholds_by_w = {
-            w: compute_noise_floor(np.asarray(vals, dtype=float), percentile=noise_percentile)
-            for w, vals in vals_by_w.items()
-        }
-
-        for row in rows:
-            try:
-                w = float(row["w_inter"])
-                row["noise_threshold"] = f"{float(thresholds_by_w[w]):.10g}"
-            except Exception:
-                pass
-
-        rows.sort(key=lambda r: (r.get("condition", ""), float(r.get("w_inter", 0.0)), int(float(r.get("trial_idx", 0)))))
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "condition",
-                    "w_inter",
-                    "trial_idx",
-                    "seed",
-                    "A_hat",
-                    "noise_percentile",
-                    "noise_threshold",
-                ],
-            )
-            writer.writeheader()
-            writer.writerows(rows)
-
-        for w, vals in vals_by_w.items():
-            key = (ck, w)
-            all_baseline[key] = np.asarray(vals, dtype=float)
-            all_thresholds[key] = float(thresholds_by_w[w])
-
-    return all_thresholds, all_baseline
-
-
-def _compute_calibrate_metrics(
-    result,
-    cond_key: str,
-    amplitude: float,
-    w_inter: float,
-    trial_idx: int,
-    seed: int,
-    eval_times_ms: list[float],
-    delay_ms: float,
-) -> dict:
-    """Compute per-trial calibration metrics from a ring simulation result."""
-    del delay_ms
-
-    t = np.asarray(result.t_ms)
-    a_hat_tc: list[float] = []
-    for et in eval_times_ms:
-        idx = int(np.argmin(np.abs(t - float(et))))
-        _, a_hat = population_vector_decode(result.r[idx, :, 0], result.ring_params.node_angles_rad)
-        a_hat_tc.append(float(a_hat))
-
-    center_final_rad, a_hat_final = population_vector_decode(
-        result.r[-1, :, 0], result.ring_params.node_angles_rad,
-    )
-    center_final_deg = float(np.degrees(center_final_rad) % 360.0)
-    err_deg = float((center_final_deg - STIM_CENTER_DEG + 180.0) % 360.0 - 180.0)
-    peak_pyr_rate = float(np.max(result.r[:, :, 0]))
-
-    return {
-        "cond_key": cond_key,
-        "amplitude": float(amplitude),
-        "w_inter": float(w_inter),
-        "trial_idx": int(trial_idx),
-        "seed": int(seed),
-        "A_hat_final": float(a_hat_final),
-        "A_hat_timecourse": a_hat_tc,
-        "peak_pyr_rate": peak_pyr_rate,
-        "center_final_deg": center_final_deg,
-        "error_from_cue_deg": abs(err_deg),
-    }
-
-
-def _load_calibrate_grid_results(cond_dir: str, cond_key: str) -> list[dict]:
-    """Load cached per-trial calibration results from CSV."""
-    csv_path = os.path.join(cond_dir, "calibration_results.csv")
-    if not os.path.exists(csv_path):
-        return []
-
-    rows: list[dict] = []
-    with open(csv_path, newline="") as f:
-        for row in csv.DictReader(f):
-            if row.get("condition_key", cond_key) != cond_key:
-                continue
-            tc_raw = row.get("a_hat_timecourse", "").strip()
-            tc = [float(x) for x in tc_raw.split()] if tc_raw else []
-            rows.append(
-                {
-                    "cond_key": cond_key,
-                    "amplitude": float(row["amplitude"]),
-                    "w_inter": float(row["w_inter"]),
-                    "trial_idx": int(float(row["trial_idx"])),
-                    "seed": int(float(row.get("seed", 0))),
-                    "A_hat_final": float(row.get("A_hat_final", "nan")),
-                    "A_hat_timecourse": tc,
-                    "peak_pyr_rate": float(row.get("peak_pyr_rate", "nan")),
-                    "center_final_deg": float(row.get("center_final_deg", "nan")),
-                    "error_from_cue_deg": float(row.get("error_from_cue_deg", "nan")),
-                }
-            )
-    return rows
-
-
-ASYM_SETTLING_MS: float = 1000.0
-ASYM_PRE_CUE_WINDOW_MS: float = 200.0
-
-_asym_sim_args: Optional[dict] = None
-
-
-def _asym_init_worker(
-    base_params: CircuitParams,
-    ring_params: RingParams,
-    connectivity: RingConnectivity,
-    amplitude: float,
-    delay_ms: float,
-    record_dt_ms: float,
-    random_cue_location: bool,
-    balance_cue: bool,
-    correct_asymmetry: bool,
-) -> None:
-    """Initialise worker process for asymmetry trials."""
-    global _asym_sim_args
-    _asym_sim_args = {
-        "base_params": base_params,
-        "ring_params": ring_params,
-        "connectivity": connectivity,
-        "amplitude": amplitude,
-        "delay_ms": delay_ms,
-        "record_dt_ms": record_dt_ms,
-        "random_cue_location": random_cue_location,
-        "balance_cue": balance_cue,
-        "correct_asymmetry": correct_asymmetry,
-    }
-
-
-def _asym_run_single(job: tuple) -> dict:
-    """Run one asymmetry trial and return summary metrics."""
-    from .analysis import compute_bump_asymmetry, decode_bump_center, compute_asymmetry_temporal_metrics
-
-    global _asym_sim_args
-    cfg = _asym_sim_args
-
-    cond_key, trial_idx, seed = job
-    condition = STUDY_CONDITIONS[cond_key]
-    local_params = apply_condition(cfg["base_params"], condition)
-    rp = cfg["ring_params"]
-
-    if cfg["random_cue_location"]:
-        rng = np.random.default_rng(int(seed) ^ 0xA51A51)
-        cue_deg = float(rng.uniform(0.0, 360.0))
-    elif cfg["balance_cue"]:
-        cue_deg = _balance_cue_location(STIM_CENTER_DEG, rp)
-    else:
-        cue_deg = STIM_CENTER_DEG
-
-    stim_onset = ASYM_SETTLING_MS
-    stim_offset = stim_onset + STIM_DURATION_MS
-    T_ms = stim_offset + cfg["delay_ms"]
-    cue_current = cfg["amplitude"] * cfg["base_params"].I_ext_pyr()
-
-    stimuli = [
-        RingStimulus(
-            center_deg=cue_deg,
-            amplitude=cue_current,
-            sigma_deg=STIM_SIGMA_DEG,
-            onset_ms=stim_onset,
-            duration_ms=STIM_DURATION_MS,
-        )
-    ]
-
-    result = simulate_ring(
-        local_params,
-        rp,
-        T_ms=T_ms,
-        stimuli=stimuli,
-        seed=seed,
-        connectivity=cfg["connectivity"],
+        connectivity=cfg["per_cond_conn"][cond_key],
         record_dt_ms=cfg["record_dt_ms"],
         record_adaptation=False,
     )
@@ -4600,7 +5426,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     ring_params_base = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -5093,7 +5919,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
 
     ring_params_base = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
 
@@ -5434,14 +6260,6 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
-
     condition_keys = args.conditions if args.conditions else ['WT', 'WT_APP', 'a7_KO_APP']
     for k in condition_keys:
         if k not in STUDY_CONDITIONS:
@@ -5449,14 +6267,25 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    amp = args.amplitude
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amp = args.amplitude[0]
     n_trials = args.n_trials
     n_workers = _resolve_workers(args)
     random_cue_location: bool = getattr(args, 'random_cue_location', False)
     balance_cue: bool = not getattr(args, 'no_cue_balance', False)
     correct_asymmetry: bool = getattr(args, 'correct_asymmetry', True)
 
-    conn_label = _network_label(ring_params)
+    conn_label = _calibration_network_label(base_rp)
     asym_mode_label = "corrected" if correct_asymmetry else "uncorrected"
     amp_label = f"amp{amp:g}_{asym_mode_label}"
     out_dir = os.path.join(
@@ -5498,27 +6327,21 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         cue_label = f"{STIM_CENTER_DEG:.1f}° (raw, no balance)"
         _cue_title = f"cue@{STIM_CENTER_DEG:.0f}° (unbalanced)"
 
-    _print_config(args, amp, base_params, 0.0, ring_params)
-    print(f"\nAsymmetry experiment:")
-    print(f"  Conditions: {', '.join(condition_keys)}")
-    print(f"  Trials: {n_trials},  workers: {n_workers}")
-    print(f"  Per-trial burn-in: {ASYM_SETTLING_MS:.0f} ms,  "
-          f"pre-cue window: {ASYM_PRE_CUE_WINDOW_MS:.0f} ms,  "
-          f"delay: {args.delay_ms:.0f} ms")
-    print(f"  Cue location: {cue_label}")
-    print(
-        "  Asymmetry correction: "
-        + (
-            "on (weighted: Σ[A(t)·Amp(t)] / Σ[Amp(t)])"
-            if correct_asymmetry else
-            "off (raw mean of A(t))"
-        )
-    )
+    _asym_correction = ("on (weighted: Σ[A(t)·Amp(t)] / Σ[Amp(t)])"
+                        if correct_asymmetry else "off (raw mean of A(t))")
+    _asym_info = [
+        f"Conditions:          {', '.join(condition_keys)}",
+        f"Trials:              {n_trials}   seed={args.seed}   workers={n_workers}",
+        f"Timing:              burn-in={ASYM_SETTLING_MS:.0f} ms"
+        f"   pre-cue window={ASYM_PRE_CUE_WINDOW_MS:.0f} ms"
+        f"   delay={args.delay_ms:.0f} ms",
+        f"Cue location:        {cue_label}",
+        f"Asymmetry correction:{_asym_correction}",
+    ]
     if _balance_note:
-        print(_balance_note)
-
-    # --- Connectivity ---
-    connectivity = RingConnectivity.from_params(ring_params)
+        _asym_info.append(_balance_note.strip())
+    _print_config(args, amp, base_params, 0.0, ring_params, experiment_info=_asym_info,
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # --- CSV cache: load existing trials if parameters match ---
     csv_path = os.path.join(out_dir, "asymmetry_trials.csv")
@@ -5607,7 +6430,7 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     new_results: list[dict] = []
     if jobs:
         init_args = (
-            base_params, ring_params, connectivity,
+            base_params, per_cond_rp, per_cond_conn,
             amp, args.delay_ms, args.record_dt_ms,
             random_cue_location, balance_cue, correct_asymmetry,
         )
@@ -5920,9 +6743,9 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
         )]
 
         result_worst = simulate_ring(
-            local_params_wc, ring_params, T_ms=T_ms,
+            local_params_wc, per_cond_rp[cond_key], T_ms=T_ms,
             stimuli=stimuli_worst, seed=worst['seed'],
-            connectivity=connectivity,
+            connectivity=per_cond_conn[cond_key],
             record_dt_ms=args.record_dt_ms,
             record_adaptation=True,
         )
@@ -6128,7 +6951,7 @@ def cmd_burnin_stability(args: argparse.Namespace) -> None:
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
     )
@@ -6532,6 +7355,943 @@ def _asym_amp_sweep_run_single(job: tuple) -> dict:
         'mean_abs_asym_precue': float('nan'),
         'asym_std_precue':      float('nan'),
     }
+
+
+# ============================================================================
+# OSC-PHASE-DISTRACTOR: PARALLEL WORKERS
+# ============================================================================
+
+_osc_phase_dist_sim_args: Optional[dict] = None
+
+
+def _osc_phase_dist_init_worker(
+    args_dict: dict,
+    base_params,
+    per_cond_rp: dict,
+    per_cond_conn: dict,
+    pre_dist_states: dict,
+) -> None:
+    """Initialize worker for the phase-timing distractor experiment.
+
+    pre_dist_states : {cond_key: {amplitude: {phase_pi: (r0, I_adapt0)}}}
+    """
+    global _osc_phase_dist_sim_args
+    _osc_phase_dist_sim_args = {
+        'args_dict': args_dict,
+        'base_params': base_params,
+        'per_cond_rp': per_cond_rp,
+        'per_cond_conn': per_cond_conn,
+        'pre_dist_states': pre_dist_states,
+    }
+
+
+def _osc_phase_dist_run_single(job: tuple) -> dict:
+    """Run one distractor trial starting from the pre-computed pre-distractor state.
+
+    job = (cond_key, amplitude, distractor_factor, offset_deg, phase_pi, trial_idx, seed)
+    """
+    global _osc_phase_dist_sim_args
+    cfg = _osc_phase_dist_sim_args
+    cond_key, amplitude, distractor_factor, offset_deg, phase_pi, trial_idx, seed = job
+
+    args_d = cfg['args_dict']
+    base_params = cfg['base_params']
+    ring_params = cfg['per_cond_rp'][cond_key]
+    connectivity = cfg['per_cond_conn'][cond_key]
+
+    condition = STUDY_CONDITIONS[cond_key]
+    local_params = apply_condition(base_params, condition)
+
+    # Retrieve the pre-distractor state for this (cond, amp, phase_pi).
+    # The state is the network snapshot at distractor onset (after burn-in + cue + delay1).
+    r0, I_adapt0 = cfg['pre_dist_states'][cond_key][amplitude][phase_pi]
+
+    dist_duration_ms = float(args_d['distractor_duration_ms'])
+    delay2_ms = float(args_d['delay2_ms'])
+    T_ms = dist_duration_ms + delay2_ms   # t = 0 corresponds to distractor onset
+
+    cue_current = amplitude * base_params.I_ext_pyr()
+
+    stimuli = []
+    if offset_deg is not None:
+        dist_center_deg = (STIM_CENTER_DEG + float(offset_deg)) % 360.0
+        dist_current = distractor_factor * cue_current
+        stimuli.append(RingStimulus(
+            center_deg=dist_center_deg,
+            amplitude=dist_current,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=0.0,
+            duration_ms=dist_duration_ms,
+        ))
+
+    result = simulate_ring(
+        local_params, ring_params,
+        T_ms=T_ms,
+        stimuli=stimuli if stimuli else None,
+        r0=r0,
+        I_adapt0=I_adapt0,
+        seed=seed,
+        connectivity=connectivity,
+        record_dt_ms=args_d.get('record_dt_ms', 5.0),
+    )
+
+    # t_s: time in seconds relative to distractor onset (starts at 0)
+    t_s = result.t_ms / 1000.0
+
+    # Node indices
+    angles_deg = np.rad2deg(ring_params.node_angles_rad)
+    cue_idx = int(np.argmin(np.abs(angles_deg - STIM_CENTER_DEG)))
+    if offset_deg is not None:
+        dist_center_deg = (STIM_CENTER_DEG + float(offset_deg)) % 360.0
+        ang_diff = np.abs(angles_deg - dist_center_deg)
+        ang_diff = np.minimum(ang_diff, 360.0 - ang_diff)
+        dist_idx = int(np.argmin(ang_diff))
+    else:
+        dist_idx = (cue_idx + len(angles_deg) // 2) % len(angles_deg)
+
+    cue_rate = result.r[:, cue_idx, 0]
+    dist_rate = result.r[:, dist_idx, 0]
+    dist_offset_rel_s = dist_duration_ms / 1000.0
+
+    min_freq = args_d.get('min_freq_hz', 2.0)
+    max_freq = args_d.get('max_freq_hz', 12.0)
+    win_s = args_d.get('tf_window_s', 1.0)
+    overlap = args_d.get('tf_overlap', 0.8)
+
+    _empty_osc = {
+        'freqs_hz': np.array([], dtype=float),
+        'times_s': np.array([], dtype=float),
+        'power': np.zeros((0, 0), dtype=float),
+        'dominant_freq_hz': np.array([], dtype=float),
+        'dominant_power': np.array([], dtype=float),
+    }
+
+    try:
+        osc_cue = compute_oscillation_band_timecourse(
+            cue_rate, t_s,
+            min_freq_hz=min_freq, max_freq_hz=max_freq,
+            window_s=win_s, overlap_frac=overlap,
+        )
+    except ValueError:
+        osc_cue = _empty_osc.copy()
+
+    try:
+        osc_dist = compute_oscillation_band_timecourse(
+            dist_rate, t_s,
+            min_freq_hz=min_freq, max_freq_hz=max_freq,
+            window_s=win_s, overlap_frac=overlap,
+        )
+    except ValueError:
+        osc_dist = _empty_osc.copy()
+
+    try:
+        plv_result = compute_plv_timecourse(
+            cue_rate, dist_rate, t_s,
+            min_freq_hz=min_freq, max_freq_hz=max_freq,
+            window_s=win_s, overlap_frac=overlap,
+        )
+    except Exception:
+        plv_result = {'times_s': np.array([], dtype=float), 'plv': np.array([], dtype=float)}
+
+    return {
+        'cond_key': cond_key,
+        'amplitude': amplitude,
+        'distractor_factor': distractor_factor,
+        'offset_deg': offset_deg,
+        'phase_pi': phase_pi,
+        'trial_idx': trial_idx,
+        'seed': seed,
+        # Cue node STFT
+        'cue_times_s': osc_cue['times_s'],
+        'cue_freqs_hz': osc_cue['freqs_hz'],
+        'cue_power': osc_cue['power'],
+        'cue_dominant_freq_hz': osc_cue['dominant_freq_hz'],
+        'cue_dominant_power': osc_cue['dominant_power'],
+        # Distractor node STFT
+        'dist_times_s': osc_dist['times_s'],
+        'dist_freqs_hz': osc_dist['freqs_hz'],
+        'dist_power': osc_dist['power'],
+        'dist_dominant_freq_hz': osc_dist['dominant_freq_hz'],
+        'dist_dominant_power': osc_dist['dominant_power'],
+        # PLV
+        'plv_times_s': plv_result['times_s'],
+        'plv': plv_result['plv'],
+        # Timeline references (relative to distractor onset = t 0)
+        'dist_offset_rel_s': dist_offset_rel_s,
+    }
+
+
+def _osc_phase_dist_cache_key(
+    args,
+    base_params,
+    ring_params,
+    condition_keys: list,
+    amplitudes: list,
+    all_phase_pis: list,
+) -> str:
+    import hashlib, json
+    data = {
+        'experiment': 'osc_phase_distractor_v1',
+        'n_nodes': ring_params.n_nodes,
+        'w_pyr_pyr_inter': ring_params.w_pyr_pyr_inter,
+        'sigma_pyr_deg': ring_params.sigma_pyr_deg,
+        'w_pv_global': ring_params.w_pv_global,
+        'conditions': sorted(condition_keys),
+        'amplitudes': sorted(amplitudes),
+        'distractor_factors': sorted(args.distractor_factors),
+        'offsets_deg': sorted(args.offsets_deg),
+        'delay1_base_ms': args.delay1_base_ms,
+        'phase_pis': [round(p, 6) for p in sorted(all_phase_pis)],
+        'distractor_duration_ms': args.distractor_duration_ms,
+        'delay2_ms': args.delay2_ms,
+        'n_trials': args.n_trials,
+        'seed': args.seed,
+        'min_freq_hz': args.min_freq_hz,
+        'max_freq_hz': args.max_freq_hz,
+        'tf_window_s': args.tf_window_s,
+        'tf_overlap': args.tf_overlap,
+    }
+    s = json.dumps(data, sort_keys=True)
+    return hashlib.md5(s.encode()).hexdigest()[:16]
+
+
+def cmd_osc_distractor_phase_study(args) -> None:
+    """Phase-dependent distractor study.
+
+    Keeps the burn-in and cue trajectory IDENTICAL across all phase values
+    (same seed, same starting state).  For each phase_pi value, the distractor
+    is applied at a different point in the ongoing oscillation cycle and we
+    measure how PLV and oscillatory power over the post-distractor delay depend
+    on that phase.
+
+    Outputs per (condition, amplitude, distractor_factor, offset_deg):
+        - 2×2 grid of PLV timecourses for 4 representative phases
+        - 2×2 grid of cue/distractor power timecourses for 4 representative phases
+        - 3-row sweep: PLV / cue power / dist power vs. continuous phase
+        - Polar version of the sweep
+        - Phase × time heatmaps for each metric
+    """
+    _resolve_seed(args)
+    from tqdm import tqdm
+    import matplotlib
+    if args.no_show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pickle as _pickle
+
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    else:
+        base_params = CircuitParams()
+        print("Using default parameters")
+
+    condition_keys = args.conditions if args.conditions else ['WT']
+    for k in condition_keys:
+        if k not in STUDY_CONDITIONS:
+            print(f"Error: unknown condition '{k}'.")
+            sys.exit(1)
+
+    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+        sigma_pyr_deg=args.sigma_pyr_deg,
+        w_pv_global=args.w_pv_global,
+    )
+    per_cond_rp = {ck: replace(base_rp, w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
+    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    ring_params = base_rp  # alias for config display
+
+    amplitudes = list(args.amplitudes) if args.amplitudes else [args.amplitude[0]]
+    distractor_factors = list(args.distractor_factors)
+    offsets_deg = list(args.offsets_deg)
+    n_trials = int(args.n_trials)
+    n_workers = _resolve_workers(args)
+    delay1_base_ms = float(args.delay1_base_ms)
+    n_phase = int(args.n_phase_sweep)
+    osc_freq_fallback = float(args.osc_freq_hz)
+
+    conn_label = _calibration_network_label(base_rp)
+    conn_lbl = _weights_label(base_rp)
+    out_root = os.path.join(
+        _output_dir("figs/ring/osc_phase_distractor", args.params_json),
+        conn_label,
+    )
+    os.makedirs(out_root, exist_ok=True)
+
+    cond_labels = _build_cond_labels(condition_keys, cond_excit)
+
+    # ------------------------------------------------------------------
+    # Step 1 — Estimate oscillation frequency from a reference simulation
+    # ------------------------------------------------------------------
+    print("\nEstimating oscillation frequency from reference simulation...")
+    ref_cond_key = condition_keys[0]
+    ref_local_params = apply_condition(base_params, STUDY_CONDITIONS[ref_cond_key])
+    r0_bi_ref, Ia_bi_ref = _compute_burnin_state(
+        ref_local_params, per_cond_rp[ref_cond_key], per_cond_conn[ref_cond_key], seed=args.seed,
+    )
+
+    pre_cue_ms = STIM_ONSET_MS - BURN_IN_MS        # 500 ms
+    cue_current_ref = amplitudes[0] * base_params.I_ext_pyr()
+    ref_delay_ms = max(3000.0, delay1_base_ms + 4.0 * (1000.0 / osc_freq_fallback))
+    T_ref_ms = pre_cue_ms + STIM_DURATION_MS + ref_delay_ms
+
+    ref_result = simulate_ring(
+        ref_local_params, per_cond_rp[ref_cond_key],
+        T_ms=T_ref_ms,
+        stimuli=[RingStimulus(
+            center_deg=STIM_CENTER_DEG,
+            amplitude=cue_current_ref,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=pre_cue_ms,
+            duration_ms=STIM_DURATION_MS,
+        )],
+        r0=r0_bi_ref,
+        I_adapt0=Ia_bi_ref,
+        seed=args.seed,
+        connectivity=per_cond_conn[ref_cond_key],
+        record_dt_ms=5.0,
+    )
+
+    angles_deg = np.rad2deg(per_cond_rp[ref_cond_key].node_angles_rad)
+    cue_idx_ref = int(np.argmin(np.abs(angles_deg - STIM_CENTER_DEG)))
+    cue_offset_abs = pre_cue_ms + STIM_DURATION_MS
+    mask_post = ref_result.t_ms >= cue_offset_abs
+    t_post_s = (ref_result.t_ms[mask_post] - cue_offset_abs) / 1000.0
+    cue_rate_ref = ref_result.r[mask_post, cue_idx_ref, 0]
+    del ref_result
+
+    f_osc = osc_freq_fallback
+    try:
+        osc_ref = compute_oscillation_band_timecourse(
+            cue_rate_ref, t_post_s,
+            min_freq_hz=args.min_freq_hz,
+            max_freq_hz=args.max_freq_hz,
+            window_s=args.tf_window_s,
+            overlap_frac=args.tf_overlap,
+        )
+        estimated = float(np.nanmedian(osc_ref['dominant_freq_hz']))
+        if np.isfinite(estimated) and estimated > 0:
+            f_osc = estimated
+    except Exception:
+        pass
+
+    T_osc_ms = 1000.0 / f_osc
+    print(f"  Oscillation frequency: {f_osc:.2f} Hz  (period {T_osc_ms:.1f} ms)")
+
+    # ------------------------------------------------------------------
+    # Step 2 — Build phase_pi grid
+    # ------------------------------------------------------------------
+    # Evenly-spaced sweep values [0, 2) and fixed discrete values for 4-panel figure
+    sweep_pis = np.linspace(0.0, 2.0, n_phase, endpoint=False).tolist()
+    discrete_pis = [0.0, 0.5, 1.0, 1.5]
+    all_phase_pis = sorted(set([round(p, 8) for p in sweep_pis + discrete_pis]))
+
+    def phase_pi_to_delay1(phi):
+        return delay1_base_ms + phi * T_osc_ms / 2.0
+
+    print(f"  Phase sweep: {n_phase} steps over [0, 2π)")
+    print(f"  delay1 range: [{phase_pi_to_delay1(0):.0f}, "
+          f"{phase_pi_to_delay1(max(all_phase_pis)):.0f}] ms")
+
+    # ------------------------------------------------------------------
+    # Cache
+    # ------------------------------------------------------------------
+    use_cache = not getattr(args, 'no_cache', False)
+    cache_key = _osc_phase_dist_cache_key(
+        args, base_params, base_rp, condition_keys, amplitudes, all_phase_pis,
+    )
+    cache_file = os.path.join(out_root, f'.osc_phase_cache_{cache_key}.pkl')
+
+    all_results: list[dict] = []
+    if use_cache and os.path.exists(cache_file):
+        print(f"\nLoading cached results (key={cache_key})...")
+        with open(cache_file, 'rb') as _cf:
+            all_results = _pickle.load(_cf)
+        print(f"  Loaded {len(all_results)} trials from cache.")
+    else:
+        # ------------------------------------------------------------------
+        # Step 3 — Burn-in for all conditions
+        # ------------------------------------------------------------------
+        print("\nComputing burn-in states...")
+        burnin_states: dict = {}
+        for ck in tqdm(condition_keys, desc="Burn-in", unit="cond"):
+            lp = apply_condition(base_params, STUDY_CONDITIONS[ck])
+            burnin_states[ck] = _compute_burnin_state(
+                lp, per_cond_rp[ck], per_cond_conn[ck], seed=args.seed,
+            )
+
+        # ------------------------------------------------------------------
+        # Step 4 — Pre-distractor simulations
+        # Each (cond, amplitude, phase_pi) → deterministic state at distractor onset.
+        # All simulations use args.seed so the cue trajectory is IDENTICAL.
+        # ------------------------------------------------------------------
+        print("\nComputing pre-distractor states...")
+        pre_dist_states: dict = {}
+        total_pre = len(condition_keys) * len(amplitudes) * len(all_phase_pis)
+        with tqdm(total=total_pre, desc="Pre-distractor sims", unit="sim") as pbar:
+            for ck in condition_keys:
+                pre_dist_states[ck] = {}
+                lp = apply_condition(base_params, STUDY_CONDITIONS[ck])
+                r0_bi, Ia_bi = burnin_states[ck]
+                for amp in amplitudes:
+                    pre_dist_states[ck][amp] = {}
+                    cue_current_pre = amp * base_params.I_ext_pyr()
+                    for phi_pi in all_phase_pis:
+                        d1 = phase_pi_to_delay1(phi_pi)
+                        T_pre = pre_cue_ms + STIM_DURATION_MS + d1
+                        pre_res = simulate_ring(
+                            lp, per_cond_rp[ck],
+                            T_ms=T_pre,
+                            stimuli=[RingStimulus(
+                                center_deg=STIM_CENTER_DEG,
+                                amplitude=cue_current_pre,
+                                sigma_deg=STIM_SIGMA_DEG,
+                                onset_ms=pre_cue_ms,
+                                duration_ms=STIM_DURATION_MS,
+                            )],
+                            r0=r0_bi,
+                            I_adapt0=Ia_bi,
+                            seed=args.seed,   # FIXED seed → deterministic trajectory
+                            connectivity=per_cond_conn[ck],
+                            record_dt_ms=5.0,
+                        )
+                        pre_dist_states[ck][amp][phi_pi] = (
+                            pre_res.r[-1].copy(),
+                            pre_res.I_adapt_final.copy(),
+                        )
+                        del pre_res
+                        pbar.update()
+
+        # ------------------------------------------------------------------
+        # Step 5 — Distractor trials
+        # ------------------------------------------------------------------
+        trial_seeds = _generate_trial_seeds(args.seed, n_trials)
+
+        jobs = []
+        for ck in condition_keys:
+            for amp in amplitudes:
+                for factor in distractor_factors:
+                    for off in offsets_deg:
+                        for phi_pi in all_phase_pis:
+                            for ti in range(n_trials):
+                                jobs.append((ck, amp, factor, off,
+                                             phi_pi, ti, trial_seeds[ti]))
+                    # No-distractor control at base phase (phase_pi=0)
+                    ctrl_phi = all_phase_pis[0]
+                    for ti in range(n_trials):
+                        jobs.append((ck, amp, factor, None,
+                                     ctrl_phi, ti, trial_seeds[ti]))
+
+        args_dict = {
+            'distractor_duration_ms': args.distractor_duration_ms,
+            'delay2_ms': args.delay2_ms,
+            'min_freq_hz': args.min_freq_hz,
+            'max_freq_hz': args.max_freq_hz,
+            'tf_window_s': args.tf_window_s,
+            'tf_overlap': args.tf_overlap,
+            'record_dt_ms': getattr(args, 'record_dt_ms', 5.0),
+        }
+
+        if n_workers > 1 and len(jobs) > 1:
+            with ProcessPoolExecutor(
+                mp_context=_MP_CONTEXT,
+                max_workers=n_workers,
+                initializer=_osc_phase_dist_init_worker,
+                initargs=(args_dict, base_params, per_cond_rp,
+                          per_cond_conn, pre_dist_states),
+            ) as executor:
+                futures = {
+                    executor.submit(_osc_phase_dist_run_single, job): job
+                    for job in jobs
+                }
+                with tqdm(total=len(jobs), desc="Simulations", unit="sim",
+                          smoothing=0) as pbar:
+                    for future in as_completed(futures):
+                        all_results.append(future.result())
+                        pbar.update()
+        else:
+            _osc_phase_dist_init_worker(
+                args_dict, base_params, per_cond_rp, per_cond_conn, pre_dist_states,
+            )
+            for job in tqdm(jobs, desc="Simulations", unit="sim"):
+                all_results.append(_osc_phase_dist_run_single(job))
+
+        with open(cache_file, 'wb') as _cf:
+            _pickle.dump(all_results, _cf, protocol=_pickle.HIGHEST_PROTOCOL)
+        print(f"\nResults cached → {cache_file}")
+
+    # ------------------------------------------------------------------
+    # Helper: stack timecourses from a list of result dicts
+    # ------------------------------------------------------------------
+    def _stack_tc(rows, val_key, time_key):
+        valid = [r for r in rows if len(r.get(val_key, [])) > 0]
+        if not valid:
+            return np.array([]), np.array([]), np.array([])
+        t_rows = [np.asarray(r.get(time_key, []), dtype=float) for r in valid]
+        t_ref = max(t_rows, key=len)
+        n = len(t_ref)
+        stack = np.full((len(valid), n), np.nan)
+        for j, r in enumerate(valid):
+            v = np.asarray(r[val_key], dtype=float)
+            stack[j, :len(v)] = v
+        with np.errstate(all='ignore'):
+            mean = np.nanmean(stack, axis=0)
+            sd = np.nanstd(stack, axis=0, ddof=0)
+        return t_ref, mean, sd
+
+    def _stack_tc_full(rows, val_key, time_key):
+        """Stack timecourse from result dicts → (t_ref, ndarray[n_trials, n_times])."""
+        valid = [r for r in rows if len(r.get(val_key, [])) > 0]
+        if not valid:
+            return np.array([]), np.zeros((0, 0))
+        t_rows = [np.asarray(r.get(time_key, []), dtype=float) for r in valid]
+        t_ref = max(t_rows, key=len)
+        n = len(t_ref)
+        stack = np.full((len(valid), n), np.nan)
+        for j, r in enumerate(valid):
+            v = np.asarray(r[val_key], dtype=float)
+            stack[j, :len(v)] = v
+        return t_ref, stack
+
+    # ------------------------------------------------------------------
+    # Aggregate and plot
+    # ------------------------------------------------------------------
+    dist_offset_s = args.distractor_duration_ms / 1000.0
+
+    # CSV
+    csv_path = os.path.join(out_root, "osc_phase_trials.csv")
+    with open(csv_path, 'w', newline='') as _csvf:
+        writer = csv.DictWriter(_csvf, fieldnames=[
+            'condition', 'amplitude', 'distractor_factor', 'offset_deg',
+            'phase_pi', 'trial_idx', 'seed',
+            'plv_mean_delay2', 'cue_power_mean_delay2', 'dist_power_mean_delay2',
+        ])
+        writer.writeheader()
+        for r in sorted(all_results, key=lambda x: (
+            x['cond_key'], x['amplitude'], x['distractor_factor'],
+            str(x['offset_deg']), x['phase_pi'], x['trial_idx'],
+        )):
+            plv_t = np.asarray(r['plv_times_s'], dtype=float)
+            plv_v = np.asarray(r['plv'], dtype=float)
+            cue_t = np.asarray(r['cue_times_s'], dtype=float)
+            cue_v = np.asarray(r['cue_dominant_power'], dtype=float)
+            dist_t = np.asarray(r['dist_times_s'], dtype=float)
+            dist_v = np.asarray(r['dist_dominant_power'], dtype=float)
+            post_mask_plv = plv_t > r['dist_offset_rel_s']
+            post_mask_cue = cue_t > r['dist_offset_rel_s']
+            post_mask_dist = dist_t > r['dist_offset_rel_s']
+
+            def _safe_mean(v, m):
+                return float(np.nanmean(v[m])) if np.any(m) else np.nan
+
+            writer.writerow({
+                'condition': r['cond_key'],
+                'amplitude': r['amplitude'],
+                'distractor_factor': r['distractor_factor'],
+                'offset_deg': '' if r['offset_deg'] is None else r['offset_deg'],
+                'phase_pi': r['phase_pi'],
+                'trial_idx': r['trial_idx'],
+                'seed': r['seed'],
+                'plv_mean_delay2': _safe_mean(plv_v, post_mask_plv),
+                'cue_power_mean_delay2': _safe_mean(cue_v, post_mask_cue),
+                'dist_power_mean_delay2': _safe_mean(dist_v, post_mask_dist),
+            })
+
+    # --plot_conditions restricts the cross-condition comparison plots only;
+    # per-condition figures are always generated for all simulated conditions.
+    requested_plot = getattr(args, 'plot_conditions', None)
+    if requested_plot:
+        plot_cks = [ck for ck in requested_plot if ck in condition_keys]
+        unknown = [ck for ck in requested_plot if ck not in condition_keys]
+        if unknown:
+            print(f"Warning: --plot_conditions ignored unknown keys (not in simulated set): {unknown}")
+        if not plot_cks:
+            print("Warning: --plot_conditions produced an empty set; falling back to all conditions.")
+            plot_cks = condition_keys
+    else:
+        plot_cks = condition_keys
+
+    for ck in condition_keys:
+        cond_out = os.path.join(out_root, ck)
+        os.makedirs(cond_out, exist_ok=True)
+
+        for factor in distractor_factors:
+            factor_label = f"factor{_fmt(factor)}"
+            factor_out = os.path.join(cond_out, factor_label)
+            os.makedirs(factor_out, exist_ok=True)
+
+            for amp in amplitudes:
+                amp_label = f"amp{_fmt(amp)}"
+                amp_out = os.path.join(factor_out, amp_label)
+                os.makedirs(amp_out, exist_ok=True)
+
+                # Accumulated across offsets for the summary figure
+                sweep_data_by_offset: dict = {}
+                ctrl_values_by_offset: dict = {}
+
+                for off in offsets_deg:
+                    off_label = f"offset{int(off)}"
+                    off_out = os.path.join(amp_out, off_label)
+                    os.makedirs(off_out, exist_ok=True)
+
+                    # --------------------------------------------------
+                    # Collect timecourse data per phase_pi
+                    # --------------------------------------------------
+                    data_by_phase: dict = {}
+                    t_rel_axis = np.array([])
+                    sweep_means: dict = {m: [] for m in ('plv', 'cue_power', 'dist_power')}
+                    sweep_sds: dict = {m: [] for m in ('plv', 'cue_power', 'dist_power')}
+
+                    for phi_pi in all_phase_pis:
+                        rows = [
+                            r for r in all_results
+                            if r['cond_key'] == ck
+                            and abs(r['amplitude'] - amp) < 1e-9
+                            and abs(r['distractor_factor'] - factor) < 1e-9
+                            and r['offset_deg'] == off
+                            and abs(r['phase_pi'] - phi_pi) < 1e-9
+                        ]
+                        if not rows:
+                            for m in sweep_means:
+                                sweep_means[m].append(np.nan)
+                                sweep_sds[m].append(np.nan)
+                            data_by_phase[phi_pi] = {}
+                            continue
+
+                        t_plv, plv_m, plv_s = _stack_tc(rows, 'plv', 'plv_times_s')
+                        t_cue, cue_m, cue_s = _stack_tc(rows, 'cue_dominant_power', 'cue_times_s')
+                        t_dst, dst_m, dst_s = _stack_tc(rows, 'dist_dominant_power', 'dist_times_s')
+
+                        # Reference time axis (shared STFT grid)
+                        t_ref = t_cue if len(t_cue) >= len(t_plv) else t_plv
+
+                        if len(t_ref) > len(t_rel_axis):
+                            t_rel_axis = t_ref
+
+                        data_by_phase[phi_pi] = {
+                            'plv_mean': plv_m, 'plv_sd': plv_s,
+                            'cue_mean': cue_m, 'cue_sd': cue_s,
+                            'dist_mean': dst_m, 'dist_sd': dst_s,
+                        }
+
+                        # Summary: mean over delay2 per trial
+                        for metric_key, val_key, time_key in [
+                            ('plv', 'plv', 'plv_times_s'),
+                            ('cue_power', 'cue_dominant_power', 'cue_times_s'),
+                            ('dist_power', 'dist_dominant_power', 'dist_times_s'),
+                        ]:
+                            vals_per_trial = []
+                            for r in rows:
+                                tv = np.asarray(r[time_key], dtype=float)
+                                vv = np.asarray(r[val_key], dtype=float)
+                                m = tv > r['dist_offset_rel_s']
+                                if np.any(m):
+                                    vals_per_trial.append(float(np.nanmean(vv[m])))
+                            if vals_per_trial:
+                                arr = np.array(vals_per_trial)
+                                sweep_means[metric_key].append(float(np.nanmean(arr)))
+                                sweep_sds[metric_key].append(
+                                    float(np.nanstd(arr, ddof=min(1, len(arr) - 1)))
+                                )
+                            else:
+                                sweep_means[metric_key].append(np.nan)
+                                sweep_sds[metric_key].append(np.nan)
+
+                    # No-distractor control
+                    ctrl_phi = all_phase_pis[0]
+                    ctrl_rows = [
+                        r for r in all_results
+                        if r['cond_key'] == ck
+                        and abs(r['amplitude'] - amp) < 1e-9
+                        and abs(r['distractor_factor'] - factor) < 1e-9
+                        and r['offset_deg'] is None
+                        and abs(r['phase_pi'] - ctrl_phi) < 1e-9
+                    ]
+                    ctrl_data: dict = {}
+                    ctrl_values: dict = {}
+                    if ctrl_rows:
+                        _, ctrl_plv_m, ctrl_plv_s = _stack_tc(ctrl_rows, 'plv', 'plv_times_s')
+                        _, ctrl_cue_m, ctrl_cue_s = _stack_tc(ctrl_rows, 'cue_dominant_power', 'cue_times_s')
+                        _, ctrl_dst_m, ctrl_dst_s = _stack_tc(ctrl_rows, 'dist_dominant_power', 'dist_times_s')
+                        ctrl_data = {
+                            'plv_mean': ctrl_plv_m, 'plv_sd': ctrl_plv_s,
+                            'cue_mean': ctrl_cue_m, 'cue_sd': ctrl_cue_s,
+                            'dist_mean': ctrl_dst_m, 'dist_sd': ctrl_dst_s,
+                        }
+                        for mkey, val_key, time_key in [
+                            ('plv', 'plv', 'plv_times_s'),
+                            ('cue_power', 'cue_dominant_power', 'cue_times_s'),
+                            ('dist_power', 'dist_dominant_power', 'dist_times_s'),
+                        ]:
+                            vals = []
+                            for r in ctrl_rows:
+                                tv = np.asarray(r[time_key], dtype=float)
+                                vv = np.asarray(r[val_key], dtype=float)
+                                m = tv > r['dist_offset_rel_s']
+                                if np.any(m):
+                                    vals.append(float(np.nanmean(vv[m])))
+                            ctrl_values[mkey] = float(np.nanmean(vals)) if vals else np.nan
+
+                    sweep_data_fig = {
+                        m: {
+                            'mean': np.array(sweep_means[m]),
+                            'sd': np.array(sweep_sds[m]),
+                        }
+                        for m in sweep_means
+                    }
+                    # Accumulate for cross-offset summary
+                    sweep_data_by_offset[off] = sweep_data_fig
+                    ctrl_values_by_offset[off] = ctrl_values
+
+                    base_title = (
+                        f"{ck} | {amp_label}× | {factor_label} | "
+                        f"offset={int(off)}° | {conn_lbl}"
+                    )
+
+                    # 1. PLV timecourse overlay (all 4 phases on one plot)
+                    fig1 = plot_osc_phase_timecourses_grid(
+                        t_rel_axis=t_rel_axis,
+                        data_by_phase=data_by_phase,
+                        dist_offset_s=dist_offset_s,
+                        metric='plv',
+                        discrete_phases=discrete_pis,
+                        ctrl_data=ctrl_data if ctrl_data else None,
+                        suptitle=f"PLV timecourses by phase | {base_title}",
+                        save_path=os.path.join(off_out, "phase_plv_overlay.png"),
+                    )
+                    plt.close(fig1)
+
+                    # 2. Cue power timecourse overlay
+                    fig2 = plot_osc_phase_timecourses_grid(
+                        t_rel_axis=t_rel_axis,
+                        data_by_phase=data_by_phase,
+                        dist_offset_s=dist_offset_s,
+                        metric='cue_power',
+                        discrete_phases=discrete_pis,
+                        ctrl_data=ctrl_data if ctrl_data else None,
+                        suptitle=f"Cue node power by phase | {base_title}",
+                        save_path=os.path.join(off_out, "phase_cue_power_overlay.png"),
+                    )
+                    plt.close(fig2)
+
+                    # 3. Distractor power timecourse overlay
+                    fig3 = plot_osc_phase_timecourses_grid(
+                        t_rel_axis=t_rel_axis,
+                        data_by_phase=data_by_phase,
+                        dist_offset_s=dist_offset_s,
+                        metric='dist_power',
+                        discrete_phases=discrete_pis,
+                        ctrl_data=ctrl_data if ctrl_data else None,
+                        suptitle=f"Distractor node power by phase | {base_title}",
+                        save_path=os.path.join(off_out, "phase_dist_power_overlay.png"),
+                    )
+                    plt.close(fig3)
+
+                    # 4. Continuous sweep (PLV + cue power + dist power)
+                    fig4 = plot_osc_phase_sweep(
+                        phase_pis=all_phase_pis,
+                        sweep_data=sweep_data_fig,
+                        ctrl_values=ctrl_values if ctrl_values else None,
+                        suptitle=f"Delay₂ metric vs. distractor phase | {base_title}",
+                        save_path=os.path.join(off_out, "phase_sweep.png"),
+                    )
+                    plt.close(fig4)
+
+                    # 5. Polar sweep
+                    fig5 = plot_osc_phase_polar(
+                        phase_pis=all_phase_pis,
+                        sweep_data=sweep_data_fig,
+                        ctrl_values=ctrl_values if ctrl_values else None,
+                        suptitle=f"Polar: delay₂ metric vs. phase | {base_title}",
+                        save_path=os.path.join(off_out, "phase_polar.png"),
+                    )
+                    plt.close(fig5)
+
+                    # 6–8. Phase × time heatmaps
+                    n_phases = len(all_phase_pis)
+                    n_times = len(t_rel_axis)
+
+                    for metric_label, mean_key in [
+                        ('plv', 'plv_mean'),
+                        ('cue_power', 'cue_mean'),
+                        ('dist_power', 'dist_mean'),
+                    ]:
+                        heat = np.full((n_phases, max(n_times, 1)), np.nan)
+                        for pi, phi_pi in enumerate(all_phase_pis):
+                            d = data_by_phase.get(phi_pi, {})
+                            v = np.asarray(d.get(mean_key, []), dtype=float)
+                            heat[pi, :len(v)] = v
+                        fig6 = plot_osc_phase_heatmap(
+                            phase_pis=all_phase_pis,
+                            t_rel_axis=t_rel_axis,
+                            heatmap_data=heat,
+                            dist_offset_s=dist_offset_s,
+                            metric=metric_label,
+                            suptitle=f"Phase × time heatmap ({metric_label}) | {base_title}",
+                            save_path=os.path.join(off_out, f"phase_heatmap_{metric_label}.png"),
+                        )
+                        plt.close(fig6)
+
+                    # 9. Phases-as-conditions box plot (discrete phases compared at each time bin)
+                    import colorsys as _colorsys
+                    _phase_colors_hex = {
+                        phi: '#{:02x}{:02x}{:02x}'.format(
+                            *[int(x * 255) for x in
+                              _colorsys.hsv_to_rgb(phi / 2.0, 0.80, 0.82)]
+                        )
+                        for phi in discrete_pis
+                    }
+
+                    def _phi_lbl(phi):
+                        if phi == 0.0:   return '0'
+                        if phi == 0.5:   return 'π/2'
+                        if phi == 1.0:   return 'π'
+                        if phi == 1.5:   return '3π/2'
+                        return f'{phi}π'
+
+                    data_by_phase_cond: dict = {}
+                    t_ref_phase_bp = np.array([])
+                    for phi_pi in discrete_pis:
+                        rows_phi = [
+                            r for r in all_results
+                            if r['cond_key'] == ck
+                            and abs(r['amplitude'] - amp) < 1e-9
+                            and abs(r['distractor_factor'] - factor) < 1e-9
+                            and r['offset_deg'] == off
+                            and abs(r['phase_pi'] - phi_pi) < 1e-9
+                        ]
+                        if not rows_phi:
+                            continue
+                        t_cue, stack_cue = _stack_tc_full(
+                            rows_phi, 'cue_dominant_power', 'cue_times_s')
+                        _, stack_dst = _stack_tc_full(
+                            rows_phi, 'dist_dominant_power', 'dist_times_s')
+                        _, stack_plv = _stack_tc_full(
+                            rows_phi, 'plv', 'plv_times_s')
+                        dist_onset_s_ref = rows_phi[0].get('dist_onset_rel_s', 0.0)
+                        t_cue_rel = t_cue - dist_onset_s_ref
+                        if len(t_cue_rel) >= len(t_ref_phase_bp):
+                            t_ref_phase_bp = t_cue_rel
+                        lbl = _phi_lbl(phi_pi)
+                        data_by_phase_cond[lbl] = {
+                            'plv':        stack_plv,
+                            'cue_power':  stack_cue,
+                            'dist_power': stack_dst,
+                        }
+                    if len(data_by_phase_cond) >= 2:
+                        phase_colors_by_lbl = {
+                            _phi_lbl(phi): _phase_colors_hex[phi]
+                            for phi in discrete_pis if _phi_lbl(phi) in data_by_phase_cond
+                        }
+                        fig_pbp = plot_osc_conditions_boxplot(
+                            t_axis=t_ref_phase_bp,
+                            data_by_condition=data_by_phase_cond,
+                            dist_offset_s=dist_offset_s,
+                            condition_colors=phase_colors_by_lbl,
+                            suptitle=(
+                                f"Phase comparison | {ck} | {amp_label}× | {factor_label} | "
+                                f"offset={int(off)}° | {conn_lbl}"
+                            ),
+                            save_path=os.path.join(off_out, "phases_boxplot.png"),
+                        )
+                        plt.close(fig_pbp)
+
+                # 10. Summary: all offsets on the same phase-sweep plot
+                if len(offsets_deg) > 0 and sweep_data_by_offset:
+                    summary_title = (
+                        f"{ck} | {amp_label}× | {factor_label} | all offsets | {conn_lbl}"
+                    )
+                    fig_sum = plot_osc_phase_sweep_offsets(
+                        phase_pis=all_phase_pis,
+                        sweep_data_by_offset=sweep_data_by_offset,
+                        ctrl_values_by_offset=ctrl_values_by_offset if ctrl_values_by_offset else None,
+                        suptitle=f"Phase sweep — all offsets | {summary_title}",
+                        save_path=os.path.join(amp_out, "phase_sweep_all_offsets.png"),
+                    )
+                    plt.close(fig_sum)
+
+    # ------------------------------------------------------------------
+    # Cross-condition box plots (only when multiple conditions are compared)
+    # ------------------------------------------------------------------
+    if len(plot_cks) > 1:
+        def _phi_fname(phi_pi):
+            if phi_pi == 0.0:   return '0'
+            if phi_pi == 0.5:   return 'pi_over_2'
+            if phi_pi == 1.0:   return 'pi'
+            if phi_pi == 1.5:   return '3pi_over_2'
+            return str(phi_pi).replace('.', '_') + 'pi'
+
+        def _phi_title(phi_pi):
+            if phi_pi == 0.0:   return '0'
+            if phi_pi == 0.5:   return 'π/2'
+            if phi_pi == 1.0:   return 'π'
+            if phi_pi == 1.5:   return '3π/2'
+            return f'{phi_pi}π'
+
+        for factor in distractor_factors:
+            factor_label = f"factor{_fmt(factor)}"
+            for amp in amplitudes:
+                amp_label = f"amp{_fmt(amp)}"
+                for off in offsets_deg:
+                    off_label = f"offset{int(off)}"
+                    for phi_pi in discrete_pis:
+                        data_by_cond: dict = {}
+                        t_ref_bp = np.array([])
+                        for ck in plot_cks:
+                            rows_bp = [
+                                r for r in all_results
+                                if r['cond_key'] == ck
+                                and abs(r['amplitude'] - amp) < 1e-9
+                                and abs(r['distractor_factor'] - factor) < 1e-9
+                                and r['offset_deg'] == off
+                                and abs(r['phase_pi'] - phi_pi) < 1e-9
+                            ]
+                            if not rows_bp:
+                                continue
+                            t_cue, stack_cue = _stack_tc_full(
+                                rows_bp, 'cue_dominant_power', 'cue_times_s')
+                            _, stack_dst = _stack_tc_full(
+                                rows_bp, 'dist_dominant_power', 'dist_times_s')
+                            _, stack_plv = _stack_tc_full(
+                                rows_bp, 'plv', 'plv_times_s')
+                            dist_onset_s = rows_bp[0].get('dist_onset_rel_s', 0.0)
+                            t_cue_rel = t_cue - dist_onset_s
+                            if len(t_cue_rel) >= len(t_ref_bp):
+                                t_ref_bp = t_cue_rel
+                            data_by_cond[ck] = {
+                                'plv':        stack_plv,
+                                'cue_power':  stack_cue,
+                                'dist_power': stack_dst,
+                            }
+                        if len(data_by_cond) < 2:
+                            continue
+                        cmp_dir = os.path.join(
+                            out_root, "comparison", factor_label,
+                            amp_label, off_label,
+                        )
+                        os.makedirs(cmp_dir, exist_ok=True)
+                        fig_bp = plot_osc_conditions_boxplot(
+                            t_axis=t_ref_bp,
+                            data_by_condition=data_by_cond,
+                            dist_offset_s=dist_offset_s,
+                            suptitle=(
+                                f"Condition comparison | {amp_label}× | {factor_label} | "
+                                f"offset={int(off)}° | phase={_phi_title(phi_pi)} | {conn_lbl}"
+                            ),
+                            save_path=os.path.join(
+                                cmp_dir,
+                                f"conditions_boxplot_phase{_phi_fname(phi_pi)}.png",
+                            ),
+                        )
+                        plt.close(fig_bp)
+
+    print("\nPhase-distractor study complete.")
+    print(f"  CSV:        {csv_path}")
+    print(f"  Figures:    {out_root}")
+    print(f"  Cache:      {cache_file}  (key={cache_key})")
+    print(f"  Osc. freq:  {f_osc:.2f} Hz  (period {T_osc_ms:.1f} ms)")
 
 
 # ============================================================================
