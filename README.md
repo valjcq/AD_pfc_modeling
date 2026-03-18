@@ -74,7 +74,7 @@ The model implements the following synaptic weight matrix (w_XY = weight from po
   PYR │ w_ee   w_pe   w_se    -     │  (recurrent, inhibition from PV/SOM)
   PV  │ w_ep   w_pp   w_sp   w_vp   │  (excitation from PYR, inhibition)
 T SOM │ w_es    -      -     w_vs   │  (excitation from PYR, inhib from VIP)
-O VIP │ w_ev    -      -     w_vv   │  (weak from PYR, self-inhibition)
+O VIP │ w_ev    -      -      -     │  (weak from PYR, no local inhibition)
       └─────────────────────────────┘
 ```
 
@@ -160,7 +160,6 @@ I_SOM = w_es · r_PYR
 #### VIP Input:
 ```
 I_VIP = w_ev · r_PYR
-        - w_vv · r_VIP
         + I_ext_VIP
 ```
 
@@ -340,7 +339,6 @@ Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7`
 | `w_vp` | 0.011 | VIP → PV | Weak disinhibition of PV |
 | `w_ps` | 2.22 | PV → SOM | Cross-inhibition between interneuron types |
 | `w_vs` | 1.27 | VIP → SOM | Core disinhibition pathway |
-| `w_vv` | 24.80 | VIP → VIP | Self-inhibition; regulates VIP activity |
 
 ### External Currents
 

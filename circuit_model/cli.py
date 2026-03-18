@@ -65,7 +65,7 @@ def print_parameter_status(
         "Adaptation": ["J_adapt_pyr", "J_adapt_som"],
         "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
-        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs", "w_vv"],
+        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g_e", "g_i"],
@@ -266,26 +266,73 @@ def cmd_study(args: argparse.Namespace) -> None:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Run parameter optimization."""
-    # Build target rates
-    target = TargetRates(
-        mean_r_pyr=args.target_pyr,
-        mean_r_som=args.target_som,
-        mean_r_pv=args.target_pv,
-        mean_r_vip=args.target_vip,
-        alpha7_ko_pyr=args.target_alpha7_ko_pyr,
-        alpha5_ko_pyr=args.target_alpha5_ko_pyr,
-        beta2_ko_pyr=args.target_beta2_ko_pyr,
-    )
+    if not getattr(args, "resume", False):
+        missing = [f"--target_{k}" for k, v in [
+            ("pyr", args.target_pyr), ("som", args.target_som),
+            ("pv", args.target_pv), ("vip", args.target_vip),
+        ] if v is None]
+        if missing:
+            raise SystemExit(f"error: the following arguments are required: {', '.join(missing)}\n"
+                             "(or use --resume to load targets from a previous log)")
 
-    # Load or create base parameters
-    if args.params_json:
-        base = load_params_json(args.params_json)
-        print(f"Loaded base parameters from: {args.params_json}")
+    # Handle --resume: load best params and targets from log, continue from last logged step
+    step_offset = 0
+    append_log = False
+    if getattr(args, "resume", False):
+        resume_json = args.save_best_json or "best_params.json"
+        log_path = args.log_file or "results_log.jsonl"
+        if not os.path.exists(resume_json):
+            raise FileNotFoundError(f"--resume: could not find '{resume_json}'")
+        base = load_params_json(resume_json)
+        print(f"Resuming from: {resume_json}")
+        if not os.path.exists(log_path):
+            raise FileNotFoundError(f"--resume: could not find log file '{log_path}'")
+        import json as _json
+        last_step = 0
+        last_entry = None
+        with open(log_path, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    last_entry = _json.loads(_line)
+                    last_step = last_entry.get("step", last_step)
+        step_offset = last_step
+        append_log = True
+        print(f"Appending to log '{log_path}' from step {last_step}")
+        t = last_entry["target"]
+        target = TargetRates(
+            mean_r_pyr=t["mean_r_pyr"],
+            mean_r_som=t["mean_r_som"],
+            mean_r_pv=t["mean_r_pv"],
+            mean_r_vip=t["mean_r_vip"],
+            alpha7_ko_pyr=t.get("alpha7_ko_pyr"),
+            alpha5_ko_pyr=t.get("alpha5_ko_pyr"),
+            beta2_ko_pyr=t.get("beta2_ko_pyr"),
+        )
+        print(f"Targets loaded from log: pyr={target.mean_r_pyr}, som={target.mean_r_som}, "
+              f"pv={target.mean_r_pv}, vip={target.mean_r_vip}")
     else:
-        base = CircuitParams()
-        print("Using default base parameters")
+        # Build target rates from CLI args
+        target = TargetRates(
+            mean_r_pyr=args.target_pyr,
+            mean_r_som=args.target_som,
+            mean_r_pv=args.target_pv,
+            mean_r_vip=args.target_vip,
+            alpha7_ko_pyr=args.target_alpha7_ko_pyr,
+            alpha5_ko_pyr=args.target_alpha5_ko_pyr,
+            beta2_ko_pyr=args.target_beta2_ko_pyr,
+        )
 
-    # Apply --set overrides (e.g. --set w_vv=0,w_sp=0)
+    # Load or create base parameters (only if not already loaded via --resume)
+    if not getattr(args, "resume", False):
+        if args.params_json:
+            base = load_params_json(args.params_json)
+            print(f"Loaded base parameters from: {args.params_json}")
+        else:
+            base = CircuitParams()
+            print("Using default base parameters")
+
+    # Apply --set overrides (e.g. --set w_sp=0)
     if args.set_params:
         from dataclasses import replace
         overrides = parse_set_params(args.set_params)
@@ -350,6 +397,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         log_interval=args.log_interval,
         n_workers=args.n_workers,
         save_best_json=args.save_best_json or None,
+        step_offset=step_offset,
+        append_log=append_log,
     )
 
     if not best:
@@ -466,14 +515,14 @@ Examples:
                             help="Rate unit for display (default: transients/min)")
 
     # Target firing rates (required)
-    opt_parser.add_argument("--target_pyr", type=float, required=True,
-                            help="Target mean firing rate for PYR")
-    opt_parser.add_argument("--target_som", type=float, required=True,
-                            help="Target mean firing rate for SOM")
-    opt_parser.add_argument("--target_pv", type=float, required=True,
-                            help="Target mean firing rate for PV")
-    opt_parser.add_argument("--target_vip", type=float, required=True,
-                            help="Target mean firing rate for VIP")
+    opt_parser.add_argument("--target_pyr", type=float, default=None,
+                            help="Target mean firing rate for PYR (not needed with --resume)")
+    opt_parser.add_argument("--target_som", type=float, default=None,
+                            help="Target mean firing rate for SOM (not needed with --resume)")
+    opt_parser.add_argument("--target_pv", type=float, default=None,
+                            help="Target mean firing rate for PV (not needed with --resume)")
+    opt_parser.add_argument("--target_vip", type=float, default=None,
+                            help="Target mean firing rate for VIP (not needed with --resume)")
 
     # Optional knockout targets
     opt_parser.add_argument("--target_alpha7_ko_pyr", type=float, default=None,
@@ -514,7 +563,7 @@ Examples:
     opt_parser.add_argument("--freeze", type=str, default="",
                             help="Comma-separated parameter names to freeze")
     opt_parser.add_argument("--set", dest="set_params", type=str, default="",
-                            help="Override parameter values: 'name=val,name=val' (e.g. --set w_vv=0,w_sp=0)")
+                            help="Override parameter values: 'name=val,name=val' (e.g. --set w_sp=0)")
     opt_parser.add_argument("--show_params", action="store_true",
                             help="Show which parameters are free vs frozen")
 
@@ -523,8 +572,10 @@ Examples:
                             help="Save best parameters to JSON file")
     opt_parser.add_argument("--log_file", type=str, default="results_log.jsonl",
                             help="Log results to JSONL file")
-    opt_parser.add_argument("--log_interval", type=int, default=50,
+    opt_parser.add_argument("--log_interval", type=int, default=500,
                             help="Log every N steps")
+    opt_parser.add_argument("--resume", action="store_true",
+                            help="Resume from best_params.json, appending to existing log")
     opt_parser.add_argument("--n_workers", type=int, default=None,
                             help="Parallel workers (auto if None)")
 

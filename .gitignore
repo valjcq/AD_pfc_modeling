@@ -12,6 +12,7 @@ __pycache__/
 
 log.md
 writing/
+AD_data/
 
 # Generated experiment artifacts
 figs/**/.osc_cache_*.pkl

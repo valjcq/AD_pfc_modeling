@@ -212,114 +212,126 @@ def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) 
 
 def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: float,
                   ring_params: RingParams | None = None,
-                  experiment_info: list[str] | None = None):
-    """Print a comprehensive configuration summary for the experiment."""
+                  experiment_info: list[str] | None = None,
+                  save_path: str | None = None):
+    """Print a comprehensive configuration summary and optionally save it to a file."""
     import datetime
     sep = "═" * 66
     thin = "─" * 66
 
-    print(f"\n{sep}")
-    print(f"  Run started: {datetime.datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}")
-    print(sep)
+    lines: list[str] = []
+
+    def emit(s: str = "") -> None:
+        print(s)
+        lines.append(s)
+
+    emit(f"\n{sep}")
+    emit(f"  Run started: {datetime.datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}")
+    emit(sep)
 
     # ── Circuit parameters ───────────────────────────────────────────────
-    print("  CIRCUIT PARAMETERS")
+    emit("  CIRCUIT PARAMETERS")
 
-    print("  ── Time constants (ms)")
-    print(f"       tau_s         = {base_params.tau_s:.4g}")
-    print(f"       tau_adapt_pyr = {base_params.tau_adapt_pyr:.4g}")
-    print(f"       tau_adapt_som = {base_params.tau_adapt_som:.4g}")
+    emit("  ── Time constants (ms)")
+    emit(f"       tau_s         = {base_params.tau_s:.4g}")
+    emit(f"       tau_adapt_pyr = {base_params.tau_adapt_pyr:.4g}")
+    emit(f"       tau_adapt_som = {base_params.tau_adapt_som:.4g}")
 
-    print("  ── Adaptation")
-    print(f"       J_adapt_pyr   = {base_params.J_adapt_pyr:.4g}")
-    print(f"       J_adapt_som   = {base_params.J_adapt_som:.4g}")
+    emit("  ── Adaptation")
+    emit(f"       J_adapt_pyr   = {base_params.J_adapt_pyr:.4g}")
+    emit(f"       J_adapt_som   = {base_params.J_adapt_som:.4g}")
 
-    print("  ── Noise")
-    print(f"       sigma_s       = {base_params.sigma_s:.4g}")
+    emit("  ── Noise")
+    emit(f"       sigma_s       = {base_params.sigma_s:.4g}")
 
-    print("  ── GABA scaling")
-    print(f"       g_gaba_base   = {base_params.g_gaba_base:.4g}")
-    print(f"       g_alpha7      = {base_params.g_alpha7:.4g}")
-    print(f"       g_gaba (total)= {base_params.g_gaba():.4g}")
+    emit("  ── GABA scaling")
+    emit(f"       g_gaba_base   = {base_params.g_gaba_base:.4g}")
+    emit(f"       g_alpha7      = {base_params.g_alpha7:.4g}")
+    emit(f"       g_gaba (total)= {base_params.g_gaba():.4g}")
 
-    print("  ── Receptor activation")
-    print(f"       act_alpha7    = {base_params.act_alpha7:.4g}"
-          f"   act_beta2 = {base_params.act_beta2:.4g}"
-          f"   act_alpha5 = {base_params.act_alpha5:.4g}")
+    emit("  ── Receptor activation")
+    emit(f"       act_alpha7    = {base_params.act_alpha7:.4g}"
+         f"   act_beta2 = {base_params.act_beta2:.4g}"
+         f"   act_alpha5 = {base_params.act_alpha5:.4g}")
 
-    print("  ── Synaptic weights")
-    print(f"       w_ee={base_params.w_ee:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
-          f"  w_es={base_params.w_es:<8.4g}  w_ev={base_params.w_ev:.2e}")
-    print(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:<8.4g}  w_ps={base_params.w_ps:.4g}")
-    print(f"       w_se={base_params.w_se:<8.4g}  w_sp={base_params.w_sp:.2e}")
-    print(f"       w_vp={base_params.w_vp:<8.4g}  w_vs={base_params.w_vs:<8.4g}  w_vv={base_params.w_vv:.4g}")
+    emit("  ── Synaptic weights")
+    emit(f"       w_ee={base_params.w_ee:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
+         f"  w_es={base_params.w_es:<8.4g}  w_ev={base_params.w_ev:.2e}")
+    emit(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:<8.4g}  w_ps={base_params.w_ps:.4g}")
+    emit(f"       w_se={base_params.w_se:<8.4g}  w_sp={base_params.w_sp:.2e}")
+    emit(f"       w_vp={base_params.w_vp:<8.4g}  w_vs={base_params.w_vs:.4g}")
 
-    print("  ── External currents")
-    print(f"       PYR: I0={base_params.I0_pyr:.4g}"
-          f"  → I_ext_pyr={base_params.I_ext_pyr():.4g}")
-    print(f"       PV:  I0={base_params.I0_pv:.4g}"
-          f"  + act_alpha7×{base_params.I_alpha7_pv:.4g}"
-          f"  → I_ext_pv={base_params.I_ext_pv():.4g}")
-    print(f"       SOM: I0={base_params.I0_som:.4g}"
-          f"  + act_alpha7×{base_params.I_alpha7_som:.4g}"
-          f"  + act_beta2×{base_params.I_beta2_som:.4g}"
-          f"  → I_ext_som={base_params.I_ext_som():.4g}")
-    print(f"       VIP: I0={base_params.I0_vip:.4g}"
-          f"  + act_alpha5×{base_params.I_alpha5_vip:.4g}"
-          f"  → I_ext_vip={base_params.I_ext_vip():.4g}")
+    emit("  ── External currents")
+    emit(f"       PYR: I0={base_params.I0_pyr:.4g}"
+         f"  → I_ext_pyr={base_params.I_ext_pyr():.4g}")
+    emit(f"       PV:  I0={base_params.I0_pv:.4g}"
+         f"  + act_alpha7×{base_params.I_alpha7_pv:.4g}"
+         f"  → I_ext_pv={base_params.I_ext_pv():.4g}")
+    emit(f"       SOM: I0={base_params.I0_som:.4g}"
+         f"  + act_alpha7×{base_params.I_alpha7_som:.4g}"
+         f"  + act_beta2×{base_params.I_beta2_som:.4g}"
+         f"  → I_ext_som={base_params.I_ext_som():.4g}")
+    emit(f"       VIP: I0={base_params.I0_vip:.4g}"
+         f"  + act_alpha5×{base_params.I_alpha5_vip:.4g}"
+         f"  → I_ext_vip={base_params.I_ext_vip():.4g}")
 
     if base_params.trans_enabled:
-        print("  ── Transient current")
-        print(f"       trans_factor={base_params.trans_factor:.4g}"
-              f"   start={base_params.trans_start_ms:.0f} ms"
-              f"   duration={base_params.trans_duration_ms:.0f} ms")
+        emit("  ── Transient current")
+        emit(f"       trans_factor={base_params.trans_factor:.4g}"
+             f"   start={base_params.trans_start_ms:.0f} ms"
+             f"   duration={base_params.trans_duration_ms:.0f} ms")
 
-    print("  ── Transfer function")
-    print(f"       PYR: Theta={base_params.Theta_pyr:.4g}  alpha={base_params.alpha_pyr:.4g}"
-          f"  g_e={base_params.g_e:.4g}")
-    print(f"       PV:  Theta={base_params.Theta_pv:.4g}  alpha={base_params.alpha_pv:.4g}"
-          f"  g_i={base_params.g_i:.4g}")
-    print(f"       SOM: Theta={base_params.Theta_som:.4g}  alpha={base_params.alpha_som:.4g}")
-    print(f"       VIP: Theta={base_params.Theta_vip:.4g}  alpha={base_params.alpha_vip:.4g}")
+    emit("  ── Transfer function")
+    emit(f"       PYR: Theta={base_params.Theta_pyr:.4g}  alpha={base_params.alpha_pyr:.4g}"
+         f"  g_e={base_params.g_e:.4g}")
+    emit(f"       PV:  Theta={base_params.Theta_pv:.4g}  alpha={base_params.alpha_pv:.4g}"
+         f"  g_i={base_params.g_i:.4g}")
+    emit(f"       SOM: Theta={base_params.Theta_som:.4g}  alpha={base_params.alpha_som:.4g}")
+    emit(f"       VIP: Theta={base_params.Theta_vip:.4g}  alpha={base_params.alpha_vip:.4g}")
 
     # ── Ring network ─────────────────────────────────────────────────────
     if ring_params is not None:
-        print(thin)
-        print("  RING NETWORK")
-        print(f"       n_nodes         = {ring_params.n_nodes}")
-        print(f"       w_pyr_pyr_inter = {ring_params.w_pyr_pyr_inter:.4g}")
-        print(f"       sigma_pyr_deg   = {ring_params.sigma_pyr_deg:.4g} deg")
-        print(f"       w_pv_global     = {ring_params.w_pv_global:.4g}")
+        emit(thin)
+        emit("  RING NETWORK")
+        emit(f"       n_nodes         = {ring_params.n_nodes}")
+        emit(f"       w_pyr_pyr_inter = {ring_params.w_pyr_pyr_inter:.4g}")
+        emit(f"       sigma_pyr_deg   = {ring_params.sigma_pyr_deg:.4g} deg")
+        emit(f"       w_pv_global     = {ring_params.w_pv_global:.4g}")
 
     # ── Stimulus ─────────────────────────────────────────────────────────
-    print(thin)
-    print("  STIMULUS")
+    emit(thin)
+    emit("  STIMULUS")
     I_baseline = base_params.I_ext_pyr()
     actual_current = amp_factor * I_baseline
-    print(f"       amplitude     = {amp_factor:.4g}× I_ext_pyr = {actual_current:.4g}"
-          f"   (I_ext_pyr baseline = {I_baseline:.4g})")
-    print(f"       sigma         = {STIM_SIGMA_DEG:.0f} deg"
-          f"   duration = {STIM_DURATION_MS:.0f} ms"
-          f"   onset = {STIM_ONSET_MS:.0f} ms")
+    emit(f"       amplitude     = {amp_factor:.4g}× I_ext_pyr = {actual_current:.4g}"
+         f"   (I_ext_pyr baseline = {I_baseline:.4g})")
+    emit(f"       sigma         = {STIM_SIGMA_DEG:.0f} deg"
+         f"   duration = {STIM_DURATION_MS:.0f} ms"
+         f"   onset = {STIM_ONSET_MS:.0f} ms")
     if T_ms > 0:
-        print(f"       total sim time= {T_ms:.0f} ms")
+        emit(f"       total sim time= {T_ms:.0f} ms")
 
     response_onset = getattr(args, 'response_onset_ms', 0.0)
     if response_onset > 0:
         response_factor = getattr(args, 'response_factor', 0.5)
         response_duration = getattr(args, 'response_duration_ms', 500.0)
-        print(f"       response transient: +{response_factor:.0%} × I0"
-              f"   onset={response_onset:.0f} ms after delay end"
-              f"   duration={response_duration:.0f} ms")
+        emit(f"       response transient: +{response_factor:.0%} × I0"
+             f"   onset={response_onset:.0f} ms after delay end"
+             f"   duration={response_duration:.0f} ms")
 
     # ── Experiment-specific ───────────────────────────────────────────────
     if experiment_info:
-        print(thin)
-        print("  EXPERIMENT")
+        emit(thin)
+        emit("  EXPERIMENT")
         for line in experiment_info:
-            print(f"       {line}")
+            emit(f"       {line}")
 
-    print(sep)
+    emit(sep)
+
+    if save_path:
+        with open(save_path, "w") as _f:
+            _f.write("\n".join(lines) + "\n")
+        print(f"  Config saved → {save_path}")
 
 
 def _fmt(v: float) -> str:
@@ -1388,7 +1400,8 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
                       f"Delay:         {delay_ms:.0f} ms",
                       f"Trials:        {n_trials}   seed={args.seed}   workers={n_workers}",
                       f"Window:        {window_ms:.0f} ms   ref bin center={bin_centers[ref_bin_idx]:.0f} ms",
-                  ])
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # ── Burn-in states (one per condition, using per-condition ring_params) ───
     print("\nComputing burn-in states...")
@@ -1721,7 +1734,8 @@ def cmd_oscillation_study(args: argparse.Namespace) -> None:
                       f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
                       f"Freq band:   [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
                       f"   window={args.tf_window_s:.3f} s   overlap={args.tf_overlap:.2f}",
-                  ])
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     print("\nComputing burn-in states...")
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -2580,7 +2594,8 @@ def cmd_osc_distractor_study(args: argparse.Namespace) -> None:
                       f"Freq band:         [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
                       f"   window={args.tf_window_s:.3f} s   overlap={args.tf_overlap:.2f}",
                       f"Cache key:         {cache_key}",
-                  ])
+                  ],
+                  save_path=os.path.join(out_root, "experiment_config.txt"))
 
     all_results: list[dict] = []
     if use_cache and os.path.exists(cache_file):
@@ -3160,7 +3175,8 @@ def cmd_pre_cue_power_study(args: argparse.Namespace) -> None:
                       f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
                       f"Freq band:   [{args.min_freq_hz:.1f}, {args.max_freq_hz:.1f}] Hz"
                       f"   window={args.tf_window_s:.2f} s   overlap={args.tf_overlap:.2f}",
-                  ])
+                  ],
+                  save_path=os.path.join(out_root, "experiment_config.txt"))
 
     print("\nComputing burn-in states...")
     burnin_states: dict = {}
@@ -3336,6 +3352,22 @@ def cmd_run(args: argparse.Namespace) -> None:
     delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
     local_params = _apply_response_transient(local_params, args, delay_end_ms)
 
+    # ------------------------------------------------------------------
+    # Output directory (needed before _print_config for save_path)
+    # ------------------------------------------------------------------
+    out_dir_parts = [
+        _output_dir("figs/ring/run", args.params_json),
+        _run_type_label(args),
+        _network_label(ring_params),
+    ]
+    if _has_distractor(args):
+        out_dir_parts.append(
+            f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
+        )
+    out_dir_parts.append(cond_key)
+    out_dir = os.path.join(*out_dir_parts)
+    os.makedirs(out_dir, exist_ok=True)
+
     _run_info = [
         f"Condition: {cond_key}   seed={args.seed}",
         f"Delay:     {args.delay_ms:.0f} ms",
@@ -3351,7 +3383,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             + _dist_extra
         )
     _print_config(args, amp_factor, base_params, T_ms, ring_params=ring_params,
-                  experiment_info=_run_info)
+                  experiment_info=_run_info,
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # ------------------------------------------------------------------
     # Distractor geometry (computed once, used for both plots and MP4)
@@ -3380,22 +3413,6 @@ def cmd_run(args: argparse.Namespace) -> None:
         record_dt_ms=args.record_dt_ms,
         record_adaptation=True,
     )
-
-    # ------------------------------------------------------------------
-    # Output directory: insert distractor subfolder when relevant
-    # ------------------------------------------------------------------
-    out_dir_parts = [
-        _output_dir("figs/ring/run", args.params_json),
-        _run_type_label(args),
-        _network_label(ring_params),
-    ]
-    if _has_distractor(args):
-        out_dir_parts.append(
-            f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
-        )
-    out_dir_parts.append(cond_key)
-    out_dir = os.path.join(*out_dir_parts)
-    os.makedirs(out_dir, exist_ok=True)
 
     suptitle = (
         f"{condition.label} -- {_stim_label(amp_factor)}, {_weights_label(ring_params)}"
@@ -3564,7 +3581,8 @@ def cmd_study(args: argparse.Namespace) -> None:
                       f"Amp/cond:    {', '.join(f'{ck}={_fmt(cond_amp[ck])}' for ck in condition_keys) if cond_amp else ', '.join(_fmt(a) for a in amplitudes) + '× I_ext_pyr'}",
                       f"Delay:       {args.delay_ms:.0f} ms",
                       f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
-                  ])
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # --- Burn-in states (once per condition, using per-condition ring_params) ---
     print("\nComputing burn-in states...")
@@ -4314,7 +4332,8 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
                       f"Conditions:  {', '.join(condition_keys)}",
                       f"Delay:       {args.delay_ms:.0f} ms",
                       f"Trials:      {n_trials}   seed={args.seed}   workers={n_workers}",
-                  ])
+                  ],
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # --- Pre-compute connectivity and burn-in ---
     connectivity = RingConnectivity.from_params(ring_params)
@@ -6321,7 +6340,8 @@ def cmd_asymmetry(args: argparse.Namespace) -> None:
     ]
     if _balance_note:
         _asym_info.append(_balance_note.strip())
-    _print_config(args, amp, base_params, 0.0, ring_params, experiment_info=_asym_info)
+    _print_config(args, amp, base_params, 0.0, ring_params, experiment_info=_asym_info,
+                  save_path=os.path.join(out_dir, "experiment_config.txt"))
 
     # --- CSV cache: load existing trials if parameters match ---
     csv_path = os.path.join(out_dir, "asymmetry_trials.csv")

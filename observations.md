@@ -116,7 +116,7 @@ But what we observe is that the weight at which the network tend to have bigger 
 
 ### Behavior with distractor
 
-We analyze three angular positions of the distractor (30°, 90°, 120°, 170°) to see how the bump responds to distractors at different distances from the cue. 
+We analyze three angular positions of the distractor (30°, 90°, 120°, 170°) to see how the bump responds to distractors at different distances from the cue.
 
 The closer bump (30°) merge in oscillations with the main bump, the resulting bump is wider and less "peaked".
 
@@ -129,3 +129,78 @@ With 120°, we have the same observations.
 With 170°, the distractor is far enough to not merge with the main bump, it does create a second bump, and the oscillations interfer in the way that they get wider, and they alternate. The first bump fire during the trough of the second bump, and the second bump fire during the trough of the first bump.
 
 We need to analyze more in depth the impact of the distractor on the bump stability, and how it differ accross conditions. We need to developp metrics and visualization to analyze the impact on oscillations, and also experiment to test the impact of the timing of the distractor presentation, and the phase of the oscillation at which it is presented.
+
+---
+
+### Noise Floor with Stronger Inhibition (preliminary — sigma_pyr_deg=30, same params WT/WT_APP)
+
+> **Context**: These results were produced with sigma_pyr_deg=30, using the same parameter set for WT and WT_APP. APP was not fitted to biological data — it approximates the desensitization but is not ground-truth. Methods and qualitative trends are informative; specific thresholds and magnitudes may shift with a proper fit.
+
+**Observation (inhibition weight 4 vs 10)**:
+- With lower inhibition weight (~4), disease/KO conditions shift the noise floor (maximum amplitude of a noise-induced bump) — the network enters a noise-sensitive state.
+- With stronger inhibition weight (~10), the noise floor remains around the same value. The previously observed shift requires a higher weight to appear.
+- Summary: the network shifts to a noise-sensitive state with lower inter-node inhibition weight in disease conditions. This makes the network less resistant to noise. In vivo, the network likely adjusts its weights to counterbalance this effect.
+
+---
+
+### 2D Parameter Space: WT vs WT_APP (preliminary)
+
+**Heatmap observation**:
+- The working state (region of parameter space allowing bump formation) is substantially shifted in WT_APP relative to WT.
+- This raises an important methodological concern: the two conditions do not operate in the same parameter space. Differences in bump metrics could reflect this shift rather than a direct effect of nAChR desensitization.
+- **Biological interpretation**: in vivo, the network would adjust its excitatory weights downward to compensate for the hyperactivity in APP condition.
+
+**Proposed approaches to address this**:
+1. Estimate the size of the bump-attractor parameter space for each condition (region that supports bump formation) — a smaller region in APP would itself be a meaningful finding.
+2. Compare conditions matched on a shared physiological constraint (e.g. same average PYR firing rate during delay), using different weights per condition. This provides a fairer comparison of bump quality independent of the parameter shift.
+
+---
+
+### Bump Metrics: WT vs WT_APP (preliminary — same params)
+
+**Key observations (weight 8.0–8.5 range)**:
+- Bump metrics are broadly similar across conditions at matched weight, but WT_APP shows larger error from cue location.
+- WT condition shows higher bump amplitude even when it sits in the lower part of the 2D parameter space (less suitable regime).
+- PYR firing rate during delay: ~18 Hz (WT_APP, amp=20×) vs ~11 Hz (WT) — APP drives stronger pyramidal activity.
+- Bump width is not trivially comparable when firing rates differ between conditions (width metric is biased by amplitude; see corrected asymmetry section).
+
+---
+
+### Oscillatory Behavior of the Bump (preliminary)
+
+**General**:
+- The bump exhibits clear oscillatory spatial displacement around ~7 Hz in both conditions (earlier runs suggested ~10 Hz; the exact frequency depends on weight and stimulus amplitude).
+- In WT_APP: bump shifts spatially around the cue location during the delay. Oscillation power is higher, probably due to higher PYR firing rate and bump amplitude.
+- The oscillation is not a clean spatial standing wave: neurons on one side of the bump fire before the other side — there is a spatial traveling wave component.
+- At higher weight and stimulus amplitude, the bump reaches a near self-sustained state (no longer clearly decaying).
+
+**Effect of APP on oscillation**:
+- APP condition shows stronger oscillation power (higher frequency and amplitude with these settings).
+- Oscillation in APP condition is also more variable across delay (higher variance of instantaneous frequency), but with higher concentrated spectral power.
+- At higher inhibition weights, WT shows stricter variance but sharper frequency concentration.
+
+**Phase alignment with distractor**:
+- When the distractor is close to the cue location, the two oscillating bumps phase-align: their oscillations synchronize.
+- When the two stimuli are at opposing locations (~180°), the oscillation power drops markedly — the distractor is maximally disruptive.
+- In APP condition, this phase-alignment behavior is less well-defined, suggesting reduced capacity for oscillatory coordination between competing stimuli.
+
+---
+
+### Asymmetry Analysis: Corrected Metric and Pre-Cue Correlation (preliminary)
+
+**Problem with raw asymmetry**:
+- A decaying bump in WT tends to produce asymmetry at the end of the delay period, inflating the asymmetry metric. This asymmetry is weaker in activity amplitude than the "real" asymmetry in WT_APP.
+- **Corrected asymmetry**: weight the asymmetry by the bump amplitude → normalizes by sum of amplitudes to keep the metric comparable. Use mean|A(t)| (not mean A(t)) to avoid cancellation when the direction of asymmetry switches during the delay. Also track std(A) for a sense of side-switching variability.
+
+**Findings with corrected metric**:
+- Asymmetry is unbiased with respect to left/right side (confirmed after cue placement correction).
+- Pre-cue variance is larger in disease conditions — suggests the network is more sensitive to noise before the cue, since the bump activity during delay normally suppresses noise-induced asymmetry.
+- WT_APP shows higher amplitude and variance of asymmetry than WT: consistent with the overall higher noise sensitivity.
+
+**Pre-cue → delay correlation**:
+- In α7-KO APP specifically: strong correlation between pre-cue asymmetry and delay-period asymmetry. This does not appear clearly in other conditions.
+- Interpretation: in α7-KO APP, the network's pre-existing spatial noise state propagates into the memory trace — the network lacks the inhibitory stabilization to reset upon cue presentation. Further investigation needed.
+
+**Asymmetry vs amplitude sweep**:
+- Both mean|A(t)| and std(A) increase with cue amplitude. The rate of increase (slope) is faster in WT_APP — the disease condition converts stimulus drive into spatial instability more efficiently.
+- Mechanistic link: loss of α7 nAChR reduces inhibitory damping that normally keeps the bump symmetric, so stronger drive amplifies spatial instability more in APP condition.

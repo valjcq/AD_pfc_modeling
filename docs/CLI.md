@@ -136,7 +136,7 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--freeze` | str | `""` | Comma-separated parameter names to freeze |
-| `--set` | str | `""` | Override values: `name=val,name=val` (e.g. `--set w_vv=0,w_sp=0`) |
+| `--set` | str | `""` | Override values: `name=val,name=val` (e.g. `--set w_sp=0`) |
 | `--show_params` | flag | `False` | Show which parameters are free vs frozen |
 
 ### I/O Settings
@@ -165,7 +165,7 @@ python -m circuit_model optimize \
 # Override specific parameters
 python -m circuit_model optimize \
     --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 \
-    --set "w_vv=0,w_sp=0" --n_samples 5000
+    --set "w_sp=0" --n_samples 5000
 ```
 
 ---
