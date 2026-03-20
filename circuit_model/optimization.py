@@ -14,11 +14,8 @@ This module contains:
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ProcessPoolExecutor
-from contextlib import nullcontext
 from dataclasses import dataclass, fields, replace
 from typing import Any, Optional
-import os
 from pathlib import Path
 
 import nevergrad as ng
@@ -27,7 +24,7 @@ from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty
 from .io import log_best_result, save_params_json
 
 
@@ -120,6 +117,7 @@ def _loss_from_results(
     results: list[ConditionResult],
     target: TargetRates,
     cfg: FitConfig,
+    params: CircuitParams,
 ) -> tuple[float, np.ndarray, KOMeans]:
     """Compute total loss from a list of condition simulation results."""
     ko_means = KOMeans()
@@ -159,6 +157,8 @@ def _loss_from_results(
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
 
+    total += jacobian_connectivity_penalty(params, base_means)
+
     return total, base_means, ko_means
 
 
@@ -176,7 +176,7 @@ def evaluate_params(
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg)
+    return _loss_from_results(results, target, cfg, params)
 
 
 def build_nevergrad_parametrization(
@@ -196,10 +196,15 @@ def build_nevergrad_parametrization(
             continue
 
         bound = bounds[name]
+        # Clamp the base value into [lo, hi] so it's always a valid init point.
+        # This makes --resume with CMA-ES warm-start from the loaded best params
+        # rather than from the geometric/arithmetic centre of the search space.
+        raw = float(getattr(base, name))
+        init = float(np.clip(raw, bound.lo, bound.hi))
         if bound.mode == "log" and bound.lo > 0:
-            params_dict[name] = ng.p.Log(lower=bound.lo, upper=bound.hi)
+            params_dict[name] = ng.p.Log(lower=bound.lo, upper=bound.hi, init=init)
         else:
-            params_dict[name] = ng.p.Scalar(lower=bound.lo, upper=bound.hi)
+            params_dict[name] = ng.p.Scalar(lower=bound.lo, upper=bound.hi, init=init)
 
     return ng.p.Dict(**params_dict)
 
@@ -211,6 +216,53 @@ def params_from_ng_dict(ng_dict: dict[str, Any], base: CircuitParams) -> Circuit
     return replace(base, **clean)
 
 
+def _build_optimizer(
+    name: str,
+    parametrization: ng.p.Dict,
+    budget: int,
+    num_workers: int,
+) -> Any:
+    """Instantiate a Nevergrad optimizer by name.
+
+    Available options:
+    - ``de``       — TwoPointsDE: derivative-free differential evolution (default).
+                     Good global explorer, robust on discontinuous landscapes.
+    - ``cma``      — CMA-ES: covariance-matrix adaptation evolution strategy.
+                     Best local refiner for ~10–100 continuous parameters; learns
+                     parameter correlations and converges fast once in a good basin.
+    - ``chaining`` — TwoPointsDE (global) → Nelder-Mead (local refinement).
+                     Matches the pipeline from the reference paper: gradient-free
+                     global search followed by a gradient-free local optimizer.
+    - ``auto``     — NGOpt: Nevergrad's meta-optimizer that selects the algorithm
+                     based on problem dimension and budget automatically.
+    """
+    if name == "de":
+        return ng.optimizers.TwoPointsDE(
+            parametrization=parametrization, budget=budget, num_workers=num_workers,
+        )
+    elif name == "cma":
+        return ng.optimizers.CMA(
+            parametrization=parametrization, budget=budget, num_workers=num_workers,
+        )
+    elif name == "chaining":
+        # DE converges fast (~3000-5000 steps); cap its share at min(budget//5, 10000).
+        # Nelder-Mead then refines from the best point found by DE.
+        de_budget = max(500, min(budget // 5, 10000))
+        ChainedCls = ng.optimizers.Chaining(
+            [ng.optimizers.TwoPointsDE, ng.optimizers.NelderMead],
+            [de_budget],
+        )
+        return ChainedCls(
+            parametrization=parametrization, budget=budget, num_workers=num_workers,
+        )
+    elif name == "auto":
+        return ng.optimizers.NGOpt(
+            parametrization=parametrization, budget=budget, num_workers=num_workers,
+        )
+    else:
+        raise ValueError(f"Unknown optimizer '{name}'. Choose: de, cma, chaining, auto.")
+
+
 def nevergrad_optimize(
     target: TargetRates,
     *,
@@ -220,11 +272,11 @@ def nevergrad_optimize(
     n_samples: int,
     top_k: int,
     seed: Optional[int],
+    optimizer: str = "de",
     freeze: Optional[set[str]] = None,
     early_stop_loss: Optional[float] = 1e-4,
     log_file: Optional[str] = None,
     log_interval: int = 50,
-    n_workers: Optional[int] = None,
     save_best_json: Optional[str] = None,
     step_offset: int = 0,
     append_log: bool = False,
@@ -232,10 +284,12 @@ def nevergrad_optimize(
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
 
-    Uses TwoPointsDE (Two-Point Differential Evolution) optimizer, which:
-    - Is derivative-free (good for noisy, discontinuous loss landscapes)
-    - Uses differential evolution with two-point crossover
-    - Balances exploration and exploitation
+    Optimizer choices (``optimizer`` argument):
+    - ``de``       — TwoPointsDE, derivative-free differential evolution (default).
+    - ``cma``      — CMA-ES, learns parameter correlations; fast local convergence.
+    - ``chaining`` — TwoPointsDE (global) → Nelder-Mead (local). Matches the
+                     reference paper pipeline.
+    - ``auto``     — NGOpt, Nevergrad's automatic algorithm selector.
 
     The optimization loop:
     1. Ask optimizer for a candidate parameter set
@@ -244,41 +298,14 @@ def nevergrad_optimize(
     4. Tell optimizer the loss
     5. Track top-k best candidates
     6. Optionally stop early if loss is below threshold
-
-    Parameters can be frozen (excluded from optimization) and searched
-    in linear or log space depending on their nature.
     """
     rng = np.random.default_rng(seed)
 
-    n_conditions = 1 + sum([
-        target.alpha7_ko_pyr is not None,
-        target.alpha5_ko_pyr is not None,
-        target.beta2_ko_pyr is not None,
-    ])
-
-    # Compute how many candidates to evaluate in parallel (batch mode).
-    # total_workers = total concurrent simulation slots;
-    # batch_size = candidates per step = total_workers // n_conditions.
-    if n_workers in (None, 0):
-        total_workers = os.cpu_count() or 4
-    elif n_workers == 1:
-        total_workers = 1
-    else:
-        total_workers = n_workers
-
-    use_parallel = total_workers > 1
-    batch_size = max(1, total_workers // n_conditions)
-    max_workers = batch_size * n_conditions
-
     parametrization = build_nevergrad_parametrization(base, bounds, freeze)
-    optimizer = ng.optimizers.TwoPointsDE(
-        parametrization=parametrization,
-        budget=n_samples,
-        num_workers=batch_size,
-    )
+    ng_optimizer = _build_optimizer(optimizer, parametrization, n_samples, num_workers=1)
 
     if seed is not None:
-        optimizer.parametrization.random_state = np.random.RandomState(seed)
+        ng_optimizer.parametrization.random_state = np.random.RandomState(seed)
 
     if log_file:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -288,74 +315,54 @@ def nevergrad_optimize(
     if save_best_json:
         Path(save_best_json).parent.mkdir(parents=True, exist_ok=True)
 
-    pool_cm = ProcessPoolExecutor(max_workers=max_workers) if use_parallel else nullcontext(None)
-
-    if use_parallel:
-        print(f"Using {max_workers} workers ({batch_size} candidates × {n_conditions} conditions)")
+    if optimizer == "chaining":
+        de_budget = max(500, min(n_samples // 5, 10000))
+        print(f"Optimizer: chaining (DE for {de_budget} steps → Nelder-Mead for {n_samples - de_budget} steps)")
+    else:
+        print(f"Optimizer: {optimizer}")
 
     best: list[Candidate] = []
+    last_step = 0
+    stopped_early = False
 
-    with pool_cm as executor:
-        last_step = 0
-        stopped_early = False
-        # Steps counted per candidate, not per batch
-        pbar = tqdm(range(1, n_samples + 1, batch_size), desc="Optimizing", unit="step")
+    pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
+    for step in pbar:
+        last_step = step
 
-        for step in pbar:
-            last_step = step
+        x = ng_optimizer.ask()
+        p = params_from_ng_dict(x.value, base)
+        cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
 
-            # Ask batch_size candidates from the optimizer
-            xs = [optimizer.ask() for _ in range(batch_size)]
-            params_list = [params_from_ng_dict(x.value, base) for x in xs]
+        L, means, ko_means = _loss_from_results(cond_results, target, fit_cfg, p)
+        ng_optimizer.tell(x, L)
 
-            if use_parallel:
-                # Submit all candidate × condition tasks at once for maximum throughput
-                tagged_futures: list[tuple[int, Future[ConditionResult]]] = []
-                for i, p in enumerate(params_list):
-                    for cond in _build_conditions(p, target, fit_cfg, rng):
-                        tagged_futures.append((i, executor.submit(run_condition, cond)))
+        prev_best_loss = best[0].loss if best else float("inf")
+        cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)
+        if len(best) < top_k:
+            best.append(cand)
+            best.sort(key=lambda c: c.loss)
+        elif L < best[-1].loss:
+            best[-1] = cand
+            best.sort(key=lambda c: c.loss)
 
-                results_by_cand: list[list[ConditionResult]] = [[] for _ in range(batch_size)]
-                for i, fut in tagged_futures:
-                    results_by_cand[i].append(fut.result())
-            else:
-                results_by_cand = [
-                    [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
-                    for p in params_list
-                ]
+        pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", step=step)
 
-            prev_best_loss = best[0].loss if best else float("inf")
+        if save_best_json and best and best[0].loss < prev_best_loss:
+            save_params_json(save_best_json, best[0].params)
 
-            for x, p, cond_results in zip(xs, params_list, results_by_cand):
-                L, means, ko_means = _loss_from_results(cond_results, target, fit_cfg)
-                optimizer.tell(x, L)
+        if log_file and step % log_interval == 0 and best:
+            _log_candidate(log_file, step + step_offset, best[0], target)
 
-                cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)
-                if len(best) < top_k:
-                    best.append(cand)
-                    best.sort(key=lambda c: c.loss)
-                elif L < best[-1].loss:
-                    best[-1] = cand
-                    best.sort(key=lambda c: c.loss)
-
-            pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", step=step)
-
-            if save_best_json and best and best[0].loss < prev_best_loss:
-                save_params_json(save_best_json, best[0].params)
-
-            if log_file and step % log_interval == 0 and best:
+        if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
+            if log_file:
                 _log_candidate(log_file, step + step_offset, best[0], target)
+            stopped_early = True
+            break
 
-            if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
-                if log_file:
-                    _log_candidate(log_file, step + step_offset, best[0], target)
-                stopped_early = True
-                break
+    pbar.close()
 
-        pbar.close()
-
-        if log_file and best and (not stopped_early) and last_step % log_interval != 0:
-            _log_candidate(log_file, last_step + step_offset, best[0], target)
+    if log_file and best and (not stopped_early) and last_step % log_interval != 0:
+        _log_candidate(log_file, last_step + step_offset, best[0], target)
 
     return best
 

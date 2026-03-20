@@ -151,7 +151,6 @@ I_PV = w_ep · r_PYR
 #### SOM (Somatostatin) Input:
 ```
 I_SOM = w_es · r_PYR
-        - g_GABA · w_ps · r_PV
         - w_vs · r_VIP
         - I_adapt_SOM
         + I_ext_SOM
@@ -337,7 +336,6 @@ Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7`
 | `w_pp` | 105.44 | PV → PV | Self-inhibition; limits PV firing |
 | `w_sp` | 6.13e-6 | SOM → PV | Weak cross-inhibition |
 | `w_vp` | 0.011 | VIP → PV | Weak disinhibition of PV |
-| `w_ps` | 2.22 | PV → SOM | Cross-inhibition between interneuron types |
 | `w_vs` | 1.27 | VIP → SOM | Core disinhibition pathway |
 
 ### External Currents

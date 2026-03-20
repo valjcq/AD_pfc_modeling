@@ -19,8 +19,6 @@ _MP_CONTEXT = multiprocessing.get_context('spawn')
 from dataclasses import replace
 from typing import Optional
 
-from joblib import Parallel, delayed
-
 import numpy as np
 
 from ..params import CircuitParams
@@ -29,7 +27,7 @@ from ..study import STUDY_CONDITIONS, CONDITION_ORDER, apply_condition
 
 from .params import RingParams
 from .stimulus import RingStimulus
-from .simulation import simulate_ring, simulate_ring_batch
+from .simulation import simulate_ring
 from .connectivity import RingConnectivity
 from .constants import TRANSIENT_SKIP_TIME_MS
 from .analysis import (
@@ -257,7 +255,7 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
     emit("  ── Synaptic weights")
     emit(f"       w_ee={base_params.w_ee:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
          f"  w_es={base_params.w_es:<8.4g}  w_ev={base_params.w_ev:.2e}")
-    emit(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:<8.4g}  w_ps={base_params.w_ps:.4g}")
+    emit(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:.4g}")
     emit(f"       w_se={base_params.w_se:<8.4g}  w_sp={base_params.w_sp:.2e}")
     emit(f"       w_vp={base_params.w_vp:<8.4g}  w_vs={base_params.w_vs:.4g}")
 
@@ -5049,12 +5047,41 @@ def _noise_floor_init_worker(
         'record_dt_ms': record_dt_ms,
     }
 
+    # Warm up Numba once per worker so the first real trial does not pay
+    # compilation overhead in the middle of progress reporting.
+    try:
+        from .simulation import RING_NUMBA_AVAILABLE
+
+        if RING_NUMBA_AVAILABLE:
+            rp_warm = RingParams(
+                n_nodes=8,
+                w_pyr_pyr_inter=float(ring_params_base.w_pyr_pyr_inter),
+                sigma_pyr_deg=float(ring_params_base.sigma_pyr_deg),
+                w_pv_global=float(ring_params_base.w_pv_global),
+            )
+            conn_warm = RingConnectivity.from_params(rp_warm)
+            _ = simulate_ring(
+                base_params,
+                rp_warm,
+                T_ms=0.2,
+                dt_ms=0.1,
+                stimuli=None,
+                seed=0,
+                connectivity=conn_warm,
+                noise_type="white",
+                record_dt_ms=0.1,
+            )
+    except Exception:
+        # Warmup is an optimization only; execution continues without it.
+        pass
+
 
 def _noise_floor_run_single(job: tuple) -> dict:
     """Run one no-stimulus baseline trial. Called by ProcessPoolExecutor."""
     global _noise_floor_sim_args
     cfg = _noise_floor_sim_args
     cond_key, cond_idx, w, trial_idx, trial_seed, noise_percentile = job
+    del cond_idx
 
     rp = replace(cfg['ring_params_base'], w_pyr_pyr_inter=float(w))
     conn = RingConnectivity.from_params(rp)
@@ -5065,8 +5092,8 @@ def _noise_floor_run_single(job: tuple) -> dict:
         rp,
         T_ms=max(BURN_IN_MS, float(cfg['delay_ms'])),
         stimuli=None,
-        seed=trial_seed,
         connectivity=conn,
+        seed=trial_seed,
         record_dt_ms=max(10.0, float(cfg['record_dt_ms'])),
     )
     _, a_hat = population_vector_decode(result.r[-1, :, 0], rp.node_angles_rad)
@@ -5106,6 +5133,7 @@ def _run_noise_floor_for_conditions(
     all_baseline: dict[tuple[str, float], np.ndarray] = {}
 
     # Build all jobs and load existing rows per condition.
+    del batch_chunk_size
     existing_rows_by_cond: dict[str, list[dict]] = {}
     jobs: list[tuple] = []
     for cond_idx, ck in enumerate(conditions_to_run):
@@ -5151,12 +5179,33 @@ def _run_noise_floor_for_conditions(
             initializer=_noise_floor_init_worker,
             initargs=init_args,
         ) as executor:
-            futures = {executor.submit(_noise_floor_run_single, job): job for job in jobs}
             with tqdm(total=len(jobs), desc="Noise floor", unit="trial", smoothing=0) as pbar:
-                for future in as_completed(futures):
-                    row = future.result()
-                    new_rows_by_cond[row["condition"]].append(row)
-                    pbar.update(1)
+                job_iter = iter(jobs)
+                max_in_flight = max(1, n_workers * 4)
+                in_flight: dict = {}
+
+                for _ in range(min(max_in_flight, len(jobs))):
+                    try:
+                        job = next(job_iter)
+                    except StopIteration:
+                        break
+                    fut = executor.submit(_noise_floor_run_single, job)
+                    in_flight[fut] = job
+
+                while in_flight:
+                    for future in as_completed(list(in_flight.keys()), timeout=None):
+                        in_flight.pop(future, None)
+                        row = future.result()
+                        new_rows_by_cond[row["condition"]].append(row)
+                        pbar.update(1)
+
+                        try:
+                            job = next(job_iter)
+                            fut = executor.submit(_noise_floor_run_single, job)
+                            in_flight[fut] = job
+                        except StopIteration:
+                            pass
+                        break
     else:
         _noise_floor_init_worker(*init_args)
         for job in tqdm(jobs, desc="Noise floor", unit="trial"):
@@ -5255,6 +5304,82 @@ def _compute_calibrate_metrics(
         "center_final_deg": center_final_deg,
         "error_from_cue_deg": abs(err_deg),
     }
+
+
+_calibrate_sim_args: Optional[dict] = None
+
+
+def _calibrate_init_worker(
+    local_params_by_cond: dict[str, CircuitParams],
+    ring_params_base: RingParams,
+    connectivity_cache: dict[float, RingConnectivity],
+    burnin_cache: dict[tuple[str, float], tuple[np.ndarray, np.ndarray]],
+    eval_times_ms: list[float],
+    delay_ms: float,
+    record_dt_ms: float,
+    T_ms_short: float,
+    base_I_ext_pyr: float,
+) -> None:
+    """Initialize worker state for calibration trial-level jobs."""
+    global _calibrate_sim_args
+    _calibrate_sim_args = {
+        "local_params_by_cond": local_params_by_cond,
+        "ring_params_base": ring_params_base,
+        "connectivity_cache": connectivity_cache,
+        "burnin_cache": burnin_cache,
+        "eval_times_ms": eval_times_ms,
+        "delay_ms": delay_ms,
+        "record_dt_ms": record_dt_ms,
+        "T_ms_short": T_ms_short,
+        "base_I_ext_pyr": base_I_ext_pyr,
+    }
+
+
+def _calibrate_run_single(job: tuple) -> dict:
+    """Run one calibration trial for one (condition, amplitude, w_inter)."""
+    global _calibrate_sim_args
+    cfg = _calibrate_sim_args
+
+    cond_key, amp, w, trial_idx, seed_trial = job
+    local_params = cfg["local_params_by_cond"][cond_key]
+    rp = replace(cfg["ring_params_base"], w_pyr_pyr_inter=float(w))
+    conn = cfg["connectivity_cache"][float(w)]
+    r0, I_adapt0 = cfg["burnin_cache"][(cond_key, float(w))]
+
+    actual_current = float(amp) * float(cfg["base_I_ext_pyr"])
+    stimuli_short = [
+        RingStimulus(
+            center_deg=STIM_CENTER_DEG,
+            amplitude=actual_current,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=STIM_ONSET_MS - BURN_IN_MS,
+            duration_ms=STIM_DURATION_MS,
+        ),
+    ]
+
+    res = simulate_ring(
+        local_params,
+        rp,
+        T_ms=float(cfg["T_ms_short"]),
+        stimuli=stimuli_short,
+        r0=r0,
+        I_adapt0=I_adapt0,
+        seed=int(seed_trial),
+        noise_type="white",
+        connectivity=conn,
+        record_dt_ms=float(cfg["record_dt_ms"]),
+    )
+    res.t_ms += BURN_IN_MS
+    return _compute_calibrate_metrics(
+        res,
+        cond_key,
+        float(amp),
+        float(w),
+        int(trial_idx),
+        int(seed_trial),
+        cfg["eval_times_ms"],
+        float(cfg["delay_ms"]),
+    )
 
 
 def _load_calibrate_grid_results(cond_dir: str, cond_key: str) -> list[dict]:
@@ -5451,34 +5576,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     noise_percentile = args.noise_percentile
     no_cache = getattr(args, 'no_cache', False)
     batch_chunk_size = getattr(args, 'batch_chunk_size', 50)
+    del batch_chunk_size
     n_workers = _resolve_workers(args)
 
-    # Auto-cap workers based on estimated peak RAM per worker.
-    # Each worker allocates r_all = (chunk, n_recorded, n_nodes, 4) float64
-    # plus ~500 MB of Python overhead and working arrays.
-    record_dt_ms_est = getattr(args, 'record_dt_ms', 5.0)
-    T_ms_short_est = (STIM_ONSET_MS + STIM_DURATION_MS + args.delay_ms) - BURN_IN_MS
-    n_recorded_est = int(np.ceil(T_ms_short_est / record_dt_ms_est)) + 1
-    bytes_r_all = batch_chunk_size * n_recorded_est * ring_params_base.n_nodes * 4 * 8
-    bytes_overhead = 600 * 1024 * 1024  # ~600 MB Python + numpy + working arrays
-    bytes_per_worker = bytes_r_all + bytes_overhead
-    try:
-        mem_available = 0
-        with open('/proc/meminfo') as _mf:
-            for _line in _mf:
-                if _line.startswith('MemAvailable:'):
-                    mem_available = int(_line.split()[1]) * 1024
-                    break
-        if mem_available == 0:
-            mem_available = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') // 2
-    except Exception:
-        mem_available = 4 * 1024 ** 3
-    safe_workers = max(1, int(mem_available * 0.5 / bytes_per_worker))
-    if safe_workers < n_workers:
-        print(f"  RAM-aware worker cap: {safe_workers} workers "
-              f"(~{bytes_per_worker / 1e9:.1f} GB/worker, "
-              f"{mem_available / 1e9:.1f} GB available)")
-        n_workers = safe_workers
+    # Conservative worker cap for per-trial execution.
+    n_workers = max(1, int(n_workers))
 
     conn_label = _calibration_network_label(ring_params_base)
     out_dir = os.path.join(
@@ -5522,7 +5624,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     print(f"  Grid points: {len(amplitudes)} x {len(w_inter_values)} = {len(amplitudes) * len(w_inter_values)}")
     print(f"  Trials per grid point: {n_trials}")
     print(f"  Delay = {args.delay_ms:.0f} ms")
-    print(f"  Workers: {n_workers}, batch chunk size: {batch_chunk_size}")
+    print(f"  Workers: {n_workers}")
 
     if conditions_to_run:
         total_sims = len(conditions_to_run) * len(amplitudes) * len(w_inter_values) * n_trials
@@ -5541,20 +5643,23 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             rp = replace(ring_params_base, w_pyr_pyr_inter=w)
             connectivity_cache[w] = RingConnectivity.from_params(rp)
 
-        # --- Pre-compute burn-in for each (condition, w_inter) using GPU batching ---
+        # --- Pre-compute burn-in for each (condition, w_inter) ---
         print("Computing burn-in states...")
         burnin_cache: dict[tuple[str, float], tuple[np.ndarray, np.ndarray]] = {}
         for w in tqdm(w_inter_values, desc="Burn-in", unit="w_inter"):
             rp = replace(ring_params_base, w_pyr_pyr_inter=w)
             conn = connectivity_cache[w]
-            params_list = [apply_condition(base_params, STUDY_CONDITIONS[ck])
-                           for ck in conditions_to_run]
-            batch_results = simulate_ring_batch(
-                params_list, rp, T_ms=BURN_IN_MS,
-                noise_type="white", record_dt_ms=1000.0,
-                connectivity=conn,
-            )
-            for ck, res in zip(conditions_to_run, batch_results):
+            for ck in conditions_to_run:
+                local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+                res = simulate_ring(
+                    local_params,
+                    rp,
+                    T_ms=BURN_IN_MS,
+                    noise_type="white",
+                    record_dt_ms=1000.0,
+                    connectivity=conn,
+                    seed=args.seed,
+                )
                 burnin_cache[(ck, w)] = (res.r[-1].copy(), res.I_adapt_final.copy())
 
         # --- Trial seeds ---
@@ -5622,7 +5727,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 noise_percentile=noise_percentile,
                 out_dir=out_dir,
                 n_workers=n_workers,
-                batch_chunk_size=batch_chunk_size,
+                batch_chunk_size=1,
                 seed=args.seed,
                 delay_ms=args.delay_ms,
                 record_dt_ms=record_dt_ms,
@@ -5652,57 +5757,67 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print(f"  {n_trials} trials × {n_grid_groups} groups = {n_trials * n_grid_groups} total grid sims")
 
         grid_seeds = trial_seeds[:n_trials]
-        stim_onset_rel = STIM_ONSET_MS - BURN_IN_MS
-
-        def _grid_group(ck, amp, w):
-            condition = STUDY_CONDITIONS[ck]
-            local_params = apply_condition(base_params, condition)
-            actual_current = amp * base_params.I_ext_pyr()
-            stimuli_short = [
-                RingStimulus(
-                    center_deg=STIM_CENTER_DEG, amplitude=actual_current,
-                    sigma_deg=STIM_SIGMA_DEG,
-                    onset_ms=stim_onset_rel, duration_ms=STIM_DURATION_MS,
-                ),
-            ]
-            rp = replace(ring_params_base, w_pyr_pyr_inter=w)
-            conn = connectivity_cache[w]
-            r0, I_adapt0 = burnin_cache[(ck, w)]
-            group = []
-            for chunk_start in range(0, n_trials, batch_chunk_size):
-                chunk_end = min(chunk_start + batch_chunk_size, n_trials)
-                chunk_seeds = grid_seeds[chunk_start:chunk_end]
-                chunk_n = len(chunk_seeds)
-                batch_results = simulate_ring_batch(
-                    [local_params] * chunk_n, rp, T_ms=T_ms_short,
-                    stimuli=stimuli_short,
-                    r0=r0, I_adapt0=I_adapt0,
-                    seeds=list(chunk_seeds),
-                    noise_type='white',
-                    connectivity=conn,
-                    record_dt_ms=record_dt_ms,
-                )
-                for ti_chunk, res in enumerate(batch_results):
-                    ti = chunk_start + ti_chunk
-                    res.t_ms += BURN_IN_MS
-                    group.append(_compute_calibrate_metrics(
-                        res, ck, amp, w, ti, int(grid_seeds[ti]),
-                        eval_times_ms, args.delay_ms,
-                    ))
-            return group
-
-        grid_groups = [
-            (ck, amp, w)
+        local_params_by_cond = {
+            ck: apply_condition(base_params, STUDY_CONDITIONS[ck])
+            for ck in conditions_to_run
+        }
+        jobs = [
+            (ck, amp, w, ti, int(grid_seeds[ti]))
             for ck in conditions_to_run
             for amp in amplitudes
             for w in w_inter_values
+            for ti in range(n_trials)
         ]
-        gen = Parallel(n_jobs=n_workers, backend='loky', return_as='generator')(
-            delayed(_grid_group)(ck, amp, w) for ck, amp, w in grid_groups
+
+        init_args = (
+            local_params_by_cond,
+            ring_params_base,
+            connectivity_cache,
+            burnin_cache,
+            eval_times_ms,
+            args.delay_ms,
+            record_dt_ms,
+            T_ms_short,
+            base_params.I_ext_pyr(),
         )
-        for group in tqdm(gen, total=len(grid_groups),
-                          desc=f"Grid (n={n_trials},chunk={batch_chunk_size})", unit="group"):
-            grid_results.extend(group)
+
+        if n_workers > 1 and len(jobs) > 1:
+            with ProcessPoolExecutor(
+                mp_context=_MP_CONTEXT,
+                max_workers=n_workers,
+                initializer=_calibrate_init_worker,
+                initargs=init_args,
+            ) as executor:
+                with tqdm(total=len(jobs), desc="Grid", unit="trial", smoothing=0) as pbar:
+                    job_iter = iter(jobs)
+                    max_in_flight = max(1, n_workers * 4)
+                    in_flight: dict = {}
+
+                    for _ in range(min(max_in_flight, len(jobs))):
+                        try:
+                            job = next(job_iter)
+                        except StopIteration:
+                            break
+                        fut = executor.submit(_calibrate_run_single, job)
+                        in_flight[fut] = job
+
+                    while in_flight:
+                        for future in as_completed(list(in_flight.keys()), timeout=None):
+                            in_flight.pop(future, None)
+                            grid_results.append(future.result())
+                            pbar.update(1)
+
+                            try:
+                                job = next(job_iter)
+                                fut = executor.submit(_calibrate_run_single, job)
+                                in_flight[fut] = job
+                            except StopIteration:
+                                pass
+                            break
+        else:
+            _calibrate_init_worker(*init_args)
+            for job in tqdm(jobs, desc="Grid", unit="trial"):
+                grid_results.append(_calibrate_run_single(job))
 
     # --- Load cached conditions ---
     if cached_conditions:
@@ -5944,6 +6059,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
     replot_only = getattr(args, 'replot_only', False)
     no_cache = getattr(args, 'no_cache', False)
     batch_chunk_size = getattr(args, 'batch_chunk_size', 50)
+    del batch_chunk_size
     n_workers = _resolve_workers(args)
 
     conn_label = _calibration_network_label(ring_params_base)
@@ -6092,7 +6208,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
     print(f"  Baseline trials: {trials_to_run} to run, {trials_cached} cached")
     print(f"  Noise percentile: p{noise_percentile:.0f}")
     print(f"  Delay = {args.delay_ms:.0f} ms")
-    print(f"  Workers: {n_workers}, batch chunk size: {batch_chunk_size}")
+    print(f"  Workers: {n_workers}")
     if conditions_to_run:
         total_sims = sum(trials_to_add_by_key.get((ck, w), 0)
                          for ck in condition_keys for w in w_inter_values)
@@ -6112,7 +6228,7 @@ def cmd_noise_floor(args: argparse.Namespace) -> None:
             noise_percentile=noise_percentile,
             out_dir=out_dir,
             n_workers=n_workers,
-            batch_chunk_size=batch_chunk_size,
+            batch_chunk_size=1,
             seed=args.seed,
             delay_ms=args.delay_ms,
             record_dt_ms=getattr(args, 'record_dt_ms', 5.0),

@@ -6,6 +6,7 @@ This module contains:
 - FitConfig: Configuration for fitting/optimization
 - loss_from_means: Loss for base condition
 - loss_from_ko_pyr: Loss for knockout conditions
+- jacobian_connectivity_penalty: Penalty for degenerate (near-zero effective gain) connections
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from typing import Optional
 import numpy as np
 
 from .simulation import NoiseType
+from .jacobian import compute_jacobian
+from .params import CircuitParams
 
 
 @dataclass(frozen=True)
@@ -63,26 +66,25 @@ def loss_from_means(
     means: np.ndarray,
     target: TargetRates,
     *,
-    near_zero_threshold: float = 0.1,
+    near_zero_threshold: float = 0.5,
     near_zero_weight: float = 10.0,
 ) -> float:
     """
     Compute loss between simulated mean firing rates and targets.
 
-    Uses relative MSE (normalized by target magnitude) plus a penalty
-    for rates that are too close to zero (to avoid silent solutions).
+    Uses Mean Absolute Percentage Error (MAPE) plus a penalty for rates
+    that are too close to zero (to avoid silent solutions).
 
-    Loss = mean((actual - target)^2 / target^2) + penalty_weight * sum(near_zero_penalties)
+    Loss = mean(|actual - target| / target) + penalty_weight * sum(near_zero_penalties)
     """
     tgt = target.as_array()
-    denom = np.maximum(np.abs(tgt), 1e-3)  # Avoid division by zero
-    rel = (means - tgt) / denom  # Relative error
-    mse = float(np.mean(rel**2))
+    denom = np.maximum(np.abs(tgt), 1e-3)
+    mape = float(np.mean(np.abs(means - tgt) / denom))
 
     # Penalize rates that are too close to zero (biologically unrealistic)
     below = np.maximum(near_zero_threshold - means, 0.0)
     near_zero = float(np.sum((below / near_zero_threshold) ** 2))
-    return mse + near_zero_weight * near_zero
+    return mape + near_zero_weight * near_zero
 
 
 def loss_from_ko_pyr(
@@ -90,7 +92,7 @@ def loss_from_ko_pyr(
     target_pyr: float,
     base_pyr: float,
     *,
-    near_zero_threshold: float = 0.1,
+    near_zero_threshold: float = 0.5,
     near_zero_weight: float = 10.0,
     min_effect_weight: float = 5.0,
     wrong_direction_weight: float = 10.0,
@@ -110,9 +112,9 @@ def loss_from_ko_pyr(
         - If actual change is negative, apply wrong_direction penalty
         - If actual change is too small, apply min_effect penalty
     """
-    # Standard relative MSE term
+    # Standard MAPE term
     denom = max(abs(target_pyr), 1e-3)
-    mse = ((pyr_mean - target_pyr) / denom) ** 2
+    mse = abs(pyr_mean - target_pyr) / denom
 
     # Penalty for near-zero firing (biologically unrealistic)
     below = max(near_zero_threshold - pyr_mean, 0.0)
@@ -137,3 +139,41 @@ def loss_from_ko_pyr(
             wrong_dir = (act_mag / exp_mag) ** 2
 
     return mse + near_zero_weight * near_zero + min_effect_weight * min_effect + wrong_direction_weight * wrong_dir
+
+
+# Core connections that must have non-negligible effective gain.
+# (row=target_pop, col=source_pop) in the Jacobian, population order: PYR=0 SOM=1 PV=2 VIP=3
+_REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
+    (0, 0),  # PYR → PYR
+    (1, 0),  # PYR → SOM
+    (2, 0),  # PYR → PV
+    (0, 1),  # SOM → PYR
+    (0, 2),  # PV  → PYR
+    (2, 2),  # PV  → PV  (self-inhibition)
+    (1, 3),  # VIP → SOM
+]
+
+
+def jacobian_connectivity_penalty(
+    params: CircuitParams,
+    r_ss: np.ndarray,
+    *,
+    threshold: float = 0.05,
+    weight: float = 20.0,
+) -> float:
+    """Penalize solutions where core connections have negligible effective gain.
+
+    For each required connection (i, j), if |J[i,j]| < threshold the penalty
+    grows quadratically: weight * sum( ((threshold - |J|) / threshold)^2 ).
+
+    threshold = 0.05 means: a 1 Hz change in the source population must produce
+    at least a 0.05 Hz change in the target population, or the connection is
+    effectively silent and we penalize it.
+    """
+    J = compute_jacobian(params, r_ss)
+    penalty = 0.0
+    for (i, j) in _REQUIRED_CONNECTIONS:
+        gain = abs(J[i, j])
+        if gain < threshold:
+            penalty += ((threshold - gain) / threshold) ** 2
+    return weight * penalty

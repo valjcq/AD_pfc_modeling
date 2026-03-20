@@ -77,17 +77,17 @@ python -m circuit_model run --enable_transient --trans_start_ms 1000 --trans_dur
 
 ## `optimize`
 
-Run Nevergrad (TwoPointsDE) optimization to find parameters matching target firing rates.
+Run Nevergrad optimization to find parameters matching target firing rates. The optimizer can be selected via `--optimizer`; the recommended default is `chaining` (global DE search followed by CMA-ES refinement).
 
 ```bash
 python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 [options]
 ```
 
-### Target Rates (required)
+### Target Rates (required, unless using `--resume`)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--target_pyr` | float | **required** | Target mean firing rate for PYR |
+| `--target_pyr` | float | **required** | Target mean firing rate for PYR (transients/min) |
 | `--target_som` | float | **required** | Target mean firing rate for SOM |
 | `--target_pv` | float | **required** | Target mean firing rate for PV |
 | `--target_vip` | float | **required** | Target mean firing rate for VIP |
@@ -104,9 +104,21 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--n_samples` | int | `5000` | Number of optimization samples |
+| `--n_samples` | int | `5000` | Total optimization budget (number of candidate evaluations) |
+| `--optimizer` | str | `"de"` | Algorithm — see table below |
 | `--top_k` | int | `10` | Keep top K candidates |
-| `--early_stop_loss` | float | `1e-4` | Stop if loss falls below this value |
+| `--early_stop_loss` | float | `1e-4` | Stop early if loss falls below this value |
+
+#### Optimizer choices
+
+| Value | Algorithm | When to use |
+|-------|-----------|-------------|
+| `de` | TwoPointsDE | Robust global search; good default for a first run |
+| `cma` | CMA-ES | Fast local convergence; warm-start from `--resume` after DE has found a good basin |
+| `chaining` | DE → CMA-ES | **Recommended.** DE explores globally for `min(n_samples//5, 10000)` steps, then CMA-ES refines for the rest |
+| `auto` | NGOpt | Nevergrad auto-selects the best algorithm for the problem size and budget |
+
+With `--optimizer chaining` the DE budget is set automatically to `min(n_samples // 5, 10 000)` — empirically DE converges within ~3 000–5 000 steps on this problem, so this avoids wasting budget on a plateaued DE phase.
 
 ### Simulation Settings
 
@@ -145,27 +157,39 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 |-----------|------|---------|-------------|
 | `--save_best_json` | str | `"best_params.json"` | Save best parameters to JSON file |
 | `--log_file` | str | `"results_log.jsonl"` | Log results to JSONL file |
-| `--log_interval` | int | `50` | Log every N steps |
+| `--log_interval` | int | `500` | Log every N steps |
+| `--resume` | flag | `False` | Resume from `--save_best_json`, loading targets from the last log entry and appending to the log. The optimizer is warm-started from the saved parameters. |
 | `--n_workers` | int | `None` | Parallel workers (auto if None) |
 | `--unit` | str | `"transients/min"` | Rate unit for display: `transients/min` or `Hz` |
+
+### Weight bounds
+
+All synaptic weights have a **relative floor** of `max(0.1, 5% × default)`. This prevents high-default connections (e.g. `w_ep = 42.5`, `w_pp = 105`) from collapsing to near-zero — a flat absolute floor of 0.1 would be functionally zero for those weights and allows the optimizer to silently decouple populations.
 
 ### Examples
 
 ```bash
-# Basic optimization
+# Recommended: chaining optimizer with KO targets
 python -m circuit_model optimize \
-    --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8
+    --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
+    --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.8 --target_alpha5_ko_pyr 3.79 \
+    --optimizer chaining \
+    --n_samples 50000 --n_workers 4 \
+    --save_best_json figs/optim/1mo/best_params.json \
+    --log_file figs/optim/1mo/log.jsonl
 
-# With knockout targets and frozen parameters
+# Resume with CMA-ES to refine from a previous run's best params
+python -m circuit_model optimize \
+    --optimizer cma --n_samples 30000 --n_workers 4 \
+    --save_best_json figs/optim/1mo/best_params.json \
+    --log_file figs/optim/1mo/log.jsonl \
+    --resume
+
+# With frozen parameters and verbose param listing
 python -m circuit_model optimize \
     --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 \
     --target_alpha7_ko_pyr 7 --target_beta2_ko_pyr 6 \
     --freeze "tau_s,g_gaba_base" --show_params --n_samples 10000
-
-# Override specific parameters
-python -m circuit_model optimize \
-    --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 \
-    --set "w_sp=0" --n_samples 5000
 ```
 
 ---

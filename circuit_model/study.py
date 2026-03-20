@@ -62,7 +62,11 @@ class ExperimentalCondition:
     """Definition of an experimental condition."""
     name: str           # Short name for plots (e.g., "WT", "WT APP")
     label: str          # Full descriptive label
-    act_alpha7: ActivationDistribution = None
+    is_app: bool = False    # Uses app_params in dual-params mode
+    ko_alpha7: bool = False # alpha7 receptor is knocked out
+    ko_alpha5: bool = False # alpha5 receptor is knocked out
+    ko_beta2: bool = False  # beta2 receptor is knocked out
+    act_alpha7: ActivationDistribution = None  # Used in single-params mode only
     act_alpha5: ActivationDistribution = None
     act_beta2: ActivationDistribution = None
     g_alpha7: Optional[float] = None  # None means use default from base params
@@ -80,7 +84,9 @@ class ExperimentalCondition:
             else ActivationDistribution(mean=self.act_beta2 if self.act_beta2 is not None else 1.0))
 
 
-# The 8 conditions - APP conditions now use distributions
+# The 8 conditions.
+# In single-params mode: APP conditions sample activations from distributions.
+# In dual-params mode:   APP conditions use app_params; KO flags set activations to 0.
 STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "WT": ExperimentalCondition(
         name="WT",
@@ -90,36 +96,43 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "WT_APP": ExperimentalCondition(
         name="WT APP",
         label="Wild Type + APP",
+        is_app=True,
         act_alpha7=APP_ALPHA7, act_alpha5=APP_ALPHA5, act_beta2=APP_BETA2
     ),
     "a7_KO": ExperimentalCondition(
         name="a7 KO",
         label="alpha7 Knockout",
+        ko_alpha7=True,
         act_alpha7=0.0, g_alpha7=0.0
     ),
     "a7_KO_APP": ExperimentalCondition(
         name="a7 KO APP",
         label="alpha7 Knockout + APP",
+        is_app=True, ko_alpha7=True,
         act_alpha7=0.0, g_alpha7=0.0, act_alpha5=APP_ALPHA5, act_beta2=APP_BETA2
     ),
     "b2_KO": ExperimentalCondition(
         name="b2 KO",
         label="beta2 Knockout",
+        ko_beta2=True,
         act_beta2=0.0
     ),
     "b2_KO_APP": ExperimentalCondition(
         name="b2 KO APP",
         label="beta2 Knockout + APP",
+        is_app=True, ko_beta2=True,
         act_beta2=0.0, act_alpha7=APP_ALPHA7, act_alpha5=APP_ALPHA5
     ),
     "a5_KO": ExperimentalCondition(
         name="a5 KO",
         label="alpha5 Knockout",
+        ko_alpha5=True,
         act_alpha5=0.0
     ),
     "a5_KO_APP": ExperimentalCondition(
         name="a5 KO APP",
         label="alpha5 Knockout + APP",
+        is_app=True, ko_alpha5=True,
         act_alpha5=0.0, act_alpha7=APP_ALPHA7, act_beta2=APP_BETA2
     ),
 }
@@ -163,33 +176,56 @@ def apply_condition(
     base_params: CircuitParams,
     condition: ExperimentalCondition,
     rng: Optional[np.random.Generator] = None,
+    app_params: Optional[CircuitParams] = None,
 ) -> CircuitParams:
     """
     Apply experimental condition parameters to base CircuitParams.
 
-    For APP conditions, activation values are sampled from distributions
-    to simulate biological variability in receptor desensitization.
+    Two modes:
+
+    Dual-params mode (app_params is not None):
+        APP conditions use app_params as base (APP physiology already baked into the
+        fit). KO conditions set the relevant activation to 0 on whichever base is
+        chosen. No activation sampling occurs.
+
+    Single-params mode (app_params is None):
+        APP conditions sample activations from distributions (APP_ALPHA7 etc.) on
+        top of base_params to simulate biological variability.
 
     Parameters:
-        base_params: Base CircuitParams to modify
-        condition: ExperimentalCondition with activation distributions
-        rng: Random generator for sampling (if None, uses mean values)
+        base_params: WT CircuitParams
+        condition: ExperimentalCondition
+        rng: Random generator for sampling (single-params mode only)
+        app_params: APP CircuitParams for dual-params mode (optional)
 
     Returns:
-        Modified CircuitParams with sampled activation values
+        Modified CircuitParams
     """
+    if app_params is not None:
+        # Dual-params mode: choose base, then apply KO modifications only
+        chosen = app_params if condition.is_app else base_params
+        kwargs: dict = {}
+        if condition.ko_alpha7:
+            kwargs['act_alpha7'] = 0.0
+            if condition.g_alpha7 is not None:
+                kwargs['g_alpha7'] = condition.g_alpha7
+        if condition.ko_alpha5:
+            kwargs['act_alpha5'] = 0.0
+        if condition.ko_beta2:
+            kwargs['act_beta2'] = 0.0
+        return replace(chosen, **kwargs) if kwargs else chosen
+
+    # Single-params mode: sample or use mean activation values
     if rng is None:
-        # Use mean values (no sampling)
         act_a7 = condition.act_alpha7.mean
         act_a5 = condition.act_alpha5.mean
         act_b2 = condition.act_beta2.mean
     else:
-        # Sample from distributions
         act_a7 = condition.act_alpha7.sample(rng)
         act_a5 = condition.act_alpha5.sample(rng)
         act_b2 = condition.act_beta2.sample(rng)
 
-    kwargs: dict = {
+    kwargs = {
         'act_alpha7': act_a7,
         'act_alpha5': act_a5,
         'act_beta2': act_b2,
@@ -207,10 +243,15 @@ def apply_condition(
 _sim_args: Optional[tuple] = None
 
 
-def _init_worker(base_params: CircuitParams, condition: ExperimentalCondition, cfg: StudyConfig) -> None:
+def _init_worker(
+    base_params: CircuitParams,
+    condition: ExperimentalCondition,
+    cfg: StudyConfig,
+    app_params: Optional[CircuitParams],
+) -> None:
     """Initialize worker process with shared parameters."""
     global _sim_args
-    _sim_args = (base_params, condition, cfg)
+    _sim_args = (base_params, condition, cfg, app_params)
 
 
 def _run_single_sim(seed: int) -> np.ndarray:
@@ -218,11 +259,15 @@ def _run_single_sim(seed: int) -> np.ndarray:
     global _sim_args
     if _sim_args is None:
         raise RuntimeError("Worker not initialized")
-    base_params, condition, cfg = _sim_args
+    base_params, condition, cfg, app_params = _sim_args
 
-    # Sample activation values unless fixed mode is enabled
-    rng = None if cfg.fixed_receptor_values else np.random.default_rng(seed)
-    params = apply_condition(base_params, condition, rng)
+    if app_params is not None:
+        # Dual-params mode: no activation sampling
+        params = apply_condition(base_params, condition, app_params=app_params)
+    else:
+        # Single-params mode: sample activation values unless fixed mode is enabled
+        rng = None if cfg.fixed_receptor_values else np.random.default_rng(seed)
+        params = apply_condition(base_params, condition, rng)
 
     result = simulate_circuit(
         params,
@@ -241,22 +286,26 @@ def run_single_simulation(
     condition: ExperimentalCondition,
     cfg: StudyConfig,
     seed: int,
+    app_params: Optional[CircuitParams] = None,
 ) -> np.ndarray:
     """
     Run a single simulation and return mean rates.
 
     Parameters:
-        base_params: Base CircuitParams
-        condition: ExperimentalCondition (with distributions for APP)
+        base_params: WT CircuitParams
+        condition: ExperimentalCondition
         cfg: StudyConfig with simulation settings
         seed: Random seed (used for both activation sampling and simulation noise)
+        app_params: APP CircuitParams for dual-params mode (optional)
 
     Returns:
         Array of shape (4,) with mean rates [pyr, som, pv, vip]
     """
-    # Sample activation values unless fixed mode is enabled
-    rng = None if cfg.fixed_receptor_values else np.random.default_rng(seed)
-    params = apply_condition(base_params, condition, rng)
+    if app_params is not None:
+        params = apply_condition(base_params, condition, app_params=app_params)
+    else:
+        rng = None if cfg.fixed_receptor_values else np.random.default_rng(seed)
+        params = apply_condition(base_params, condition, rng)
 
     result = simulate_circuit(
         params,
@@ -274,18 +323,20 @@ def run_condition_batch(
     condition: ExperimentalCondition,
     cfg: StudyConfig,
     base_seed: int,
+    app_params: Optional[CircuitParams] = None,
 ) -> np.ndarray:
     """
     Run N simulations for a condition and return all mean rates.
 
-    For APP conditions, each run samples different activation values
-    from the desensitization distributions.
+    In single-params mode, APP conditions sample activation values per run.
+    In dual-params mode, APP conditions always use app_params as base.
 
     Parameters:
-        base_params: Base CircuitParams
-        condition: ExperimentalCondition to apply (may contain distributions)
+        base_params: WT CircuitParams
+        condition: ExperimentalCondition to apply
         cfg: StudyConfig with simulation settings
         base_seed: Base random seed for generating per-run seeds
+        app_params: APP CircuitParams for dual-params mode (optional)
 
     Returns:
         Array of shape (n_runs, 4) with mean rates for each run
@@ -305,7 +356,7 @@ def run_condition_batch(
         with ProcessPoolExecutor(
             max_workers=n_workers,
             initializer=_init_worker,
-            initargs=(base_params, condition, cfg)
+            initargs=(base_params, condition, cfg, app_params)
         ) as executor:
             futures = [executor.submit(_run_single_sim, seed) for seed in seeds]
             results = []
@@ -315,7 +366,10 @@ def run_condition_batch(
                     pbar.update()
     else:
         # Sequential execution
-        results = [run_single_simulation(base_params, condition, cfg, seed) for seed in seeds]
+        results = [
+            run_single_simulation(base_params, condition, cfg, seed, app_params=app_params)
+            for seed in seeds
+        ]
 
     return np.array(results)  # Shape: (n_runs, 4)
 
@@ -325,15 +379,19 @@ def run_study(
     cfg: StudyConfig,
     base_seed: int = 0,
     verbose: bool = True,
+    app_params: Optional[CircuitParams] = None,
 ) -> StudyResults:
     """
     Run the full study across all conditions.
 
     Parameters:
-        base_params: Base CircuitParams
+        base_params: WT CircuitParams
         cfg: StudyConfig with simulation settings
         base_seed: Base random seed
         verbose: Whether to print progress
+        app_params: APP CircuitParams for dual-params mode. When provided, APP
+            conditions use app_params as their base (APP physiology baked into
+            the fit) and KO conditions still set the relevant activation to 0.
 
     Returns:
         StudyResults containing all data
@@ -346,7 +404,7 @@ def run_study(
         print(f"Running {cond.label}")
 
         seed = int(rng.integers(0, 2**31 - 1))
-        data[cond_key] = run_condition_batch(base_params, cond, cfg, seed)
+        data[cond_key] = run_condition_batch(base_params, cond, cfg, seed, app_params=app_params)
 
         if verbose:
             means = data[cond_key].mean(axis=0)
@@ -423,9 +481,12 @@ def plot_study_boxplots(
     ax_pyr.set_xticks(range(1, n_conditions + 1))
     ax_pyr.set_xticklabels(condition_labels, rotation=45, ha='right', fontsize=9)
 
-    # Y-axis
+    # Y-axis: zoom in on the data range with 20% padding
+    all_vals = np.concatenate(data)
+    vmin, vmax = all_vals.min(), all_vals.max()
+    margin = max((vmax - vmin) * 0.2, 0.05 * vmax)
     ax_pyr.set_ylabel(f"Rate ({unit})", fontsize=10)
-    ax_pyr.set_ylim(bottom=0)
+    ax_pyr.set_ylim(max(0, vmin - margin), vmax + margin)
 
     # Title
     ax_pyr.set_title("PYR", fontsize=13, fontweight='bold', color=color)

@@ -130,7 +130,8 @@ python -m circuit_model optimize \
   --target_alpha7_ko_pyr 3.513 \
   --target_beta2_ko_pyr  4.800 \
   --target_alpha5_ko_pyr 3.790 \
-  --n_samples 5000 \
+  --optimizer chaining \
+  --n_samples 50000 \
   --n_workers 4 \
   --save_best_json figs/optim/1mo/best_params.json \
   --log_file figs/optim/1mo/log.jsonl
@@ -277,8 +278,51 @@ activation parameters via `--freeze`.
 
 ---
 
+---
+
+## Step 7 — Optimizer Choice
+
+The `--optimizer` flag controls the Nevergrad algorithm used. Choose based on the stage of fitting:
+
+| Flag | Algorithm | When to use |
+|---|---|---|
+| `de` | TwoPointsDE (default) | First run from scratch — broad global exploration |
+| `cma` | CMA-ES | Warm-start from a known good `best_params.json`; fast local convergence; learns parameter correlations |
+| `chaining` | TwoPointsDE → CMA-ES | Single-pass best-of-both-worlds: explores globally for first 50% of budget, then refines with CMA-ES |
+| `auto` | NGOpt | Nevergrad selects the algorithm automatically based on problem dimension and budget |
+
+**Recommended workflow for Fit 1:**
+
+```bash
+# Pass 1 — global exploration with DE
+python -m circuit_model optimize \
+  --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
+  --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.800 --target_alpha5_ko_pyr 3.790 \
+  --optimizer chaining \
+  --n_samples 50000 --n_workers 4 \
+  --save_best_json figs/optim/1mo/best_params.json \
+  --log_file figs/optim/1mo/log.jsonl
+
+# Pass 2 — local refinement with CMA-ES from best found so far
+python -m circuit_model optimize \
+  --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
+  --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.800 --target_alpha5_ko_pyr 3.790 \
+  --optimizer cma \
+  --params_json figs/optim/1mo/best_params.json \
+  --n_samples 20000 --n_workers 4 \
+  --save_best_json figs/optim/1mo/best_params.json \
+  --log_file figs/optim/1mo/log.jsonl --resume
+```
+
+**Notes on weight bounds:** All synaptic weights are constrained to `[0.1, 5×default]`
+in log space, preventing the optimizer from silencing any connection (a degenerate
+solution the circuit model is otherwise prone to).
+
+---
+
 ## What to do before running fits
 
-1. The `near_zero_threshold = 0.1` in `circuit_model/loss.py` is compatible with
-   these values (all targets are in the 2–5 range)
-2. Run Fit 1, inspect result, use its params as `--set` starting point for Fits 2 & 3
+1. The `near_zero_threshold = 0.5` in `circuit_model/loss.py` penalises any population
+   firing below 0.5 Hz (all targets are in the 2–5 range, so this only catches degenerate states)
+2. All synaptic weights have `lo = 0.1` — no connection can be silenced
+3. Run Fit 1, inspect result, use its params as `--params_json` starting point for Fits 2 & 3

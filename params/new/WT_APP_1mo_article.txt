@@ -1,0 +1,42 @@
+================================================================================
+  FIT SUMMARY  —  WT_APP_1mo_article.json
+  Generated: 2026-03-19
+================================================================================
+  Loss: 9.8e-05
+
+  FIRING RATES: actual vs target
+  ──────────────────────────────────────────────────────────────────────────────
+  Condition       Pop     Actual    Target    Error
+  ──────────────────────────────────────────────────────────────────────────────
+  base            PYR      3.280     3.279    +0.0%
+  base            SOM      3.167     3.167    +0.0%
+  base            PV       3.166     3.166    -0.0%
+  base            VIP      2.501     2.501    -0.0%
+  ──────────────────────────────────────────────────────────────────────────────
+
+  JACOBIAN MATRIX  (J[row, col] = dr_row / dr_col)
+  Effect of source pop (col) on target pop (row) at fitted steady state
+  ──────────────────────────────────────────────────────────────────────────────
+                PYR        SOM         PV        VIP
+  ──────────────────────────────────────────────────────────────────────────────
+  PYR       +0.1093    -0.2696    -0.0973    +0.0000
+  SOM       +0.3468    +0.0000    +0.0000    -0.0760
+  PV        +4.1337    -0.0174    -4.3672    -0.0059
+  VIP       +0.0276    +0.0000    +0.0000    +0.0000
+  ──────────────────────────────────────────────────────────────────────────────
+
+  CONNECTION DETAILS  (raw weight → effective gain)
+  ──────────────────────────────────────────────────────────────────────────────
+  PYR → PYR  (recurrent excitation)             w=   2.941  J=+0.1093  [STRONG    ]
+  PYR → SOM  (recruits dendritic inh.)          w=  18.192  J=+0.3468  [STRONG    ]
+  PYR → PV   (fast feedback inh.)               w= 143.615  J=+4.1337  [STRONG    ]
+  PYR → VIP  (recruits disinhibition)           w=   0.121  J=+0.0276  [moderate  ]
+  SOM → PYR  (dendritic inhibition)             w=   0.337  J=-0.2696  [STRONG    ]
+  PV  → PYR  (perisomatic inhibition)           w=   0.638  J=-0.0973  [moderate  ]
+  PV  → PV   (self-inhibition)                  w=  50.164  J=-4.3672  [STRONG    ]
+  SOM → PV   (cross-inhibition)                 w=   0.200  J=-0.0174  [moderate  ]
+  VIP → SOM  (disinhibition pathway)            w=   3.985  J=-0.0760  [moderate  ]
+  VIP → PV   (weak disinhibition)               w=   0.204  J=-0.0059  [weak      ]
+  ──────────────────────────────────────────────────────────────────────────────
+
+================================================================================

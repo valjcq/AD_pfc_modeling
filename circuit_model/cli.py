@@ -18,11 +18,59 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
+import numpy as np
+
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
-from .io import load_params_json, format_params_as_code, output_dir as _output_dir
-from .optimization import nevergrad_optimize
+from .io import load_params_json, save_params_json, save_fit_summary_txt, format_params_as_code, build_fit_comparison, output_dir as _output_dir
+from .optimization import nevergrad_optimize, KOMeans
 from .simulation import simulate_circuit
+from .jacobian import print_sanity_check, compute_jacobian
+
+
+def print_comparison_table(
+    means: np.ndarray,
+    ko_means: KOMeans,
+    target: TargetRates,
+    loss: float,
+) -> None:
+    """Print actual vs target comparison table for all conditions and populations."""
+    pops = ["PYR", "SOM", "PV ", "VIP"]
+    tgt_arr = target.as_array()
+
+    print("\n" + "=" * 62)
+    print("  FITTING COMPARISON  (actual vs target)")
+    print(f"  Total loss: {loss:.4g}")
+    print("=" * 62)
+    print(f"  {'Condition':<14}  {'Pop':<4}  {'Actual':>8}  {'Target':>8}  {'Error':>7}")
+    print("  " + "-" * 55)
+
+    for i, pop in enumerate(pops):
+        actual = float(means[i])
+        tgt = float(tgt_arr[i])
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'base':<14}  {pop:<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
+    if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
+        actual = float(ko_means.alpha7_ko[0])
+        tgt = target.alpha7_ko_pyr
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print("  " + "-" * 55)
+        print(f"  {'alpha7_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
+    if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
+        actual = float(ko_means.alpha5_ko[0])
+        tgt = target.alpha5_ko_pyr
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'alpha5_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
+    if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
+        actual = float(ko_means.beta2_ko[0])
+        tgt = target.beta2_ko_pyr
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'beta2_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
+    print("=" * 62 + "\n")
 
 
 def parse_freeze_list(s: str) -> set[str]:
@@ -65,7 +113,7 @@ def print_parameter_status(
         "Adaptation": ["J_adapt_pyr", "J_adapt_som"],
         "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
-        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs"],
+        "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g_e", "g_i"],
@@ -207,6 +255,13 @@ def cmd_study(args: argparse.Namespace) -> None:
         base_params = CircuitParams()
         print("Using default parameters")
 
+    # Load APP parameters if provided (dual-params mode)
+    app_params = None
+    if args.app_params_json:
+        app_params = load_params_json(args.app_params_json)
+        print(f"Loaded APP parameters from: {args.app_params_json}")
+        print("  -> Dual-params mode: APP conditions use the APP fit directly.")
+
     # Override noise amplitude if provided
     if args.sigma_noise is not None:
         from dataclasses import replace
@@ -244,7 +299,7 @@ def cmd_study(args: argparse.Namespace) -> None:
 
     # Run study
     seed = args.seed if args.seed is not None else 0
-    results = run_study(base_params, cfg, base_seed=seed, verbose=True)
+    results = run_study(base_params, cfg, base_seed=seed, verbose=True, app_params=app_params)
 
     # Determine save path
     if args.save_plot:
@@ -391,11 +446,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         n_samples=args.n_samples,
         top_k=args.top_k,
         seed=args.seed if args.seed is not None else 0,
+        optimizer=args.optimizer,
         freeze=freeze,
         early_stop_loss=args.early_stop_loss,
         log_file=args.log_file or None,
         log_interval=args.log_interval,
-        n_workers=args.n_workers,
         save_best_json=args.save_best_json or None,
         step_offset=step_offset,
         append_log=append_log,
@@ -426,8 +481,20 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     print("\nBest parameter set:\n")
     print(format_params_as_code(best[0].params))
 
+    # Jacobian sanity check at the best fitted steady state
+    r_ss = best[0].means  # ndarray [pyr, som, pv, vip]
+    J = compute_jacobian(best[0].params, r_ss)
+    print_sanity_check(best[0].params, r_ss)
+
+    # Comparison table: actual vs target for all conditions and populations
+    fit_meta = build_fit_comparison(best[0].means, best[0].ko_means, target, best[0].loss, jacobian=J)
+    print_comparison_table(best[0].means, best[0].ko_means, target, best[0].loss)
+
+    # Final save with metadata (overrides the incremental params-only saves done during optimization)
     if args.save_best_json:
-        print(f"\nBest params saved to: {args.save_best_json}")
+        save_params_json(args.save_best_json, best[0].params, fit_meta=fit_meta)
+        save_fit_summary_txt(args.save_best_json, fit_meta, params=best[0].params)
+        print(f"Best params saved to: {args.save_best_json}")
 
 
 def main() -> None:
@@ -539,6 +606,17 @@ Examples:
                             help="Keep top K candidates")
     opt_parser.add_argument("--early_stop_loss", type=float, default=1e-4,
                             help="Stop if loss falls below this value")
+    opt_parser.add_argument(
+        "--optimizer", type=str, default="de",
+        choices=["de", "cma", "chaining", "auto"],
+        help=(
+            "Optimizer to use (default: de). "
+            "de=TwoPointsDE (robust global search); "
+            "cma=CMA-ES (fast local convergence, learns parameter correlations); "
+            "chaining=TwoPointsDE then Nelder-Mead (global then local refine, matches reference paper); "
+            "auto=NGOpt (Nevergrad selects algorithm automatically)."
+        ),
+    )
 
     # Simulation settings
     add_simulation_args(opt_parser)
@@ -576,8 +654,6 @@ Examples:
                             help="Log every N steps")
     opt_parser.add_argument("--resume", action="store_true",
                             help="Resume from best_params.json, appending to existing log")
-    opt_parser.add_argument("--n_workers", type=int, default=None,
-                            help="Parallel workers (auto if None)")
 
     # =========================================================================
     # STUDY subcommand
@@ -611,7 +687,12 @@ Examples:
     study_parser.add_argument("--seed", type=int, default=None,
                               help="Random seed for reproducibility")
     study_parser.add_argument("--params_json", type=str, default="",
-                              help="Load base parameters from JSON file")
+                              help="Load base (WT) parameters from JSON file")
+    study_parser.add_argument("--app_params_json", type=str, default="",
+                              help="Load APP parameters from JSON file. When provided, "
+                                   "APP conditions use this genuine fit instead of "
+                                   "simulating desensitization via activation sampling. "
+                                   "KO conditions still set activation to 0.")
 
     # Receptor activation mode
     study_parser.add_argument("--fixed_receptor_values", action="store_true",
@@ -976,7 +1057,7 @@ Examples:
     for _action in ring_cal_parser._actions:
         if _action.dest == "w_pyr_pyr_inter":
             _action.required = False
-            _action.default = 0.0
+            _action.default = [0.0]
             break
     ring_cal_parser.add_argument(
         "--conditions", type=str, nargs="+", default=None,
@@ -1035,7 +1116,7 @@ Examples:
     for _action in ring_nf_parser._actions:
         if _action.dest == "w_pyr_pyr_inter":
             _action.required = False
-            _action.default = 0.0
+            _action.default = [0.0]
             break
     ring_nf_parser.add_argument(
         "--conditions", type=str, nargs="+", default=None,

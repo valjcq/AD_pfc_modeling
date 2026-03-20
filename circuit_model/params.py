@@ -75,7 +75,6 @@ class CircuitParams:
     # --- Connections FROM PV (inhibitory, perisomatic) ---
     w_pe: float = 2.22239   # PV -> PYR: Perisomatic inhibition (divisive, shunting)
     w_pp: float = 105.44    # PV -> PV:  Self-inhibition (limits PV firing rate)
-    w_ps: float = 2.22239   # PV -> SOM: Cross-inhibition between interneuron types This connection doesn't exist in the schematic diagram but is included in the code ? 
 
     # --- Connections FROM SOM (inhibitory, dendritic) ---
     w_se: float = 2.61788   # SOM -> PYR: Dendritic inhibition (subtractive)
@@ -250,21 +249,21 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     b["g_gaba_base"] = ParamBound(0.0, 5.0, mode="lin")
     b["g_alpha7"] = ParamBound(0.0, 5.0, mode="lin")
 
-    def w_range(x: float, *, min_val: float = 1e-6) -> ParamBound:
-        hi = max(1e-6, 5.0 * x)
-        lo = min_val if x > 0 else 0.0
+    def w_range(x: float, *, min_val: float = 0.1, hi_factor: float = 5.0) -> ParamBound:
+        hi = max(min_val, hi_factor * x)
+        lo = min_val
         return ParamBound(lo, hi, mode="log")
 
-    # Standard weight ranges
-    for name in ["w_ee", "w_pe", "w_ep", "w_pp", "w_vp", "w_sp", "w_ev"]:
+    # All weights have a floor of 0.1 — no connection can be fully silenced.
+    # Degeneracy (functionally near-zero connections) is instead discouraged
+    # via the Jacobian connectivity penalty in the loss function.
+    for name in ["w_ee", "w_pe", "w_ep", "w_pp", "w_se", "w_es", "w_vs"]:
         b[name] = w_range(getattr(base, name))
 
-    # Keep a few weights away from zero to avoid KO-insensitive solutions
-    b["w_se"] = w_range(base.w_se, min_val=0.1)
-    b["w_es"] = w_range(base.w_es, min_val=0.5)
-    b["w_vs"] = w_range(base.w_vs, min_val=0.5)
-
-    b["w_ps"] = ParamBound(0.0, 5.0 * base.w_pe, mode="log")
+    # w_ev, w_sp, w_vp have near-zero defaults so 5×default ≈ 0 — explicit range
+    b["w_ev"] = ParamBound(0.1, 10.0, mode="log")
+    b["w_sp"] = ParamBound(0.1, 10.0, mode="log")
+    b["w_vp"] = ParamBound(0.1, 10.0, mode="log")
 
     # External currents
     b["I0_pyr"] = ParamBound(0.0, 10.0, mode="lin")
