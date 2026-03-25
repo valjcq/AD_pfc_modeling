@@ -204,3 +204,121 @@ We need to analyze more in depth the impact of the distractor on the bump stabil
 **Asymmetry vs amplitude sweep**:
 - Both mean|A(t)| and std(A) increase with cue amplitude. The rate of increase (slope) is faster in WT_APP — the disease condition converts stimulus drive into spatial instability more efficiently.
 - Mechanistic link: loss of α7 nAChR reduces inhibitory damping that normally keeps the bump symmetric, so stronger drive amplifies spatial instability more in APP condition.
+
+---
+
+### Loss Function & Fitting Pipeline Overhaul (2026-03-23)
+
+#### Summary of all changes made
+
+1. **MAPE → MSPE** (`squared=True` default): base loss now squares the per-population percentage errors. Prevents the optimizer from tolerating a large miss on one population (e.g. PYR −37%) while the others are exact, which MAPE allows because it averages linearly.
+
+2. **Jacobian upper-bound penalty** (`max_gain=5`, quadratic above): MSPE alone pushed weights to extreme values (PV→PV w≈337, J=−72). A per-entry cap on the full 4×4 Jacobian rules out biologically implausible solutions. Threshold meaning: `J[i,j]=5` means a 1 Hz increase in population j causes a 5 Hz change in population i — already very strong coupling.
+
+3. **KO conditions always simulated** (even without KO targets): the three KO conditions (α7, α5, β2) are now run in all fits. When no KO target was specified they appear as `(info)` rows in the summary with the reference value shown for comparison but not contributing to the loss.
+
+4. **KO loss normalisation** (`ko_loss / n_ko`): previously the total loss had 1 base term vs up to 3×4=12 KO sub-terms, making the optimizer ~12× more focused on KO conditions. Now the total KO contribution is divided by the number of active KOs so it always has equal weight to the base loss.
+
+5. **MSPE in `loss_from_ko_pyr`**: the KO per-condition loss was still using MAPE; switched to MSPE for consistency.
+
+6. **Plateau early stopping** (`--plateau_patience`, default 5000 steps): stops if no improvement for N steps. Counter only starts after the DE phase in chaining mode (first 10 000 steps) to avoid triggering during global exploration.
+
+7. **On-demand summary regeneration**: existing `.json` params can be re-evaluated and `.txt` summaries regenerated without relaunching a full optimisation.
+
+---
+
+#### Base fitting — current results (`WT_1mo_article`, `WT_APP_1mo_article`)
+
+These are the canonical fits used for ring model runs. KO rows shown as info only.
+
+| Fit | Loss | PYR err | SOM err | PV err | VIP err | Max \|J\| |
+|-----|------|---------|---------|--------|---------|-----------|
+| `WT_1mo_article` | ~0 | -0.0% | +0.0% | +0.0% | +0.0% | 3.7 |
+| `WT_APP_1mo_article` | ~0 | +0.0% | -0.0% | -0.0% | +0.0% | 4.4 |
+
+Both fits are essentially perfect on base rates with all Jacobian gains ≤5. KO predictions (info, not fitted):
+
+| | α7KO PYR (ref) | α5KO PYR (ref) | β2KO PYR (ref) |
+|--|--|--|--|
+| `WT` predicted | 13.97 (17.54) | 4.37 (9.29) | 13.15 (17.97) |
+| `WT_APP` predicted | 13.43 (13.60) | 4.29 (3.11) | 12.38 (19.11) |
+
+WT_APP α7KO is close to target; α5KO and β2KO are far — the base-only fit cannot simultaneously reproduce all KO effects without being constrained on them.
+
+---
+
+#### KO-constrained fitting — current results (`WT_1mo_article_ko`, `WT_APP_1mo_article_ko`)
+
+These fits include α7/α5/β2 KO targets in the loss. **Need to be relaunched** with the rebalanced loss (KO normalisation + MSPE in KO term) — current params were optimised under the old unbalanced weighting.
+
+| Fit | Loss (new) | PYR base err | SOM base err | PV base err | VIP base err |
+|-----|------------|-------------|-------------|------------|-------------|
+| `WT_ko` | 0.1215 | +45.9% | -26.8% | -23.3% | +26.6% |
+| `WT_APP_ko` | 0.6692 | -43.4% | -23.4% | **-69.8%** | +4.6% |
+
+KO predictions under these params:
+
+| | α7KO PYR | ref | α5KO PYR | ref | β2KO PYR | ref |
+|--|--|--|--|--|--|--|
+| `WT_ko` | 18.41 | 17.54 | 8.11 | 9.29 | 21.59 | 17.97 |
+| `WT_APP_ko` | 17.31 | 13.60 | 3.12 | 3.11 | 13.23 | 19.11 |
+
+Base rates are poorly fitted in both cases — the fundamental tension is that KO conditions push PYR up strongly (α7KO: 8→18 Hz for WT) which requires very different network dynamics from the baseline. The rebalanced loss should improve base rate accuracy at some cost to KO precision. **Relaunch needed.**
+
+---
+
+### Firing-Rate Optimization Attempts: Single Node → Ring (2026-03-24)
+
+**Step 1 (single-node fit, article transfer shape):**
+- First approach was to fit only at the single-node level, using the same transfer-function shape parameters as in the article.
+- In this setup, fixed vs free parameters followed `parameter_free_set.md`:
+	- Fixed: transfer thresholds/gains (`Theta_*`, `alpha_*`), shared curvature `g=1`, and fixed timescales (`tau_s`, `tau_adapt_pyr`).
+	- Free: output scales (`A_*`), local synaptic weights, external currents/nAChR currents, GABA modulation terms, adaptation strength, and noise amplitude.
+- A Jacobian loss/regularization was added to avoid parameter regions where one link/pathway is effectively unused.
+- Goal was to keep the fitted circuit biologically plausible (all key nodes/connections functionally engaged).
+- Result: optimization could reproduce firing rates while keeping non-omitted effective couplings.
+
+**Step 2 (extend fit toward network-level ring parameters):**
+- Then we tried to include ring-level parameters (`w_pyr_pyr_inter`, `sigma_pyr_deg`, `w_pv_global`) in the fitting logic.
+- We could not identify a parameter region where the network robustly formed a bump.
+- First hypothesis was that this came from too small effective weights, so the Jacobian upper cap was removed.
+- Result: no real improvement; bump-forming region was still not found.
+
+**Step 3 (full ring-in-the-loop optimization):**
+- Next, optimization was run with the full ring simulation in the objective, fitting ring activity toward targets.
+- With free `sigma_pyr_deg`, fitting could still work at firing-rate level.
+- But when constraining `sigma_pyr_deg` to ~15°, optimization failed to recover states reproducing target data.
+- This failure appeared across conditions, not only in one genotype.
+- In parallel, the network still does not reliably sustain a bump in delay.
+
+**Current interpretation:**
+- A constrained narrow PYR-PYR spread (15°) seems incompatible with obtaining both realistic firing rates and stable bump dynamics in the current parameterization.
+- More generally, matching single-node rates is not sufficient to guarantee ring-level attractor stability.
+
+**Immediate next tests:**
+1. Re-fit without constraining `sigma_pyr_deg` and compare fitted solutions across conditions.
+2. Re-test bump sustainability from these unconstrained fits.
+3. If bump is still not sustained, investigate missing stabilizing mechanisms (priority hypothesis: absent SOM adaptation current).
+
+---
+
+### Ring Fitting Update: SOM Adaptation Added (2026-03-25)
+
+**What was changed:**
+- Added SOM adaptation current in the fit, with fixed `tau_adapt_som = 150 ms`.
+- Removed `sigma_pyr_deg` as a free parameter during tests, then checked behavior with/without constraining it.
+
+**Observed behavior:**
+- The optimizer still does not find an interesting/stable working-memory solution.
+- Time-course inspection shows a mostly silent network, with a small bump moving around even without stimulus.
+- This creates an important mismatch: averaging over all nodes can still give an acceptable firing-rate loss, but the spatial variance across nodes in quiet state is too high.
+- In the intended baseline regime, nodes should remain close to homogeneous activity (similar rates across the ring before cue).
+
+**Interpretation on `sigma_pyr_deg`:**
+- In these runs, `sigma_pyr_deg` does not appear to be the primary limiting factor.
+- It does influence behavior when the network is already in a high-variance regime, but that regime is itself non-physiological for the intended baseline.
+- Practical decision: keep `sigma_pyr_deg` fixed at 15° for now.
+
+**Next hypothesis to test:**
+- Free transfer-function parameters in fitting (instead of keeping article table values fixed).
+- Rationale: transfer-function parameters from the article may have been tuned for transient/min-scale dynamics, while our objective is firing-rate-scale behavior. The mismatch in scale/operating regime may prevent valid ring-level solutions.

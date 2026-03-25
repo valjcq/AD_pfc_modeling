@@ -51,19 +51,20 @@ except ImportError:
 
 
 @_njit(cache=True)
-def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
+def _phi_scalar(I: float, theta: float, c: float, g: float, A: float = 1.0) -> float:
     """Wong-Wang transfer function on a single scalar value.
 
     Identical to phi_wong_wang() in transfer.py but avoids all NumPy overhead.
     Uses math.expm1 which is compiled to a single CPU instruction by Numba.
+    A is the per-population output scaling factor (Koukouli et al. 2025).
     """
     u = c * (I - theta)
     z = g * u
     if abs(z) < 1e-8:
         # Taylor limit: avoids 0/0 at z=0
-        return max(0.0, 1.0 / g + u * 0.5)
+        return max(0.0, A * (1.0 / g + u * 0.5))
     denom = -math.expm1(min(-z, 700.0))  # stable: 1 - exp(-z)
-    return max(0.0, u / denom)
+    return max(0.0, A * u / denom)
 
 
 # ---------------------------------------------------------------------------
@@ -88,15 +89,17 @@ def _euler_loop(
     w_ep: float, w_pp: float, w_sp: float, w_vp: float,
     w_ev: float,
     # Adaptation
-    J_adapt_pyr: float, J_adapt_som: float,
-    tau_adapt_pyr: float, tau_adapt_som: float,
+    J_adapt_pyr: float,
+    tau_adapt_pyr: float,
     # External currents (static — precomputed from params)
     I_ext_pyr: float, I_ext_som: float, I_ext_pv: float, I_ext_vip: float,
     # Transfer function parameters
-    Theta_pyr: float, alpha_pyr: float, g_e: float,
-    Theta_som: float, alpha_som: float, g_i: float,
+    Theta_pyr: float, alpha_pyr: float, g: float,
+    Theta_som: float, alpha_som: float,
     Theta_pv: float,  alpha_pv: float,
     Theta_vip: float, alpha_vip: float,
+    # Output scaling factors
+    A_pyr: float, A_pv: float, A_som: float, A_vip: float,
 ) -> None:
     """Core Euler integration loop — writes into r_out and I_adapt_out in-place.
 
@@ -109,7 +112,6 @@ def _euler_loop(
         r_pv  = r_out[k, 2]
         r_vip = r_out[k, 3]
         Iap   = I_adapt_out[k, 0]
-        Ias   = I_adapt_out[k, 1]
 
         # Shunting (divisive) inhibition denominator — PV on PYR
         denom = 1.0 + ggaba * w_pe * r_pv
@@ -121,7 +123,6 @@ def _euler_loop(
                 + I_ext_pyr
         I_som = w_es * r_pyr \
                 - w_vs * r_vip \
-                - Ias \
                 + I_ext_som
         I_pv  = w_ep * r_pyr \
                 - ggaba * w_pp * r_pv \
@@ -131,10 +132,10 @@ def _euler_loop(
         I_vip = w_ev * r_pyr + I_ext_vip
 
         # Transfer function (scalar, zero overhead)
-        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_e)
-        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g_i)
-        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g_i)
-        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g_i)
+        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g, A_pyr)
+        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g, A_som)
+        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g, A_pv)
+        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g, A_vip)
 
         # Euler update: firing rates
         # Operation order matches reference exactly: dt_ms * (sum / tau_s)
@@ -150,4 +151,4 @@ def _euler_loop(
 
         # Euler update: adaptation currents
         I_adapt_out[k + 1, 0] = Iap + dt_ms * (-Iap + J_adapt_pyr * r_pyr) / tau_adapt_pyr
-        I_adapt_out[k + 1, 1] = Ias + dt_ms * (-Ias + J_adapt_som * r_som) / tau_adapt_som
+        I_adapt_out[k + 1, 1] = 0.0

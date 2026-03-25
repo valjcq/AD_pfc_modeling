@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `optimize` command fits the circuit model to target firing rates per cell type. This roadmap documents how to go from raw calcium imaging data to `optimize` arguments, and how many fits to run.
+The `optimize` command fits the circuit model to target firing rates per cell type. This roadmap documents how to use in vivo spike rate data from `AD_data/AD_spikes/` to set `optimize` arguments, and how many fits to run.
 
 Model output rates are in **Hz** (spikes/s), confirmed by:
 ```
@@ -12,32 +12,23 @@ PYR  3.013 Hz   SOM  3.225 Hz   PV   1.423 Hz   VIP  2.476 Hz
 
 ---
 
-## Step 1 — Data Processing: Fluorescence → Firing Rate
+## Step 1 — Data Source: Direct Spike Rates
 
-Each `Results{N}.csv` file is a **5000-frame fluorescence time series** at ~30 fps (t ≈ 164.9 s):
-- Rows = time points (5000 frames)
-- Columns = individual neurons (ROIs): `Mean1` … `MeanN`
-- Values = raw fluorescence (F, arbitrary units, range ~200–2000)
+Firing rates come from **`AD_data/AD_spikes/datafiles/firing_rate_data.csv`** — a cleaned summary table with one row per genotype × timepoint (30 rows). These are direct spike rates in **Hz** extracted from the raw two-photon recordings (see `AD_data/AD_spikes/README.md` for the full processing pipeline).
 
-### Computation pipeline per mouse
+### Columns used for fitting
 
-```
-For each Results file:
-  rate = mean(all fluorescence values in file) / t_recording
+| Column | Description |
+|---|---|
+| `per_neuron_mean` | Mean firing rate across all neurons pooled from all mice (Hz) — **use as optimization target** |
+| `per_neuron_n` | Number of neurons in the pool |
+| `sampled_mean` | Mean of 5000 bootstrap group-means (groups of ~10 neurons) — used as fallback when `per_neuron_*` is unavailable |
 
-  where t_recording is read from parameters.rtf or parameters.txt
-  (regex: t\s*=\s*([\d.]+), fallback 164.897 s)
+**Target selection rule:** use `per_neuron_mean`; fall back to `sampled_mean` for `b2_KO_control` at 1mo and `b2_KO_APP` at 3mo, whose per-neuron arrays were truncated in the source CSV (see README for truncation details).
 
-For each genotype / timepoint:
-  mean_rate = mean(rate) over all files, all mice
-```
+### How rates were derived
 
-> **Why mean(F)/t works:** Raw fluorescence is proportional to cumulative calcium
-> activity. Dividing the whole-file mean by the recording duration gives a
-> time-averaged proxy for transient rate × amplitude that is fast to compute,
-> numerically stable, and consistent across conditions. Validated against article
-> 1mo medians: SST matches at 1.05×; PYR/PV/VIP offsets (0.77–1.67×) are explained
-> by mean vs. median reporting and per-cell-type differences in baseline brightness.
+Each `per_neuron_mean` is the arithmetic mean of all individual neuron firing rates pooled across mice and recording sessions for that genotype × timepoint. Rates are in Hz (spikes/s), as confirmed by the original analysis scripts and figure comparisons (see `firing_rate_figures/significance_tests.txt`).
 
 ---
 
@@ -53,10 +44,9 @@ For each genotype / timepoint:
 | `b2KO_control` | PYR in β2-KO background | `--target_beta2_ko_pyr` |
 | `a5KO_control` | PYR in α5-KO background | `--target_alpha5_ko_pyr` |
 
-The APP genotypes (`WT_APP`, `a7KO_APP`, …) model Alzheimer's disease via nAChR
-desensitization. They can be used in three ways (see Step 6): as a validation target
-for Strategy A, as a separate circuit fit (Strategy B), or for desensitization-level
-fitting (Strategy C).
+The APP genotypes (`WT_APP`, `a7KO_APP`, …) represent Alzheimer's disease background
+data. In the current workflow, APP is handled by a separate fitted parameter family
+(WT_APP), and KO_APP is obtained by applying the same KO rule on that family.
 
 ---
 
@@ -82,40 +72,28 @@ fitting (Strategy C).
 
 ---
 
-## Step 4 — Computed Target Rates
+## Step 4 — Target Rates
 
-From `scripts/compute_target_rates.py` using formula `mean(F) / t_recording`.
-Full per-mouse detail in `AD_data/summary/`. Validation against article (1mo):
-
-| Cell type | Computed mean | Computed median | Article median | Ratio (mean) | Ratio (median) |
-|---|:---:|:---:|:---:|:---:|:---:|
-| PYR (WT) | 4.143 | 3.785 | 2.487 | 1.67× | 1.52× |
-| PV       | 2.079 | 1.602 | 1.414 | 1.47× | 1.13× |
-| SST      | 3.423 | 2.976 | 3.248 | 1.05× | **0.92×** |
-| VIP      | 1.933 | 1.857 | 2.517 | 0.77× | 0.74× |
-
-Using computed medians instead of means does not close the gap: PV improves (1.47→1.13×)
-but PYR remains 1.52× off and VIP stays at 0.74×. The mean vs. median hypothesis only
-partially explains the offset — per-cell-type differences in baseline fluorescence brightness
-(affecting `mean(F)`) account for the rest. The relative ordering across cell types is
-preserved in both cases.
+From `AD_data/AD_spikes/datafiles/firing_rate_data.csv`, column `per_neuron_mean` (mean firing rate across all pooled neurons). Fallback to `sampled_mean` where per-neuron data is truncated (†).
 
 ### All fit targets
 
-| Variable | Genotype | Timepoint | mean | median | n files |
-|---|---|:---:|:---:|:---:|:---:|
-| `WT_PYR_1mo` | WT | 1mo | 4.143 | 3.785 | 37 |
-| `PV_ctrl_1mo` | PV_control | 1mo | 2.079 | 1.602 | 23 |
-| `SST_ctrl_1mo` | SST_control | 1mo | 3.423 | 2.976 | 26 |
-| `VIP_ctrl_1mo` | VIP_control | 1mo | 1.933 | 1.857 | 27 |
-| `a7KO_PYR_1mo` | a7KO_control | 1mo | 3.513 | 3.387 | 21 |
-| `b2KO_PYR_1mo` | b2KO_control | 1mo | 4.800 | 4.852 | 33 |
-| `a5KO_PYR_1mo` | a5KO_control | 1mo | 3.790 | 3.722 | 44 |
-| `WT_PYR_3mo` | WT | 3mo | 4.719 | 4.396 | 21 |
-| `a7KO_PYR_3mo` | a7KO_control | 3mo | 2.964 | 2.772 | 18 |
-| `b2KO_PYR_3mo` | b2KO_control | 3mo | 3.742 | 3.882 | 23 |
-| `WT_PYR_6mo` | WT | 6mo | 4.024 | 3.672 | 11 |
-| `a7KO_PYR_6mo` | a7KO_control | 6mo | 4.038 | 4.048 | 12 |
+| Variable | Genotype (CSV label) | Timepoint | mean (Hz) | n neurons |
+|---|---|:---:|:---:|:---:|
+| `WT_PYR_1mo` | WT | 1mo | 8.214 | 563 |
+| `PV_ctrl_1mo` | PV-Cre_control | 1mo | 4.073 | 207 |
+| `SST_ctrl_1mo` | SST-Cre | 1mo | 4.295 | 249 |
+| `VIP_ctrl_1mo` | VIP-Cre_control | 1mo | 6.051 | 291 |
+| `a7KO_PYR_1mo` | a7_KO_control | 1mo | 17.539 | 409 |
+| `b2KO_PYR_1mo` | b2_KO_control | 1mo | 17.965† | — |
+| `a5KO_PYR_1mo` | a5_KO | 1mo | 9.285 | 925 |
+| `WT_PYR_3mo` | WT_ctr | 3mo | 13.325 | 411 |
+| `a7KO_PYR_3mo` | a7_KO | 3mo | 14.105 | 501 |
+| `b2KO_PYR_3mo` | b2_KO | 3mo | 16.529 | 775 |
+| `WT_PYR_6mo` | WT_control | 6mo | 10.745 | 501 |
+| `a7KO_PYR_6mo` | a7_KO_control | 6mo | 16.221 | 451 |
+
+† `b2_KO_control` at 1mo: per-neuron array truncated in source CSV; value is `sampled_mean`.
 
 ## Step 5 — CLI Commands (with actual values)
 
@@ -123,17 +101,16 @@ preserved in both cases.
 
 ```bash
 python -m circuit_model optimize \
-  --target_pyr   4.143 \
-  --target_som   3.423 \
-  --target_pv    2.079 \
-  --target_vip   1.933 \
-  --target_alpha7_ko_pyr 3.513 \
-  --target_beta2_ko_pyr  4.800 \
-  --target_alpha5_ko_pyr 3.790 \
+  --target_pyr   8.214 \
+  --target_som   4.295 \
+  --target_pv    4.073 \
+  --target_vip   6.051 \
+  --target_alpha7_ko_pyr 17.539 \
+  --target_beta2_ko_pyr  17.965 \
+  --target_alpha5_ko_pyr 9.285 \
   --optimizer chaining \
   --n_samples 50000 \
-  --n_workers 4 \
-  --save_best_json figs/optim/1mo/best_params.json \
+  --save_best_json params/new/WT_1mo.json \
   --log_file figs/optim/1mo/log.jsonl
 ```
 
@@ -141,17 +118,16 @@ python -m circuit_model optimize \
 
 ```bash
 python -m circuit_model optimize \
-  --target_pyr   4.719 \
-  --target_som   3.423 \
-  --target_pv    2.079 \
-  --target_vip   1.933 \
-  --target_alpha7_ko_pyr 2.964 \
-  --target_beta2_ko_pyr  3.742 \
+  --target_pyr   13.325 \
+  --target_som   4.295 \
+  --target_pv    4.073 \
+  --target_vip   6.051 \
+  --target_alpha7_ko_pyr 14.105 \
+  --target_beta2_ko_pyr  16.529 \
   --freeze Theta_pv,Theta_som,Theta_vip,alpha_pv,alpha_som,alpha_vip \
-  --params_json figs/optim/1mo/best_params.json \
+  --params_json params/new/WT_1mo.json \
   --n_samples 5000 \
-  --n_workers 4 \
-  --save_best_json figs/optim/3mo/best_params.json \
+  --save_best_json params/new/WT_3mo.json \
   --log_file figs/optim/3mo/log.jsonl
 ```
 
@@ -159,16 +135,15 @@ python -m circuit_model optimize \
 
 ```bash
 python -m circuit_model optimize \
-  --target_pyr   4.024 \
-  --target_som   3.423 \
-  --target_pv    2.079 \
-  --target_vip   1.933 \
-  --target_alpha7_ko_pyr 4.038 \
+  --target_pyr   10.745 \
+  --target_som   4.295 \
+  --target_pv    4.073 \
+  --target_vip   6.051 \
+  --target_alpha7_ko_pyr 16.221 \
   --freeze Theta_pv,Theta_som,Theta_vip,alpha_pv,alpha_som,alpha_vip,I_beta2_som,I_alpha5_vip \
-  --params_json figs/optim/1mo/best_params.json \
+  --params_json params/new/WT_1mo.json \
   --n_samples 5000 \
-  --n_workers 4 \
-  --save_best_json figs/optim/6mo/best_params.json \
+  --save_best_json params/new/WT_6mo.json \
   --log_file figs/optim/6mo/log.jsonl
 ```
 
@@ -178,35 +153,32 @@ python -m circuit_model optimize \
 
 ### What APP is
 
-APP (amyloid precursor protein) transgenic mice model early Alzheimer's disease via
-progressive amyloid-β accumulation, which **partially desensitizes nAChRs**. In the
-circuit model (`circuit_model/study.py`), this is captured by reduced activation
-multipliers drawn from distributions (stochastic per simulation):
+APP (amyloid precursor protein) transgenic mice model early Alzheimer's disease. In
+the current circuit workflow, APP is represented by fitting a separate WT_APP local
+circuit parameter family (instead of sampling receptor desensitization multipliers).
 
-| Receptor | Baseline `act_*` | APP model `act_*` | Desensitization |
+Condition rules in `circuit_model/study.py` are:
+- WT family: `WT`, `a7_KO`, `b2_KO`, `a5_KO`
+- WT_APP family: `WT_APP`, `a7_KO_APP`, `b2_KO_APP`, `a5_KO_APP`
+- KO effect only: set targeted receptor activation to 0 (`act_alpha7`, `act_beta2`, `act_alpha5`; plus `g_alpha7=0` for α7 KO)
+
+### APP rates from `firing_rate_data.csv` (per_neuron_mean, Hz)
+
+| Genotype (CSV label) | 1mo | 3mo | 6mo |
 |---|:---:|:---:|:---:|
-| α7 (`act_alpha7`) | 1.0 | 0.10 ± 0.03 | ~90% |
-| α5 (`act_alpha5`) | 1.0 | 0.60 ± 0.05 | ~40% |
-| β2 (`act_beta2`)  | 1.0 | 0.875 ± 0.06 | ~12% |
+| WT-APP                   | 12.466 (n=679) | 16.340 (n=410) | 14.189 (n=882) |
+| PV-Cre_APP               | 4.241 (n=333)  | —              | —              |
+| SST-Cre_APP              | 4.814 (n=299)  | —              | —              |
+| VIP-Cre_APP              | 5.551 (n=434)  | —              | —              |
+| a7_KO_APP                | 13.599 (n=507) | 12.272 (n=536) | —              |
+| b2_KO_APP                | 19.109 (n=711) | 16.567†        | —              |
+| a5_KO_APP                | 3.113 (n=247)  | —              | —              |
+| WT-APP_reexp             | 10.949 (n=565) | —              | —              |
+| a7_KO_APP_re-expression  | 19.077 (n=354) | —              | —              |
+| b2_KO_APP_re-expression  | 17.416 (n=589) | —              | —              |
+| a7b2_KO_APP              | 4.940 (n=241)  | —              | —              |
 
-Because these are **distributions** (not fixed values), APP conditions cannot be
-simulated with a single parameter set — they are always run stochastically via `study`.
-
-### Computed APP rates (mean(F)/t formula)
-
-| Genotype | 1mo | 3mo | 6mo |
-|---|:---:|:---:|:---:|
-| WT_APP           | 4.566 (n=33) | 4.874 (n=13) | 4.013 (n=18) |
-| PV_APP           | 3.186 (n=34) | —            | —            |
-| SST_APP          | 3.563 (n=50) | —            | —            |
-| VIP_APP          | 1.627 (n=39) | —            | —            |
-| a7KO_APP         | 4.270 (n=38) | 5.013 (n=15) | 4.359 (n=11) |
-| b2KO_APP         | 4.123 (n=28) | 2.762 (n=24) | —            |
-| a5KO_APP         | 3.491 (n=12) | —            | —            |
-| WT_APP_reexp     | 3.954 (n=18) | —            | —            |
-| a7KO_APP_reexp   | 3.140 (n=20) | —            | —            |
-| b2KO_APP_reexp   | 3.545 (n=17) | 3.470 (n=11) | —            |
-| a7b2KO_APP       | 3.138 (n=18) | —            | —            |
+† `b2_KO_APP` at 3mo: per-neuron array truncated; value is `sampled_mean`.
 
 **reexp** = re-expression of the knocked-out receptor in the APP background (rescue experiment: restores the receptor to test whether it normalises activity).
 **a7b2KO_APP** = double knockout (α7 + β2) in APP background.
@@ -215,66 +187,56 @@ simulated with a single parameter set — they are always run stochastically via
 
 | Genotype | Control | APP | APP + reexp | APP→reexp | reexp vs control |
 |---|:---:|:---:|:---:|:---:|:---:|
-| WT  | 4.143 | 4.566 | 3.954 | −13% | −5% |
-| a7KO | 3.513 | 4.270 | 3.140 | −26% | −11% |
-| b2KO | 4.799 | 4.123 | 3.545 | −14% | −26% |
+| WT   | 8.214 | 12.466 | 10.949 | −12% | +33% |
+| a7KO | 17.539 | 13.599 | 19.077 | +40% | +9% |
+| b2KO | 17.965† | 19.109 | 17.416 | −9% | −3% |
 
-Re-expression partially rescues the APP-induced rate increase in all three genotypes.
-The α7 re-expression shows the strongest rescue (−26%), consistent with α7 being the
-most desensitized receptor in APP (90% → reexp restores it).
+† b2KO control: `sampled_mean` (per-neuron truncated).
 
 ### Control vs APP at 1mo (disease effect)
 
 | Cell type | Control | APP | Change |
 |---|:---:|:---:|:---:|
-| PYR (WT)  | 4.143 | 4.566 | +10% |
-| PV        | 2.079 | 3.186 | **+53%** |
-| SOM       | 3.423 | 3.563 | +4%  |
-| VIP       | 1.933 | 1.627 | −16% |
+| PYR (WT)  | 8.214  | 12.466 | **+52%** |
+| PV        | 4.073  | 4.241  | +4%      |
+| SOM       | 4.295  | 4.814  | +12%     |
+| VIP       | 6.051  | 5.551  | −8%      |
 
-Large PV increase and VIP decrease are the main signatures of α7 desensitization:
-reduced cholinergic drive shifts the interneuron balance.
+The dominant APP signature at 1mo is a large PYR rate increase (+52%). Interneuron
+changes are modest: PV and SOM slightly elevated, VIP slightly reduced.
 
 ### Fitting strategies
 
-**Strategy A — Model validation (no new fit, recommended first)**
+**Strategy A — Separate WT and WT_APP parameter families (recommended)**
 
-After Fit 1, run `study` with the fitted params and built-in APP distributions.
-Compare predicted APP rates to the measured values above. This is a zero-parameter
-prediction that directly tests whether the desensitization distributions in `study.py`
-are correctly calibrated to the data.
+Fit WT and WT_APP independently on their own 4-population targets (optionally with
+KO PYR targets). This is the current default strategy and is consistent with
+`circuit_model/study.py`.
 
-**Strategy B — Separate APP parameter set**
-
-Fit the full circuit independently on APP mice, treating APP as a different
-biological state that may involve secondary synaptic remodeling beyond receptor
-desensitization. Uses the same `optimize` CLI as control fits:
+Example WT_APP fit:
 
 ```bash
 python -m circuit_model optimize \
-  --target_pyr   4.566 \
-  --target_som   3.563 \
-  --target_pv    3.186 \
-  --target_vip   1.627 \
-  --target_alpha7_ko_pyr 4.270 \
-  --target_beta2_ko_pyr  4.123 \
-  --target_alpha5_ko_pyr 3.491 \
-  --n_samples 5000 --n_workers 4 \
-  --save_best_json figs/optim/1mo_APP/best_params.json \
+  --target_pyr   12.466 \
+  --target_som   4.814 \
+  --target_pv    4.241 \
+  --target_vip   5.551 \
+  --target_alpha7_ko_pyr 13.599 \
+  --target_beta2_ko_pyr  19.109 \
+  --target_alpha5_ko_pyr 3.113 \
+  --n_samples 5000 \
+  --save_best_json params/new/WT_APP_1mo_article_ko.json \
   --log_file figs/optim/1mo_APP/log.jsonl
 ```
 
-**Strategy C — Fit desensitization levels** *(most biologically principled)*
+**Strategy B — Optional receptor-sensitivity sweep (non-default analysis)**
 
-Keep the control circuit params fixed (from Fit 1); only optimize `act_alpha7`,
-`act_alpha5`, `act_beta2` to match APP PYR rates. This directly estimates in-vivo
-receptor desensitization without confounding synaptic remodeling. Requires either
-adding `--target_wt_app_pyr` support to the CLI, or manually freezing all non-
-activation parameters via `--freeze`.
+If needed for mechanistic analysis, sweep `act_alpha7/act_alpha5/act_beta2` around
+fitted families to probe sensitivity thresholds. This is an analysis layer, not the
+baseline condition definition.
 
-> **Recommended order**: Strategy A first (zero cost). If predictions are off,
-> decide between B (full refit) and C (desensitization-only) depending on whether
-> you believe APP causes secondary circuit remodeling.
+> **Recommended order**: run Strategy A as the baseline. Use Strategy B only as a
+> supplementary mechanistic probe.
 
 ---
 
@@ -296,21 +258,21 @@ The `--optimizer` flag controls the Nevergrad algorithm used. Choose based on th
 ```bash
 # Pass 1 — global exploration with DE
 python -m circuit_model optimize \
-  --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
-  --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.800 --target_alpha5_ko_pyr 3.790 \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
   --optimizer chaining \
-  --n_samples 50000 --n_workers 4 \
-  --save_best_json figs/optim/1mo/best_params.json \
+  --n_samples 50000 \
+  --save_best_json params/new/WT_1mo.json \
   --log_file figs/optim/1mo/log.jsonl
 
 # Pass 2 — local refinement with CMA-ES from best found so far
 python -m circuit_model optimize \
-  --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
-  --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.800 --target_alpha5_ko_pyr 3.790 \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
   --optimizer cma \
-  --params_json figs/optim/1mo/best_params.json \
-  --n_samples 20000 --n_workers 4 \
-  --save_best_json figs/optim/1mo/best_params.json \
+  --params_json params/new/WT_1mo.json \
+  --n_samples 20000 \
+  --save_best_json params/new/WT_1mo.json \
   --log_file figs/optim/1mo/log.jsonl --resume
 ```
 
@@ -323,6 +285,11 @@ solution the circuit model is otherwise prone to).
 ## What to do before running fits
 
 1. The `near_zero_threshold = 0.5` in `circuit_model/loss.py` penalises any population
-   firing below 0.5 Hz (all targets are in the 2–5 range, so this only catches degenerate states)
+   firing below 0.5 Hz (targets now range from ~4–18 Hz, so this only catches degenerate states)
 2. All synaptic weights have `lo = 0.1` — no connection can be silenced
 3. Run Fit 1, inspect result, use its params as `--params_json` starting point for Fits 2 & 3
+4. **Loss function**: MSPE (squared percentage error) is now the default. It penalises large
+   per-population errors quadratically — a 37% error on PYR contributes ~14× more than a 10% error,
+   preventing the optimizer from tolerating a large miss on one population while the others are exact.
+   Combine with the Jacobian upper-bound penalty (`max_gain=5`) to avoid biologically implausible
+   solutions with runaway effective gains. Pass `--no_squared_loss` to revert to MAPE.

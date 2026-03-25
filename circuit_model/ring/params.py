@@ -8,8 +8,12 @@ geometry and inter-node connectivity for the ring attractor.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from ..params import ParamBound
 
 
 @dataclass(frozen=True)
@@ -83,3 +87,21 @@ class RingParams:
     def node_to_angle_rad(self, node: int) -> float:
         """Convert a node index to its angular position (radians)."""
         return (node % self.n_nodes) * self.angular_spacing_rad
+
+
+def default_ring_bounds() -> "dict[str, ParamBound]":
+    """
+    Default search bounds for ring network parameters.
+
+    Only covers the three optimizable scalar fields of RingParams.
+    n_nodes is fixed by the user and not optimized.
+
+    Bounds are in linear space since all three parameters have
+    a well-defined expected range without spanning orders of magnitude.
+    """
+    from ..params import ParamBound
+    return {
+        "w_pyr_pyr_inter": ParamBound(lo=1.0,  hi=30.0, mode="lin"),
+        "w_pv_global":     ParamBound(lo=0.5,  hi=20.0, mode="lin"),
+        "sigma_pyr_deg":   ParamBound(lo=10.0, hi=60.0, mode="lin"),
+    }

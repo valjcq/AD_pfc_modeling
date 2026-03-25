@@ -3,27 +3,80 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study} [options]
+python -m circuit_model {plot-transfer,run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
 ```
 
 ---
 
 ## Table of Contents
 
-1. [run](#run) -- Single-circuit simulation with plotting
-2. [optimize](#optimize) -- Nevergrad parameter optimization
-3. [study](#study) -- Batch study across 8 experimental conditions
-4. [ring-run](#ring-run) -- Ring attractor single-condition simulation
-5. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
-6. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
-7. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
-8. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
-9. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-10. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
-11. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
-12. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
-13. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
-14. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
+1. [plot-transfer](#plot-transfer) -- Plot transfer functions for all 4 populations
+2. [run](#run) -- Single-circuit simulation with plotting
+3. [optimize](#optimize) -- Nevergrad parameter optimization
+4. [study](#study) -- Batch study across 8 experimental conditions
+5. [ring-run](#ring-run) -- Ring attractor single-condition simulation
+6. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
+7. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
+8. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
+9. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
+10. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
+11. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
+12. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
+13. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
+14. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
+15. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
+16. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
+
+---
+
+## `plot-transfer`
+
+Plot the Wong-Wang transfer function Φ(I) for all 4 populations on a single axis, allowing direct comparison of their input-output curves.
+
+```bash
+python -m circuit_model plot-transfer [options]
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--params_json` | str | `""` | Load parameters from JSON file (default: built-in defaults) |
+| `--condition` | str | `""` | Apply condition preset (`WT`, `WT_APP`, `a7_KO`, `a7_KO_APP`, `b2_KO`, `b2_KO_APP`, `a5_KO`, `a5_KO_APP`). If `--params_json` is omitted, default project WT/WT_APP fit files are used when available. |
+| `--set` | str | `""` | Override parameter values: `name=val,name=val` |
+| `--I_min` | float | `-5.0` | Minimum input current to plot |
+| `--I_max` | float | `80.0` | Maximum input current to plot |
+| `--save_plot` | str | `""` | Explicit output path (overrides auto path) |
+| `--no_show` | flag | `False` | Don't display the plot |
+
+### Output path
+
+If `--save_plot` is not given, the figure is saved automatically:
+- With `--params_json params/new/WT_1mo_article.json` → `figs/optim/transfer_functions_WT_1mo_article.png`
+- With `--condition WT_APP` → `figs/optim/transfer_functions_WT_APP.png`
+- Without `--params_json` / `--condition` → `figs/optim/transfer_functions.png`
+
+### Examples
+
+```bash
+# Default parameters
+python -m circuit_model plot-transfer
+
+# From a fitted parameter file (auto-saved with filename suffix)
+python -m circuit_model plot-transfer --params_json params/new/WT_1mo_article.json
+
+# Switch directly by condition preset (uses project default fitted files)
+python -m circuit_model plot-transfer --condition WT_APP
+
+# Custom current range
+python -m circuit_model plot-transfer --I_min -2 --I_max 40
+
+# Override specific parameters
+python -m circuit_model plot-transfer --set "g=0.5,A_pyr=3"
+
+# Save to explicit path without displaying
+python -m circuit_model plot-transfer --save_plot figs/my_transfer.png --no_show
+```
 
 ---
 
@@ -39,7 +92,8 @@ python -m circuit_model run [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--params_json` | str | `""` | Load parameters from JSON file |
+| `--params_json` | str | `""` | Load parameters from JSON file. If omitted, `run` first tries `params/new/ring_firing_rate/WT_1mo_article_ko.json` and falls back to built-in defaults only if that file is missing. |
+| `--condition` | str | `""` | Apply condition preset (`WT`, `WT_APP`, `a7_KO`, `a7_KO_APP`, `b2_KO`, `b2_KO_APP`, `a5_KO`, `a5_KO_APP`). If `--params_json` is omitted, default project WT/WT_APP fit files are used when available. |
 | `--T_ms` | float | `2500.0` | Simulation duration (ms) |
 | `--dt_ms` | float | `0.1` | Integration time step (ms) |
 | `--noise_type` | str | `"none"` | Noise type: `none`, `white`, or `ou` (Ornstein-Uhlenbeck) |
@@ -49,7 +103,7 @@ python -m circuit_model run [options]
 | `--time_range` | str | `""` | Time range to plot: `start,end` in ms (e.g. `1000,2000`) |
 | `--save_plot` | str | `""` | Save plot to file path (e.g. `output.png`) |
 | `--no_show` | flag | `False` | Don't display the plot (useful for batch processing) |
-| `--unit` | str | `"transients/min"` | Rate unit for display: `transients/min` or `Hz` |
+| `--unit` | str | `"Hz"` | Rate unit for display: `Hz` |
 
 #### Transient Current Options
 
@@ -66,8 +120,11 @@ python -m circuit_model run [options]
 # Default simulation
 python -m circuit_model run
 
-# Custom parameters with noise
-python -m circuit_model run --params_json my_params.json --T_ms 5000 --noise_type ou
+# Switch directly by condition preset (no explicit params_json needed)
+python -m circuit_model run --condition WT_APP
+
+# Custom duration with OU noise
+python -m circuit_model run --T_ms 5000 --noise_type ou
 
 # With transient current
 python -m circuit_model run --enable_transient --trans_start_ms 1000 --trans_duration_ms 500
@@ -87,7 +144,7 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--target_pyr` | float | **required** | Target mean firing rate for PYR (transients/min) |
+| `--target_pyr` | float | **required** | Target mean firing rate for PYR (in the selected `--unit`, default: Hz) |
 | `--target_som` | float | **required** | Target mean firing rate for SOM |
 | `--target_pv` | float | **required** | Target mean firing rate for PV |
 | `--target_vip` | float | **required** | Target mean firing rate for VIP |
@@ -108,6 +165,7 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 | `--optimizer` | str | `"de"` | Algorithm — see table below |
 | `--top_k` | int | `10` | Keep top K candidates |
 | `--early_stop_loss` | float | `1e-4` | Stop early if loss falls below this value |
+| `--squared_loss` | flag | `True` | Use MSPE (squared percentage error) instead of MAPE. Default on; pass `--no_squared_loss` to revert to MAPE. MSPE penalises large per-population errors quadratically, preventing the optimizer from tolerating a 30–40% error on one population if the others are exact. |
 
 #### Optimizer choices
 
@@ -160,7 +218,7 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--log_interval` | int | `500` | Log every N steps |
 | `--resume` | flag | `False` | Resume from `--save_best_json`, loading targets from the last log entry and appending to the log. The optimizer is warm-started from the saved parameters. |
 | `--n_workers` | int | `None` | Parallel workers (auto if None) |
-| `--unit` | str | `"transients/min"` | Rate unit for display: `transients/min` or `Hz` |
+| `--unit` | str | `"Hz"` | Rate unit for display: `Hz` |
 
 ### Weight bounds
 
@@ -175,13 +233,13 @@ python -m circuit_model optimize \
     --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.8 --target_alpha5_ko_pyr 3.79 \
     --optimizer chaining \
     --n_samples 50000 --n_workers 4 \
-    --save_best_json figs/optim/1mo/best_params.json \
+    --save_best_json params/new/WT_1mo.json \
     --log_file figs/optim/1mo/log.jsonl
 
 # Resume with CMA-ES to refine from a previous run's best params
 python -m circuit_model optimize \
     --optimizer cma --n_samples 30000 --n_workers 4 \
-    --save_best_json figs/optim/1mo/best_params.json \
+    --save_best_json params/new/WT_1mo.json \
     --log_file figs/optim/1mo/log.jsonl \
     --resume
 
@@ -209,13 +267,13 @@ The 8 conditions are:
 | Key | Name | Description |
 |-----|------|-------------|
 | `WT` | Wild Type | All receptors active (act = 1.0) |
-| `WT_APP` | Wild Type + APP | Receptor desensitization (sampled from distributions) |
+| `WT_APP` | Wild Type + APP | Uses WT_APP fitted parameter family; receptors stay active (act = 1.0) |
 | `a7_KO` | alpha7 KO | alpha7 = 0, g_alpha7 = 0 |
-| `a7_KO_APP` | alpha7 KO + APP | alpha7 = 0 + APP desensitization on alpha5, beta2 |
+| `a7_KO_APP` | alpha7 KO + APP background | WT_APP family + alpha7 = 0, g_alpha7 = 0 |
 | `b2_KO` | beta2 KO | beta2 = 0 |
-| `b2_KO_APP` | beta2 KO + APP | beta2 = 0 + APP desensitization on alpha7, alpha5 |
+| `b2_KO_APP` | beta2 KO + APP background | WT_APP family + beta2 = 0 |
 | `a5_KO` | alpha5 KO | alpha5 = 0 |
-| `a5_KO_APP` | alpha5 KO + APP | alpha5 = 0 + APP desensitization on alpha7, beta2 |
+| `a5_KO_APP` | alpha5 KO + APP background | WT_APP family + alpha5 = 0 |
 
 ### Parameters
 
@@ -234,7 +292,7 @@ The 8 conditions are:
 | `--n_workers` | int | `None` | Parallel workers (auto if None) |
 | `--save_plot` | str | `""` | Save box plot to file path |
 | `--no_show` | flag | `False` | Don't display the plot |
-| `--unit` | str | `"transients/min"` | Rate unit for display |
+| `--unit` | str | `"Hz"` | Rate unit for display |
 
 ### Examples
 
@@ -245,8 +303,8 @@ python -m circuit_model study
 # Quick test with fixed receptor values
 python -m circuit_model study --n_runs 10 --fixed_receptor_values --no_show
 
-# Custom parameters with OU noise
-python -m circuit_model study --params_json my_params.json --noise_type ou --tau_noise_ms 10
+# OU noise study
+python -m circuit_model study --noise_type ou --tau_noise_ms 10
 ```
 
 ---
@@ -269,8 +327,8 @@ python -m circuit_model ring-run [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--n_nodes` | int | `128` | Number of nodes on the ring |
-| `--params_json` | str | `""` | Load local circuit parameters from JSON file |
+| `--n_nodes` | int | from ring params JSON or `128` | Number of nodes on the ring |
+| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article_ko.json` (WT) and `WT_APP_1mo_article_ko.json` (APP). |
 | `--amplitude` | float | `30.0` | Stimulus amplitude as factor of I_ext_pyr baseline (20 = 20× baseline current) |
 | `--delay_ms` | float | `5000.0` | Delay period duration (ms) |
 | `--seed` | int | `42` | Random seed for reproducibility |
@@ -283,11 +341,13 @@ python -m circuit_model ring-run [options]
 
 #### Connectivity Parameters
 
+Ring connectivity parameters are loaded by default from `params/new/ring_firing_rate/WT_1mo_article_ko_ring.json`. Explicit CLI values always override the file.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--sigma_pyr_deg` | float | `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pyr_pyr_inter` | float (one or more) | `8.0` | Total PYR→PYR coupling strength. Multi-condition commands accept one value per condition (e.g. `--w_pyr_pyr_inter 8.0 7.5` for WT and WT_APP). A single value is broadcast to all conditions. |
-| `--w_pv_global` | float | `4.0` | Total PV→PYR global inhibition strength (uniform) |
+| `--sigma_pyr_deg` | float | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
+| `--w_pyr_pyr_inter` | float (one or more) | from ring params JSON or `8.0` | Total PYR→PYR coupling strength. Multi-condition commands accept one value per condition (e.g. `--w_pyr_pyr_inter 8.0 7.5` for WT and WT_APP). A single value is broadcast to all conditions. |
+| `--w_pv_global` | float | from ring params JSON or `10.0` | Total PV→PYR global inhibition strength (uniform) |
 
 **PYR→PYR**: Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.
 
@@ -956,10 +1016,10 @@ python -m circuit_model ring-burnin-stability [options]
 | `--n_workers` | auto | Number of parallel worker processes |
 | `--seed` | 42 | Base random seed |
 | `--no_show` | — | Suppress interactive plot display |
-| `--n_nodes` | 128 | Number of ring nodes |
-| `--w_pyr_pyr_inter` | 4.0 | PYR→PYR inter-node coupling |
-| `--sigma_pyr_deg` | 30.0 | PYR→PYR connectivity width (degrees) |
-| `--w_pv_global` | 4.0 | PV→PYR global inhibition strength |
+| `--n_nodes` | from ring params JSON or `128` | Number of ring nodes |
+| `--w_pyr_pyr_inter` | from ring params JSON or `8.0` | PYR→PYR inter-node coupling |
+| `--sigma_pyr_deg` | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
+| `--w_pv_global` | from ring params JSON or `10.0` | PV→PYR global inhibition strength |
 | `--params_json` | — | Load local circuit parameters from JSON |
 
 ### Outputs
@@ -1017,10 +1077,10 @@ python -m circuit_model ring-bump-decay-study [options]
 | `--no_cache` | — | Ignore existing pickle cache and recompute |
 | `--seed` | 42 | Base random seed |
 | `--no_show` | — | Suppress interactive plot display |
-| `--n_nodes` | 128 | Number of ring nodes |
-| `--w_pyr_pyr_inter` | 4.0 | PYR→PYR inter-node coupling |
-| `--sigma_pyr_deg` | 30.0 | PYR→PYR connectivity width (degrees) |
-| `--w_pv_global` | 4.0 | PV→PYR global inhibition strength |
+| `--n_nodes` | from ring params JSON or `128` | Number of ring nodes |
+| `--w_pyr_pyr_inter` | from ring params JSON or `8.0` | PYR→PYR inter-node coupling |
+| `--sigma_pyr_deg` | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
+| `--w_pv_global` | from ring params JSON or `10.0` | PV→PYR global inhibition strength |
 | `--params_json` | — | Load local circuit parameters from JSON |
 
 ### How normalisation works
@@ -1065,6 +1125,174 @@ python -m circuit_model ring-bump-decay-study \
 # Finer time bins (250 ms) with a longer reference offset
 python -m circuit_model ring-bump-decay-study \
   --window_ms 250 --ref_offset_ms 500 --delay_ms 10000 --no_show
+```
+
+---
+
+## `ring-optimize`
+
+Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Knockout (KO) conditions are run on single-node by default (cheap) or on the ring (`--ko_on_ring`).
+
+Two modes:
+- **Mode 1** (default): match ring resting firing rates to `TargetRates`. Loss = rate loss + KO loss + Jacobian penalty.
+- **Mode 2** (`--bump_mode`): same as Mode 1, plus a soft bump quality constraint — the ring must form a localized bump after a test stimulus. Bump and rate targets are independent (bump targets are biophysical constraints, not from experimental data).
+
+```bash
+python -m circuit_model ring-optimize [options]
+```
+
+### Parameters
+
+#### Target firing rates (required)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--target_pyr` | float | — | Target mean PYR firing rate (Hz) |
+| `--target_som` | float | — | Target mean SOM firing rate (Hz) |
+| `--target_pv` | float | — | Target mean PV firing rate (Hz) |
+| `--target_vip` | float | — | Target mean VIP firing rate (Hz) |
+| `--target_alpha7_ko_pyr` | float | `None` | Target PYR rate under alpha7 knockout (Hz) |
+| `--target_alpha5_ko_pyr` | float | `None` | Target PYR rate under alpha5 knockout (Hz) |
+| `--target_beta2_ko_pyr` | float | `None` | Target PYR rate under beta2 knockout (Hz) |
+
+#### Starting point
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--params_json` | str | `""` | Load initial `CircuitParams` from JSON (default: project WT default) |
+| `--n_nodes` | int | `64` | Number of ring nodes — fixed during optimization, not optimized |
+| `--w_pyr_pyr_inter_init` | float | `8.0` | Initial inter-node PYR→PYR weight |
+| `--w_pv_global_init` | float | `10.0` | Initial global PV→PYR inhibition weight |
+| `--sigma_pyr_deg_init` | float | `15.0` | Initial PYR connectivity Gaussian width (degrees) |
+
+#### Ring parameter search bounds
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--w_pyr_pyr_inter_lo/hi` | float | `1.0 / 30.0` | Search bounds for `w_pyr_pyr_inter` |
+| `--w_pv_global_lo/hi` | float | `0.5 / 20.0` | Search bounds for `w_pv_global` |
+| `--sigma_pyr_deg_lo/hi` | float | `10.0 / 60.0` | Search bounds for `sigma_pyr_deg` |
+
+#### Optimization settings
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--n_samples` | int | `5000` | Number of optimization steps |
+| `--top_k` | int | `10` | Keep top K candidates |
+| `--optimizer` | str | `de` | `de` = TwoPointsDE (recommended), `cma` = CMA-ES, `chaining` = DE→Nelder-Mead, `auto` = NGOpt |
+| `--early_stop_loss` | float | `1e-4` | Stop early if loss falls below this value |
+| `--plateau_patience` | int | `1000` | Stop if no improvement for this many steps (0 = disable) |
+| `--seed` | int | `0` | Random seed |
+| `--freeze` | str | `""` | Comma-separated `CircuitParams` field names to freeze |
+| `--set` | str | `""` | Override `CircuitParams` values before optimizing: `name=val,name=val` (e.g. `--set tau_s=20,g=1`). Combine with `--freeze` to pin biophysical constants. |
+
+#### Ring simulation settings
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--n_trials_ring` | int | `3` | Ring simulations per candidate (fewer than single-node due to cost) |
+| `--ko_on_ring` | flag | `False` | Run KO conditions on ring (consistent but slower). Default: single-node. |
+| `--T_ms` | float | `2500.0` | Ring simulation duration (ms) |
+| `--burn_in_ms` | float | `1800.0` | Burn-in period to discard transients (ms) |
+| `--window_ms` | float | `500.0` | Rate averaging window (ms) |
+| `--noise_type` | str | `none` | `none`, `white`, or `ou` |
+| `--ko_min_effect_penalty` | float | `5.0` | Penalty weight for weak KO effect |
+| `--ko_wrong_direction_penalty` | float | `10.0` | Penalty weight for wrong-direction KO |
+
+#### Adaptation
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--no_adapt` | flag | `False` | Disable spike-frequency adaptation: sets `J_adapt_pyr=0` and `J_adapt_som=0` and freezes them. |
+
+#### Turing instability penalty (optional)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--turing_weight` | float | `0.0` | Weight of Turing instability penalty (0 = disabled). Penalises solutions where `Φ'(I*_PYR) × w_pyr_pyr_inter < 1 + turing_margin`. |
+| `--turing_margin` | float | `0.1` | Safety margin above the Turing threshold (penalise if turing < 1 + margin). |
+
+#### Mode 2 — bump quality (optional)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--bump_mode` | flag | `False` | Enable Mode 2: add bump quality constraint |
+| `--min_bump_amplitude` | float | `0.3` | Minimum bump amplitude `[0, 1]`. Penalised if not reached. |
+| `--bump_loss_weight` | float | `2.0` | Weight of bump loss relative to rate loss |
+| `--bump_stim_amplitude` | float | `5.0` | Peak current of test stimulus (applied to PYR) |
+| `--bump_stim_sigma_deg` | float | `20.0` | Gaussian width of test stimulus (degrees) |
+| `--bump_stim_duration_ms` | float | `250.0` | Test stimulus duration (ms) |
+| `--bump_eval_window_ms` | float | `500.0` | Post-stimulus window for bump amplitude evaluation (ms) |
+
+#### I/O
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--output_dir` | str | `ring_optim_output` | Directory to save `best_circuit_params.json` and `best_ring_params.json`. Overridden by the explicit path flags below. |
+| `--save_best_circuit_json` | str | `""` | Explicit output path for the circuit params JSON (overrides `output_dir` for that file) |
+| `--save_best_ring_json` | str | `""` | Explicit output path for the ring params JSON (overrides `output_dir` for that file) |
+| `--log_file` | str | `ring_optim_log.jsonl` | JSONL log file (one entry per improvement) |
+| `--log_interval` | int | `50` | Also log every N steps regardless of improvement |
+
+### Output
+
+```
+ring_optim_output/
+├── best_circuit_params.json   # Best CircuitParams (same format as optimize command)
+└── best_ring_params.json      # Best RingParams (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg, n_nodes)
+```
+
+### Loss structure
+
+**Mode 1:**
+```
+loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
+     [+ turing_weight × max(0, 1 + turing_margin − Φ'(I*_PYR)·w_pyr_pyr_inter)²  if turing_weight > 0]
+```
+where `ring_rate_loss` = MSPE between node-averaged ring rates and `TargetRates`.
+
+The Turing penalty is zero once `Φ'(I*_PYR) × w_pyr_pyr_inter ≥ 1 + turing_margin`, i.e. the local circuit is in a regime that analytically supports bump formation.
+
+**Mode 2:**
+```
+loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
+     [+ turing_weight × turing_loss  if turing_weight > 0]
+     + bump_loss_weight × max(0, min_amplitude − mean_amplitude)²
+```
+Bump loss is zero once the bump amplitude exceeds `min_amplitude`.
+
+### Examples
+
+```bash
+# Mode 1: match resting firing rates on a 64-node ring
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --n_nodes 64 --n_samples 5000 --output_dir ring_optim_output
+
+# Mode 1 with KO targets
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 --target_alpha5_ko_pyr 9.285 --target_beta2_ko_pyr 17.965 \
+  --n_nodes 64 --n_samples 5000 --output_dir ring_optim_output
+
+# Mode 2: also require bump formation (independent soft constraint)
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --n_nodes 64 --n_samples 5000 \
+  --bump_mode --min_bump_amplitude 0.3 --bump_loss_weight 2.0 \
+  --output_dir ring_optim_output
+
+# Start from a previously fitted circuit, only optimize ring params
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --params_json params/new/ring_firing_rate/WT_1mo_article_ko.json \
+  --freeze "tau_s,g_gaba_base,w_ee,w_pe,w_ep,w_pp,w_es,w_se,w_vs,w_sp,w_vp,w_ev" \
+  --n_nodes 64 --n_samples 3000 --output_dir ring_optim_ring_only
+
+# Quick smoke test (5 steps, small ring)
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --n_nodes 32 --n_samples 5 --n_trials_ring 1 --output_dir /tmp/ring_test
 ```
 
 ---

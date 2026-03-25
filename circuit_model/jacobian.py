@@ -84,13 +84,12 @@ def _total_inputs(
 
     if i_adapt is None:
         I_ap = params.J_adapt_pyr * r_pyr
-        I_as = params.J_adapt_som * r_som
     else:
-        I_ap, I_as = i_adapt
+        I_ap = i_adapt[0]
 
     denom = 1.0 + ggaba * params.w_pe * r_pv
     I_pyr = (params.w_ee * r_pyr) / denom - ggaba * params.w_se * r_som - I_ap + params.I_ext_pyr()
-    I_som = params.w_es * r_pyr - params.w_vs * r_vip - I_as + params.I_ext_som()
+    I_som = params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som()
     I_pv  = (params.w_ep * r_pyr
              - ggaba * params.w_pp * r_pv
              - ggaba * params.w_sp * r_som
@@ -122,7 +121,7 @@ def compute_jacobian(
     params : CircuitParams
         Fitted circuit parameters.
     r_ss : array of shape (4,)
-        Steady-state firing rates [r_pyr, r_som, r_pv, r_vip] (Hz or transients/min —
+        Steady-state firing rates [r_pyr, r_som, r_pv, r_vip] (Hz)
         units cancel in the ratio, so the Jacobian is dimensionless).
 
     Returns
@@ -134,10 +133,10 @@ def compute_jacobian(
 
     # Transfer function derivatives at the operating point
     I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
-    dphi_pyr = _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_e)
-    dphi_som = _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_i)
-    dphi_pv  = _phi_derivative(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_i)
-    dphi_vip = _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_i)
+    dphi_pyr = _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g)
+    dphi_som = _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g)
+    dphi_pv  = _phi_derivative(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g)
+    dphi_vip = _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g)
 
     # Partial derivatives ∂I_i/∂r_j  (explicit, adaptation treated as fixed)
     denom = 1.0 + ggaba * params.w_pe * r_pv

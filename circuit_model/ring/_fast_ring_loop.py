@@ -60,15 +60,14 @@ def _ring_euler_loop(
     w_vp: float,
     w_ev: float,
     J_adapt_pyr: float,
-    J_adapt_som: float,
     tau_adapt_pyr: float,
+    J_adapt_som: float,
     tau_adapt_som: float,
     Theta_pyr: float,
     alpha_pyr: float,
-    g_e: float,
+    g: float,
     Theta_som: float,
     alpha_som: float,
-    g_i: float,
     Theta_pv: float,
     alpha_pv: float,
     Theta_vip: float,
@@ -120,10 +119,10 @@ def _ring_euler_loop(
             )
             I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k]
 
-            phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g_e)
-            phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g_i)
-            phi_pv = _phi_scalar(I_pv_j, Theta_pv, alpha_pv, g_i)
-            phi_vip = _phi_scalar(I_vip_j, Theta_vip, alpha_vip, g_i)
+            phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g)
+            phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g)
+            phi_pv = _phi_scalar(I_pv_j, Theta_pv, alpha_pv, g)
+            phi_vip = _phi_scalar(I_vip_j, Theta_vip, alpha_vip, g)
 
             dr_pyr = (-r_pyr + phi_pyr + sigma_s * noise_arr[k, j, 0]) / tau_s
             dr_som = (-r_som + phi_som + sigma_s * noise_arr[k, j, 1]) / tau_s

@@ -22,7 +22,8 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
 7. [Noise](#7-noise)
 8. [Experimental Conditions](#8-experimental-conditions)
 9. [Bump Amplitude Oscillations](#9-bump-amplitude-oscillations)
-10. [References](#10-references)
+10. [Joint Ring + Circuit Optimization](#10-joint-ring--circuit-optimization)
+11. [References](#11-references)
 
 ---
 
@@ -178,8 +179,8 @@ for $X \in \{\text{PYR}, \text{SOM}\}$.
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 186.6 ms | PYR adaptation time constant |
-| `tau_adapt_som` | $\tau_{\text{adapt}}^{\text{SOM}}$ | 2320.5 ms | SOM adaptation time constant (slow) |
+| `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 600 ms | PYR adaptation time constant |
+| `tau_adapt_som` | $\tau_{\text{adapt}}^{\text{SOM}}$ | 150 ms | SOM adaptation time constant (slow) |
 | `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.27 | PYR adaptation strength |
 | `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 27.24 | SOM adaptation strength (strong) |
 
@@ -327,23 +328,18 @@ scaling predicted by the theory.
 
 ## 8. Experimental Conditions
 
-The model simulates 8 conditions by modifying receptor activation multipliers $(\text{act}_{\alpha 7}, \text{act}_{\beta 2}, \text{act}_{\alpha 5})$ and the GABA scaling parameter $g_{\alpha 7}$:
+The model can simulate 8 conditions by combining two fitted parameter families (WT and WT_APP) with knockout toggles. APP is represented by using the WT_APP fitted parameters, not by sampling receptor desensitization multipliers.
 
-| Condition | $\text{act}_{\alpha 7}$ | $\text{act}_{\beta 2}$ | $\text{act}_{\alpha 5}$ | $g_{\alpha 7}$ |
-|-----------|:---:|:---:|:---:|:---:|
-| **WT** | 1.0 | 1.0 | 1.0 | default |
-| **WT + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | $\sim \mathcal{N}(0.875, 0.06)$ | $\sim \mathcal{N}(0.60, 0.05)$ | default |
-| **$\alpha 7$ KO** | 0.0 | 1.0 | 1.0 | 0.0 |
-| **$\alpha 7$ KO + APP** | 0.0 | $\sim \mathcal{N}(0.875, 0.06)$ | $\sim \mathcal{N}(0.60, 0.05)$ | 0.0 |
-| **$\beta 2$ KO** | 1.0 | 0.0 | 1.0 | default |
-| **$\beta 2$ KO + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | 0.0 | $\sim \mathcal{N}(0.60, 0.05)$ | default |
-| **$\alpha 5$ KO** | 1.0 | 1.0 | 0.0 | default |
-| **$\alpha 5$ KO + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | $\sim \mathcal{N}(0.875, 0.06)$ | 0.0 | default |
-
-APP desensitization distributions are clipped to biologically plausible ranges:
-- $\text{act}_{\alpha 7}$: [0.02, 0.20] (80-98% inactivated)
-- $\text{act}_{\beta 2}$: [0.75, 1.00] (0-25% inactivated)
-- $\text{act}_{\alpha 5}$: [0.45, 0.75] (25-55% inactivated)
+| Condition | Parameter family | $\text{act}_{\alpha 7}$ | $\text{act}_{\beta 2}$ | $\text{act}_{\alpha 5}$ | $g_{\alpha 7}$ |
+|-----------|------------------|:---:|:---:|:---:|:---:|
+| **WT** | WT | 1.0 | 1.0 | 1.0 | default |
+| **WT_APP** | WT_APP | 1.0 | 1.0 | 1.0 | default |
+| **$\alpha 7$ KO** | WT | 0.0 | 1.0 | 1.0 | 0.0 |
+| **$\alpha 7$ KO_APP** | WT_APP | 0.0 | 1.0 | 1.0 | 0.0 |
+| **$\beta 2$ KO** | WT | 1.0 | 0.0 | 1.0 | default |
+| **$\beta 2$ KO_APP** | WT_APP | 1.0 | 0.0 | 1.0 | default |
+| **$\alpha 5$ KO** | WT | 1.0 | 1.0 | 0.0 | default |
+| **$\alpha 5$ KO_APP** | WT_APP | 1.0 | 1.0 | 0.0 | default |
 
 ---
 
@@ -391,7 +387,76 @@ The `compute_oscillation_spectrum` function (in `analysis.py`) computes the powe
 
 ---
 
-## 10. References
+## 10. Joint Ring + Circuit Optimization
+
+The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the ring network at rest (no stimulus) reproduces experimentally measured quiet-wakefulness firing rates.
+
+### 10.1 Motivation
+
+The standard workflow optimizes `CircuitParams` against single-node firing rates and then tunes ring parameters (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) separately via calibration sweeps. This two-step approach can produce inconsistencies: the local circuit was fit assuming no inter-node coupling, but ring connectivity alters the effective input each node receives. Joint optimization resolves this by optimizing all parameters simultaneously against ring-level measurements.
+
+### 10.2 Parameter Space
+
+The joint search space is `CircuitParams` (~60 parameters) extended with three ring-specific parameters:
+
+| Parameter | Symbol | Default bounds | Description |
+|-----------|--------|---------------|-------------|
+| `w_pyr_pyr_inter` | $w_\text{pyr}^\text{inter}$ | [1, 30] | Total inter-node PYR→PYR coupling (row-sum normalized) |
+| `w_pv_global` | $w_\text{PV}^\text{global}$ | [0.5, 20] | Total global PV→PYR inhibition (uniform all-to-all) |
+| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [10°, 60°] | Gaussian width of PYR→PYR connectivity profile |
+
+`n_nodes` is fixed by the user and not optimized.
+
+### 10.3 Loss Function
+
+**Mode 1 — rates only** (default):
+
+$$\mathcal{L} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
+
+where $\mathcal{L}_\text{rate}$ is the MSPE between node-averaged ring firing rates and the target rates from quiet wakefulness:
+
+$$\mathcal{L}_\text{rate} = \frac{1}{4} \sum_{X \in \{P,S,V,I\}} \left(\frac{\bar{r}^X - r^X_\text{target}}{r^X_\text{target}}\right)^2$$
+
+The node-averaged rate $\bar{r}^X$ is:
+
+$$\bar{r}^X = \frac{1}{N} \sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}$$
+
+KO conditions (alpha7, alpha5, beta2) are run on single-node by default or on the ring with `--ko_on_ring`.
+
+**Mode 2 — rates + bump quality** (with `--bump_mode`):
+
+$$\mathcal{L} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian} + w_\text{bump} \cdot \mathcal{L}_\text{bump}$$
+
+The bump loss is a one-sided soft constraint:
+
+$$\mathcal{L}_\text{bump} = \max\!\left(0,\; A_\text{min} - \langle A \rangle_\text{window}\right)^2$$
+
+where $\langle A \rangle_\text{window}$ is the mean population-vector amplitude during a post-stimulus window and $A_\text{min}$ (default 0.3) is the minimum acceptable amplitude. This is independent of the rate targets — it only penalises parameter sets for which the network cannot sustain a bump at all.
+
+### 10.4 Computational Cost
+
+Ring simulations are ~10–50× slower than single-node. To stay tractable:
+- `n_trials_ring = 3` (vs 8 for single-node)
+- KO conditions on single-node (same `CircuitParams`, no ring overhead)
+- `n_nodes = 64` recommended during optimization (smaller and faster)
+
+Each evaluation is roughly: 3 ring sims + 3 single-node KO sims.
+
+### 10.5 Output
+
+```
+ring_optim_output/
+├── best_circuit_params.json   # Best CircuitParams (same format as optimize)
+└── best_ring_params.json      # Best RingParams as JSON
+```
+
+These can be passed directly to `ring-run` or `ring-study` via `--params_json` and a manual `--w_pyr_pyr_inter / --w_pv_global / --sigma_pyr_deg` override.
+
+See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full argument reference.
+
+---
+
+## 11. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.
 

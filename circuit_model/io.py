@@ -26,12 +26,9 @@ if TYPE_CHECKING:
 
 
 def output_dir(base_dir: str, params_json: str) -> str:
-    """Derive output directory from params file: base_dir/<stem>/ or base_dir/default/."""
-    if params_json:
-        stem = Path(params_json).stem
-    else:
-        stem = "default"
-    out = os.path.join(base_dir, stem)
+    """Return a flat output directory path (no params-based subfolders)."""
+    _ = params_json  # Kept for backward-compatible call sites.
+    out = base_dir
     os.makedirs(out, exist_ok=True)
     return out
 
@@ -57,6 +54,7 @@ def build_fit_comparison(
     target: "TargetRates",
     loss: float,
     jacobian: Optional[np.ndarray] = None,
+    display_ko_targets: Optional["TargetRates"] = None,
 ) -> dict:
     """
     Build fit metadata dict: actual vs target comparison for each condition/population,
@@ -74,15 +72,29 @@ def build_fit_comparison(
         err_pct = round(100.0 * (actual - tgt) / max(abs(tgt), 1e-6), 2)
         return {"actual": round(actual, 4), "target": round(tgt, 4), "error_pct": err_pct}
 
+    def _entry_info(actual: float, tgt: Optional[float] = None) -> dict:
+        """KO entry shown as info only (not in loss). Target shown if provided."""
+        err_pct = round(100.0 * (actual - tgt) / max(abs(tgt), 1e-6), 2) if tgt is not None else None
+        return {"actual": round(actual, 4), "target": round(tgt, 4) if tgt is not None else None, "error_pct": err_pct, "in_loss": False}
+
     comparison: dict = {
         "base": {pop: _entry(float(means[i]), float(tgt_arr[i])) for i, pop in enumerate(pops)},
     }
-    if ko_means.alpha7_ko is not None and target.alpha7_ko_pyr is not None:
-        comparison["alpha7_ko"] = {"PYR": _entry(float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr)}
-    if ko_means.alpha5_ko is not None and target.alpha5_ko_pyr is not None:
-        comparison["alpha5_ko"] = {"PYR": _entry(float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr)}
-    if ko_means.beta2_ko is not None and target.beta2_ko_pyr is not None:
-        comparison["beta2_ko"] = {"PYR": _entry(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)}
+    if ko_means.alpha7_ko is not None:
+        if target.alpha7_ko_pyr is not None:
+            comparison["alpha7_ko"] = {"PYR": _entry(float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr)}
+        else:
+            comparison["alpha7_ko"] = {"PYR": _entry_info(float(ko_means.alpha7_ko[0]), display_ko_targets.alpha7_ko_pyr if display_ko_targets else None)}
+    if ko_means.alpha5_ko is not None:
+        if target.alpha5_ko_pyr is not None:
+            comparison["alpha5_ko"] = {"PYR": _entry(float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr)}
+        else:
+            comparison["alpha5_ko"] = {"PYR": _entry_info(float(ko_means.alpha5_ko[0]), display_ko_targets.alpha5_ko_pyr if display_ko_targets else None)}
+    if ko_means.beta2_ko is not None:
+        if target.beta2_ko_pyr is not None:
+            comparison["beta2_ko"] = {"PYR": _entry(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)}
+        else:
+            comparison["beta2_ko"] = {"PYR": _entry_info(float(ko_means.beta2_ko[0]), display_ko_targets.beta2_ko_pyr if display_ko_targets else None)}
 
     out: dict = {"loss": round(loss, 6), "comparison": comparison}
 
@@ -185,10 +197,32 @@ def save_fit_summary_txt(
                 continue
             lines.append(SEP)
             e = cmp[cond_key]["PYR"]
-            lines.append(
-                f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}%"
-            )
+            if e["target"] is None:
+                lines.append(
+                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {'—':>8}  {'(info)':>7}"
+                )
+            elif e["error_pct"] is not None and not (e.get("in_loss", True)):
+                lines.append(
+                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}% (info)"
+                )
+            else:
+                lines.append(
+                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}%"
+                )
 
+        lines.append(SEP)
+        lines.append("")
+
+    # ── Transfer function parameters ────────────────────────────────────────
+    if params is not None:
+        lines.append("  TRANSFER FUNCTION  Phi(I) = A · c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))")
+        lines.append(f"  Shared: g = {params.g:.4f}")
+        lines.append(SEP)
+        lines.append(f"  {'':8}{'PYR':>10}{'SOM':>10}{'PV':>10}{'VIP':>10}")
+        lines.append(SEP)
+        lines.append(f"  {'A':8}{params.A_pyr:>10.3f}{params.A_som:>10.3f}{params.A_pv:>10.3f}{params.A_vip:>10.3f}")
+        lines.append(f"  {'Theta':8}{params.Theta_pyr:>10.3f}{params.Theta_som:>10.3f}{params.Theta_pv:>10.3f}{params.Theta_vip:>10.3f}")
+        lines.append(f"  {'alpha':8}{params.alpha_pyr:>10.4f}{params.alpha_som:>10.4f}{params.alpha_pv:>10.4f}{params.alpha_vip:>10.4f}")
         lines.append(SEP)
         lines.append("")
 

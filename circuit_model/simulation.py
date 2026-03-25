@@ -124,14 +124,16 @@ def simulate_circuit(
             float(params.w_es), float(params.w_vs),
             float(params.w_ep), float(params.w_pp), float(params.w_sp),
             float(params.w_vp), float(params.w_ev),
-            float(params.J_adapt_pyr), float(params.J_adapt_som),
-            float(params.tau_adapt_pyr), float(params.tau_adapt_som),
+            float(params.J_adapt_pyr),
+            float(params.tau_adapt_pyr),
             float(params.I_ext_pyr()), float(params.I_ext_som()),
             float(params.I_ext_pv()),  float(params.I_ext_vip()),
-            float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_e),
-            float(params.Theta_som), float(params.alpha_som), float(params.g_i),
+            float(params.Theta_pyr), float(params.alpha_pyr), float(params.g),
+            float(params.Theta_som), float(params.alpha_som),
             float(params.Theta_pv),  float(params.alpha_pv),
             float(params.Theta_vip), float(params.alpha_vip),
+            float(params.A_pyr), float(params.A_pv),
+            float(params.A_som), float(params.A_vip),
         )
 
     else:
@@ -142,7 +144,7 @@ def simulate_circuit(
 
         for k in range(n_steps - 1):
             r_pyr, r_som, r_pv, r_vip = r[k]
-            Iap, Ias = I_adapt[k]  # Adaptation currents for PYR and SOM
+            Iap = I_adapt[k, 0]  # Adaptation current for PYR only
 
             # NOISE GENERATION
             if params.sigma_s == 0.0 or noise_type == "none":
@@ -183,7 +185,6 @@ def simulate_circuit(
             I_som = (
                 params.w_es * r_pyr
                 - params.w_vs * r_vip
-                - Ias
                 + I_ext_som_val
             )
             I_pv = (
@@ -198,10 +199,10 @@ def simulate_circuit(
             # TRANSFER FUNCTION
             Phi = np.array(
                 [
-                    phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_e).item(),
-                    phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_i).item(),
-                    phi_wong_wang(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_i).item(),
-                    phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_i).item(),
+                    phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g, A=params.A_pyr).item(),
+                    phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g, A=params.A_som).item(),
+                    phi_wong_wang(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g, A=params.A_pv).item(),
+                    phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g, A=params.A_vip).item(),
                 ],
                 dtype=float,
             )
@@ -212,9 +213,8 @@ def simulate_circuit(
 
             # EULER UPDATE: ADAPTATION CURRENTS
             dIap = (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
-            dIas = (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
             I_adapt[k + 1, 0] = Iap + dt_ms * dIap
-            I_adapt[k + 1, 1] = Ias + dt_ms * dIas
+            I_adapt[k + 1, 1] = 0.0
 
     # Compute transient window for plotting if enabled
     transient_window = None
@@ -260,23 +260,23 @@ def validate_fast_loop(
     ggaba = params.g_gaba()
     for k in range(n_steps - 1):
         r_pyr, r_som, r_pv, r_vip = r_ref[k]
-        Iap, Ias = I_adapt_ref[k]
+        Iap = I_adapt_ref[k, 0]
         xi = noise_ref[k]
         denom = 1.0 + ggaba * params.w_pe * r_pv
         I_pyr = (params.w_ee * r_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr()
-        I_som = params.w_es * r_pyr - params.w_vs * r_vip - Ias + params.I_ext_som()
+        I_som = params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som()
         I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv()
         I_vip = params.w_ev * r_pyr + params.I_ext_vip()
         Phi = np.array([
-            phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_e).item(),
-            phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_i).item(),
-            phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_i).item(),
-            phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_i).item(),
+            phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g, A=params.A_pyr).item(),
+            phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g, A=params.A_som).item(),
+            phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g, A=params.A_pv).item(),
+            phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g, A=params.A_vip).item(),
         ])
         dr = (-r_ref[k] + Phi + params.sigma_s * xi) / params.tau_s
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
         I_adapt_ref[k + 1, 0] = Iap + dt_ms * (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
-        I_adapt_ref[k + 1, 1] = Ias + dt_ms * (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
+        I_adapt_ref[k + 1, 1] = 0.0
 
     # ---- Fast path ----
     r_fast = np.zeros((n_steps, 4), dtype=float)
@@ -296,14 +296,16 @@ def validate_fast_loop(
         float(params.w_es), float(params.w_vs),
         float(params.w_ep), float(params.w_pp), float(params.w_sp),
         float(params.w_vp), float(params.w_ev),
-        float(params.J_adapt_pyr), float(params.J_adapt_som),
-        float(params.tau_adapt_pyr), float(params.tau_adapt_som),
+        float(params.J_adapt_pyr),
+        float(params.tau_adapt_pyr),
         float(params.I_ext_pyr()), float(params.I_ext_som()),
         float(params.I_ext_pv()),  float(params.I_ext_vip()),
-        float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_e),
-        float(params.Theta_som), float(params.alpha_som), float(params.g_i),
+        float(params.Theta_pyr), float(params.alpha_pyr), float(params.g),
+        float(params.Theta_som), float(params.alpha_som),
         float(params.Theta_pv),  float(params.alpha_pv),
         float(params.Theta_vip), float(params.alpha_vip),
+        float(params.A_pyr), float(params.A_pv),
+        float(params.A_som), float(params.A_vip),
     )
 
     if not np.array_equal(r_fast, r_ref):

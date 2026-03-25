@@ -6,234 +6,306 @@
 
 ---
 
-## Current State of the Project (as of 2026-03-19)
+## Current State of the Project (as of 2026-03-20)
 
 ### What exists and is valid
 
 | Resource | Status | Location | Notes |
 |---|---|---|---|
-| Raw calcium imaging data | Available | `AD_data/1mo_post_injection/`, `3mo_post_injection/`, `6mo_post_injection/` | 19 genotypes at 1mo, fewer at 3mo/6mo |
-| Target rate computation script | Written | `scripts/compute_target_rates.py` | Formula: `mean(F) / t_recording` |
-| Computed target rate JSONs | Generated | `AD_data/summary/targets_{1mo,3mo,6mo}.json` | Validated |
-| Data processing documentation | Written | `docs/data/fitting_roadmap.md` | Documents formula, genotype mapping, CLI commands |
-| **WT 1mo article params** | **CONVERGED** | `params/new/WT_1mo_article.json` | loss=1e-4; PYR=2.487, SOM=3.248, PV=1.414, VIP=2.517 — targets are article median values; boxplot matches article figure |
-| **WT_APP 1mo article params** | **CONVERGED** | `params/new/WT_APP_1mo_article.json` | loss=9.8e-5; PYR=3.279, SOM=3.167, PV=3.166, VIP=2.501 |
+| Spike rate data (direct Hz) | Available | `AD_data/AD_spikes/datafiles/firing_rate_data.csv` | 30 rows: genotype × timepoint; `per_neuron_mean` is the optimization target |
+| Data documentation | Written | `docs/data/fitting_roadmap.md` | Genotype mapping, target values, CLI commands |
+| Model simplification | Done | `docs/changes_removed_connections.md` | `w_vv` and `w_ps` removed; all JSON files updated silently |
 
-> **Model simplification (2026-03-19)**: Two biologically unsupported connections have been removed from the model (see `docs/changes_removed_connections.md`): `w_vv` (VIP→VIP self-inhibition) and `w_ps` (PV→SOM cross-inhibition). Both were absent from the reference circuit schematic. The new article param files were fitted with this simplified model. Old JSON files with `w_vv`/`w_ps` keys are silently ignored at load time.
+> **Model simplification**: Two biologically unsupported connections have been removed: `w_vv` (VIP→VIP self-inhibition) and `w_ps` (PV→SOM cross-inhibition). Both were absent from the reference circuit schematic. Old JSON files with these keys are silently ignored at load time.
 
 ### Parameter file convention going forward
 
 All ring-level analyses use:
-- **WT**: `params/new/WT_1mo_article.json`
-- **WT_APP**: `params/new/WT_APP_1mo_article.json`
+- **WT circuit**: `params/new/WT_1mo_article.json`
+- **WT ring**: `params/new/WT_1mo_article_ring.json` *(w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg)*
+- **WT_APP circuit**: `params/new/WT_APP_1mo_article.json`
+- **WT_APP ring**: `params/new/WT_APP_1mo_article_ring.json`
 
-KO conditions (a7_KO, b2_KO, a5_KO) are simulated either via zero-activation on the WT params (Option A) or via dedicated fits (Option B — not yet done). See Section 2.5 of `roadmap_article.md` for strategy discussion.
-
-> **Note on targets**: The article params were fitted to the published article's median values (PYR=2.487 Hz, SOM=3.248 Hz, PV=1.414 Hz, VIP=2.517 Hz) rather than the `mean(F)/t` computed rates. This was motivated by the systematic offsets between the formula's output and the reported medians, and by the desire to match the paper's reference point. The boxplot of simulated vs. experimental rates matches the article figure qualitatively, which is a positive validation.
+KO conditions (a7_KO, b2_KO, a5_KO) are simulated via zero-activation on the WT params (Option A). See Section 2.5 of `roadmap_article.md` for strategy discussion.
 
 ### What is missing (ordered by priority)
 
-1. **Ring calibration** — Must be run with the new article params for WT and WT_APP
-2. **All oscillation, asymmetry, diffusion, distractor analyses** — Blocked by calibration
-3. **KO conditions** — Simulated via zero-activation on WT params (Option A); no separate fit needed or planned
-4. **Parametric desensitization sweep**
-5. **3mo/6mo fits**
+1. **WT and WT_APP 1mo optimization** — Starting from scratch with new spike rate targets
+2. **Ring calibration** — Blocked by optimization
+3. **All oscillation, asymmetry, diffusion, distractor analyses** — Blocked by calibration
+4. **KO conditions** — Simulated via zero-activation on WT params (Option A)
+5. **Parametric receptor-sensitivity sweep (optional, non-default)**
+6. **3mo/6mo fits**
 
 ---
 
-## PHASE -1 — Data Validation (BLOCKING — must complete first)
 
-> **Goal**: Confirm that the target firing rates derived from calcium imaging are correct. The user has expressed uncertainty about the data processing pipeline. If the targets are wrong, all optimization is wasted.
+## PHASE 0 — WT and WT_APP Parameter Optimization
 
-### Task -1.1 — Validate data organization and file structure
-
-**What**: Manually inspect the AD_data directory structure to confirm genotype-to-folder mapping is correct.
-
-**Current structure** (1mo_post_injection):
-```
-AD_data/1mo_post_injection/
-├── WT/              (PYR — unlabelled pyramidal cells)
-├── PV_control/      (PV interneurons, Cre+ line)
-├── SST_control/     (SOM interneurons, Cre+ line)
-├── VIP_control/     (VIP interneurons, Cre+ line)
-├── a7KO_control/    (PYR in α7-KO background)
-├── b2KO_control/    (PYR in β2-KO background)
-├── a5KO_control/    (PYR in α5-KO background)
-├── WT_APP/          (PYR in APP transgenic)
-├── PV_APP/          (PV in APP transgenic)
-├── SST_APP/         (SOM in APP transgenic)
-├── VIP_APP/         (VIP in APP transgenic)
-├── a7KO_APP/        (PYR in α7-KO × APP)
-├── b2KO_APP/        (PYR in β2-KO × APP)
-├── a5KO_APP/        (PYR in α5-KO × APP)
-├── WT_APP_reexp/    (PYR in APP + receptor re-expression rescue)
-├── a7KO_APP_reexp/  (PYR in α7-KO × APP + re-expression)
-├── b2KO_APP_reexp/  (PYR in β2-KO × APP + re-expression)
-├── a7b2KO_control/  (PYR in α7+β2 double KO)
-└── a7b2KO_APP/      (PYR in α7+β2 double KO × APP)
-```
-
-Each genotype folder contains `mouse_N/` subdirectories, each with `Results1.csv` ... `ResultsK.csv` + `parameters.rtf` or `parameters.txt`.
-
-**Checks to perform**:
-1. Open 2-3 sample `ResultsN.csv` files and verify: rows = timepoints (~5000), columns = individual neurons (`Mean1`...`MeanN`), values = raw fluorescence (range ~200-2000) or something else ? maybe already processed, like spiking during that time bin ? Need to double check with Koukouli.
-2. Open 2-3 `parameters.rtf`/`.txt` files and verify: recording duration `t` is parsed correctly (expect ~164.9s for most, some may differ)
-3. Cross-check mouse count per genotype against `targets_1mo.json`: e.g., WT should have 5 mice (mouse_1..6 minus one missing), PV_control should have 5, etc.
-
-**DECISION POINT**: Does the current formula `mean(F) / t_recording` make biological sense?
-- This gives a rate-like quantity in "fluorescence units per second" — NOT actual spikes/s or maybe it does ? we still need to confirm with Koukouli what the raw values represent and whether this formula is justified
-- It's a *proxy* for firing rate that preserves relative ordering across conditions
-- The fitting_roadmap.md shows validation against published article data: SST matches well (1.05×), PV is 1.47×, PYR is 1.67×, VIP is 0.77×
-- **Context**: Raw fluorescence values were tried first but were off-scale for model fitting. The `mean(F) / t_recording` formula was chosen empirically because it brings the target values into a plausible Hz-like range (1–6 Hz). This is the current working approach but still needs validation.
-- **Remaining check**: Verify that the *relative* rates between populations (PYR > SOM ≈ PV > VIP) and between conditions (e.g., APP vs control direction) are consistent with published data. The absolute values matter less since the model will be fitted to these targets — what matters is that the ordering and ratios are biologically plausible.
-
----
-
-### Task -1.2 — Cross-validate computed rates against published data
-
-**What**: Compare the computed target rates (from `AD_data/summary/targets_1mo.json`) against the original article's reported values.
-
-**Computed 1mo target rates** (from `targets_1mo.json`):
-| Cell type | Genotype folder | Computed mean | Computed median | n_files | n_mice |
-|---|---|---|---|---|---|
-| PYR | WT | 4.143 | 3.785 | 37 | 5 |
-| PV | PV_control | 2.079 | 1.602 | 23 | 5 |
-| SOM | SST_control | 3.423 | 2.976 | 26 | 5 |
-| VIP | VIP_control | 1.933 | 1.857 | 27 | 4 |
-| PYR (a7KO) | a7KO_control | 3.513 | 3.387 | 21 | 4 |
-| PYR (b2KO) | b2KO_control | 4.799 | 4.851 | 33 | 4 |
-| PYR (a5KO) | a5KO_control | 3.790 | 3.722 | 44 | 6 |
-
-**Sanity checks**:
-What's the impact of the nicotinic KOs on PYR rates? Does this match the published article's directionality?
-
----
-
-### Task -1.3 — Verify recording duration parsing
-
-**What**: The `parse_duration()` function in `compute_target_rates.py` uses a regex `t\s*=\s*([\d.]+)` to extract duration from `parameters.rtf`. Some `.rtf` files have rich-text formatting that could cause misparses.
-
-**Check**: Run the script and print per-mouse durations:
-```bash
-cd /home/val/Depot_Github/internship_ENS
-python -c "
-from scripts.compute_target_rates import parse_duration
-from pathlib import Path
-root = Path('AD_data/1mo_post_injection')
-for geno in sorted(root.iterdir()):
-    if not geno.is_dir(): continue
-    for mouse in sorted(geno.iterdir()):
-        if not mouse.is_dir(): continue
-        t = parse_duration(mouse)
-        print(f'{geno.name}/{mouse.name}: t={t:.1f}s')
-" 2>&1 | head -50
-```
-
-**What to look for**:
-- All durations should be ~164.9s (the default). If some are very different (e.g., 330s), those mice have longer recordings and the rate computation is still correct (mean(F)/t normalizes for duration)
-- If any durations are the fallback 164.897, check that the parameters file actually doesn't exist or can't be parsed
-You can check in a different level of hierarchy if needed, it might be at a higher level to define the recording duration for all mice in that genotype.
----
-
-### Task -1.4 — Decision: use mean or median for fitting targets
-
-The `fitting_roadmap.md` uses **means** as default targets. The per-mouse variance is high (e.g., PV_control: mouse_2=0.91, mouse_5=5.95). Using means vs medians affects the targets:
-
-| Cell type | Mean | Median | Difference |
-|---|---|---|---|
-| PYR | 4.143 | 3.785 | +9% |
-| PV | 2.079 | 1.602 | +30% |
-| SOM | 3.423 | 2.976 | +15% |
-| VIP | 1.933 | 1.857 | +4% |
-
-**Recommendation**: Use **means** for consistency (the optimization already uses `--target_pyr 4.143` etc.), but note the sensitivity to outlier mice. The PV mean is heavily influenced by one high-firing mouse (mouse_5: 5.95). Consider reporting both in the paper.
-
-**DECISION POINT for user**: Mean or median? This is a judgment call. Mean is standard but outlier-sensitive. Median is robust but ignores the tails.
-
----
-
-## PHASE 0 — WT Parameter Optimization — COMPLETE for WT and WT_APP at 1mo
-
-> **Goal**: Achieve a converged WT parameter fit where all 4 populations match target rates and all 3 KO conditions produce correct PYR rate changes. This is the foundation for everything downstream.
+> **Goal**: Achieve converged parameter fits where all 4 populations match spike rate targets. This is the foundation for everything downstream.
 >
-> **Status**: `params/new/WT_1mo_article.json` (loss=1e-4) and `params/new/WT_APP_1mo_article.json` (loss=9.8e-5) are converged. Boxplot matches article figure. Model was simplified by removing `w_vv` and `w_ps` (see `docs/changes_removed_connections.md`). Tasks 0.1–0.3 below are kept for reference but are superseded by the article params.
+> **Status**: TODO — starting from scratch with direct spike rate data from `AD_data/AD_spikes/datafiles/firing_rate_data.csv`.
 
 ---
 
-### Task 0.2 — WT and WT_APP 1mo optimization (DONE)
+### Task 0.2 — WT and WT_APP 1mo optimization
 
-**Targets**: Taken from `data_1mo_article.md` — the published article's median activity values (transients/min), used directly as fitting targets. No KO PYR constraints were included because `data_1mo_article.md` only covers WT and WT_APP per-population rates.
+**Data source**: `AD_data/AD_spikes/datafiles/firing_rate_data.csv`, column `per_neuron_mean`.
 
-| Population | WT target | WT_APP target |
-|---|---|---|
-| PYR | 2.487 | 3.279 |
-| SOM | 3.248 | 3.167 |
-| PV  | 1.414 | 3.166 |
-| VIP | 2.517 | 2.501 |
+**Targets**:
 
-**Commands used**:
+| Population | WT (1mo) | WT_APP (1mo) | Source genotype (CSV) |
+|---|---|---|---|
+| PYR | 8.214 | 12.466 | WT / WT-APP |
+| SOM | 4.295 | 4.814 | SST-Cre / SST-Cre_APP |
+| PV  | 4.073 | 4.241 | PV-Cre_control / PV-Cre_APP |
+| VIP | 6.051 | 5.551 | VIP-Cre_control / VIP-Cre_APP |
+
+**Optional KO PYR constraints** (add to constrain the KO populations simultaneously):
+
+| KO | WT background | WT_APP background | Source (CSV) |
+|---|---|---|---|
+| α7-KO | 17.539 | 13.599 | a7_KO_control / a7_KO_APP |
+| β2-KO | 17.965† | 19.109 | b2_KO_control† / b2_KO_APP |
+| α5-KO | 9.285  | 3.113  | a5_KO / a5_KO_APP |
+
+† b2_KO_control: per-neuron data truncated in source CSV; value is `sampled_mean`.
+
+---
+
+Two optimization modes are available. **Mode 1** (firing rate only) is faster and recommended first. **Mode 2** (firing rate + bump quality) adds a soft constraint ensuring the ring forms a stable bump post-stimulus; run after Mode 1 converges using its output as a warm start.
+
+> **Current branch strategy update (2026-03-25)**:
+> - Keep `sigma_pyr_deg` fixed to `15` in optimization commands.
+> - Keep `tau_adapt_som=150` fixed.
+> - Free transfer-function shape parameters (`Theta_*`, `alpha_*`, `g`) instead of freezing article table values, to test whether rate-scale fitting requires a different transfer regime.
+
+---
+
+##### Mode 1 — Firing rate only
+
+#### Variant A — 4-population fit only (WT)
+
+Fit only the 4 per-population rates; no KO constraints. Recommended first pass.
+
 ```bash
-# WT fit
-python -m circuit_model optimize \
-  --target_pyr 2.487 \
-  --target_som 3.248 \
-  --target_pv  1.414 \
-  --target_vip 2.517 \
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 \
+  --target_som 4.295 \
+  --target_pv  4.073 \
+  --target_vip 6.051 \
   --optimizer chaining \
   --n_samples 50000 \
-  --n_workers 8 \
-  --save_best_json params/new/WT_1mo_article.json \
-  --log_file figs/optim/1mo/log.jsonl
-
-# WT_APP fit
-python -m circuit_model optimize \
-  --target_pyr 3.279 \
-  --target_som 3.167 \
-  --target_pv  3.166 \
-  --target_vip 2.501 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --n_workers 8 \
-  --save_best_json params/new/WT_APP_1mo_article.json \
-  --log_file figs/optim/1mo_APP/log.jsonl
+  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
+  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ring.json \
+  --log_file figs/optim/1mo/ring_firing_rate/log.jsonl
 ```
 
-**Results**:
-| | Loss | PYR | SOM | PV | VIP |
-|---|---|---|---|---|---|
-| WT | 1e-4 | 2.487 | 3.248 | 1.414 | 2.517 |
-| WT_APP | 9.8e-5 | 3.279 | 3.167 | 3.166 | 2.501 |
+#### Variant B — 4-population + KO PYR constraints (WT)
 
-Both fits converged. Boxplot of simulated rates matches the article figure.
+Adds the 3 KO PYR targets as optional constraints. More constrained; use after Variant A converges or when KO predictions are needed.
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 \
+  --target_som 4.295 \
+  --target_pv  4.073 \
+  --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 \
+  --target_beta2_ko_pyr  17.965 \
+  --target_alpha5_ko_pyr 9.285 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
+  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_ko.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ko_ring.json \
+  --log_file figs/optim/1mo_ko/ring_firing_rate/log.jsonl
+```
+
+#### Variant C — 4-population fit only (WT_APP)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 \
+  --target_som 4.814 \
+  --target_pv  4.241 \
+  --target_vip 5.551 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
+  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ring.json \
+  --log_file figs/optim/1mo_APP/ring_firing_rate/log.jsonl
+```
+
+#### Variant D — 4-population + KO_APP PYR constraints (WT_APP)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 \
+  --target_som 4.814 \
+  --target_pv  4.241 \
+  --target_vip 5.551 \
+  --target_alpha7_ko_pyr 13.599 \
+  --target_beta2_ko_pyr  19.109 \
+  --target_alpha5_ko_pyr 3.113 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
+  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_ko.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ko_ring.json \
+  --log_file figs/optim/1mo_APP_ko/ring_firing_rate/log.jsonl
+```
 
 ---
 
-### Task 0.3 — Validate converged WT fit
+##### Mode 2 — Ring optimization with Turing instability constraint
 
-**What**: Once optimization converges, validate the fitted parameters.
+Fit jointly on the ring with an analytical Turing penalty. The penalty enforces `Φ'(I*_PYR) × w_pyr_pyr_inter ≥ 1 + turing_margin`, a necessary condition for the ring to support a localised bump state. Evaluated analytically from the ring rest rates — no additional simulation required. `tau_adapt` parameters are left free (not frozen).
+
+#### Variant A-turing — 4-population fit only (WT)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 \
+  --target_som 4.295 \
+  --target_pv  4.073 \
+  --target_vip 6.051 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15" \
+  --freeze "tau_s,sigma_pyr_deg" \
+  --turing_weight 2.0 \
+  --turing_margin 0.1 \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_turing.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_turing_ring.json \
+  --log_file figs/optim/1mo/ring_turing/log.jsonl
+```
+
+#### Variant B-turing — 4-population + KO PYR constraints (WT)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 \
+  --target_som 4.295 \
+  --target_pv  4.073 \
+  --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 \
+  --target_beta2_ko_pyr  17.965 \
+  --target_alpha5_ko_pyr 9.285 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15" \
+  --freeze "tau_s,sigma_pyr_deg" \
+  --turing_weight 2.0 \
+  --turing_margin 0.1 \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_turing_ko.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_turing_ko_ring.json \
+  --log_file figs/optim/1mo_ko/ring_turing/log.jsonl
+```
+
+#### Variant C-turing — 4-population fit only (WT_APP)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 \
+  --target_som 4.814 \
+  --target_pv  4.241 \
+  --target_vip 5.551 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15" \
+  --freeze "tau_s,sigma_pyr_deg" \
+  --turing_weight 2.0 \
+  --turing_margin 0.1 \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_turing.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ring.json \
+  --log_file figs/optim/1mo_APP/ring_turing/log.jsonl
+```
+
+#### Variant D-turing — 4-population + KO_APP PYR constraints (WT_APP)
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 \
+  --target_som 4.814 \
+  --target_pv  4.241 \
+  --target_vip 5.551 \
+  --target_alpha7_ko_pyr 13.599 \
+  --target_beta2_ko_pyr  19.109 \
+  --target_alpha5_ko_pyr 3.113 \
+  --optimizer chaining \
+  --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15" \
+  --freeze "tau_s,sigma_pyr_deg" \
+  --turing_weight 2.0 \
+  --turing_margin 0.1 \
+  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ko.json \
+  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ko_ring.json \
+  --log_file figs/optim/1mo_APP_ko/ring_turing/log.jsonl
+```
+
+---
+
+**Recommended order**: A → B if KO coverage needed; C → D if KO_APP coverage needed. The Turing penalty biases the optimiser towards parameter regimes that analytically support bump formation, without requiring costly bump simulations.
+
+---
+
+### Task 0.3 — Validate WT fit
+
+**What**: After optimization converges, validate the fitted parameters.
 
 **Validation steps**:
 1. **Single run visualization**:
    ```bash
    python -m circuit_model run \
-     --params_json params/new/WT_1mo_article.json \
      --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --save_plot figs/data/fit_validation_WT_run.png
-   ```
-   Verify: all 4 populations fire at reasonable rates, no population is silent or saturating.
+     --condition WT
 
-2. **8-condition study** (zero-parameter prediction for KO and APP):
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition WT_APP
+
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition a7_KO
+  
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition a7_KO_APP
+  
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition b2_KO
+  
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition b2_KO_APP
+  
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition a5_KO
+  
+   python -m circuit_model run \
+     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
+     --condition a5_KO_APP
+   ```
+   Verify: all 4 populations fire at reasonable rates, no population is silent or saturating. Output figures are auto-saved in the default command-specific folders.
+
+2. **8-condition sanity check** (KO predictions on WT fit):
    ```bash
    python -m circuit_model study \
-     --params_json params/new/WT_1mo_article.json \
-     --n_runs 50 --noise_type white --n_workers 8 \
-     --save_plot figs/data/study_WT_params_all8.png
+     --n_runs 5000 --noise_type white --n_workers 8
    ```
-   Verify: KO PYR rates match targets within ~20%. APP rates are a free prediction.
+  Verify: this command runs all 8 conditions (`WT`, `WT_APP`, `a7_KO`, `a7_KO_APP`, `b2_KO`, `b2_KO_APP`, `a5_KO`, `a5_KO_APP`). KO PYR rates should match targets within ~20% when run from the WT fit, and KO_APP trends should remain consistent with the WT_APP family.
 
 3. **Biological plausibility check**:
-   - PYR adaptation timescale should be ~100-500 ms (biological range)
-   - SOM adaptation timescale should be ~1000-3000 ms (slow, biological)
+   - PYR adaptation timescale should be ~100-1000 ms (biological range; frozen at 600 ms)
    - Transfer function thresholds should be positive
    - Synaptic weights should be positive
    - All receptor currents should be positive
@@ -256,9 +328,11 @@ Both fits converged. Boxplot of simulated rates matches the article figure.
 | a7_KO | `act_alpha7 = 0`, `g_alpha7 = 0` |
 | b2_KO | `act_beta2 = 0` |
 | a5_KO | `act_alpha5 = 0` |
-| WT_APP | `act_alpha7 = 0.10`, `act_beta2 = 0.875`, `act_alpha5 = 0.60` |
+| WT_APP | use WT_APP fitted parameter family (no receptor activation override) |
 
-**Verification**: Already done in Task 0.3 step 2 (the `study` command runs all 8 conditions).
+**Verification**:
+- WT + KO conditions: Task 0.3 step 2.
+- WT_APP + KO_APP conditions: run the same `study` workflow from the WT_APP fitted parameter file.
 
 ---
 
@@ -269,31 +343,16 @@ Both fits converged. Boxplot of simulated rates matches the article figure.
 **Commands**:
 ```bash
 # --- WT calibration ---
-python -m circuit_model ring-noise-floor   
-  --conditions WT   
-  --w_inter_values 3 4 5 6 7 7.5 8 8.1 8.25 8.3 8.4 8.5 9  
-  --params_json params/new/WT_1mo_article.json 
+python -m circuit_model ring-noise-floor \
+  --conditions WT WT_APP \
+  --w_inter_values 1 2 3 4 5 6 7 8 \
+  --w_pv_value 10 \
   --n_baseline 100 --sigma_pyr_deg 15 --n_workers 8
 
 python -m circuit_model ring-calibrate \
   --conditions WT \
   --amplitudes 2 4 6 8 10 12 15 18 22 \
   --w_inter_values 3 4 5 6 7 8 9 \
-  --params_json params/new/WT_1mo_article.json \
-  --n_trials 200 --sigma_pyr_deg 15 --n_workers 8
-
-# --- WT_APP calibration ---
-python -m circuit_model ring-noise-floor \
-  --conditions WT \
-  --params_json params/new/WT_APP_1mo_article.json \
-  --w_inter_values 3 4 5 6 7 8 9 \
-  --n_baseline 200 --sigma_pyr_deg 15 --n_workers 8
-
-python -m circuit_model ring-calibrate \
-  --conditions WT \
-  --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --w_inter_values 1 2 3 4 5 6 7 8 9 10 11 12 \
-  --params_json params/new/WT_APP_1mo_article.json \
   --n_trials 200 --sigma_pyr_deg 15 --n_workers 8
 ```
 
@@ -315,7 +374,14 @@ python -m circuit_model ring-calibrate \
 
 KO conditions (a7_KO, b2_KO, a5_KO) are simulated using Option A only: the WT parameter set (`params/new/WT_1mo_article.json`) with the relevant receptor activation zeroed, and the WT calibration values (AMP_WT, W_INTER_WT, W_PV_WT). This is the only viable approach because KO calcium imaging data provides PYR rates only — a full re-optimization would be underdetermined.
 
-WT_APP uses its own fitted parameter set (`params/new/WT_APP_1mo_article.json`) with its own calibration values (AMP_APP, W_INTER_APP, W_PV_APP). The disease effect is captured entirely in the different local circuit parameters, not in the receptor activation levels (which are kept at 1.0 for ring runs). All ring commands for WT_APP use `--condition WT` with the APP params file.
+WT_APP uses its own fitted parameter set (`params/new/WT_APP_1mo_article_ko.json`) with its own calibration values (AMP_APP, W_INTER_APP, W_PV_APP). The disease effect is captured entirely by the WT_APP parameter family (not by APP receptor desensitization sampling).
+
+In ring and study workflows, KO variants are implemented by setting the targeted receptor activation to 0:
+- `a7_KO`: `act_alpha7 = 0`, `g_alpha7 = 0`
+- `b2_KO`: `act_beta2 = 0`
+- `a5_KO`: `act_alpha5 = 0`
+
+KO_APP applies the same KO rule on the WT_APP parameter family.
 
 ---
 
@@ -326,9 +392,10 @@ WT_APP uses its own fitted parameter set (`params/new/WT_APP_1mo_article.json`) 
 > **PREREQUISITE**: Task 0.6 complete — both calibrations done.
 >
 > **Ring parameter convention**:
-> - WT commands: `--params_json params/new/WT_1mo_article.json --amplitude AMP_WT --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15`
-> - WT_APP commands: `--params_json params/new/WT_APP_1mo_article.json --amplitude AMP_APP --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15`
-> - KO commands (Phase 2): use WT params + WT calibration values + `--condition a7_KO` etc.
+> - WT commands: `--amplitude AMP_WT --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15`
+> - WT_APP commands: `--amplitude AMP_APP --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15`
+> - KO commands (Phase 2): WT family + WT calibration values + `--condition a7_KO` etc.
+> - KO_APP commands (Phase 3): WT_APP family + WT_APP calibration values + `--condition a7_KO_APP` etc.
 
 ### Task 1.1 — Bump baseline ring-run (WT and WT_APP)
 
@@ -339,17 +406,15 @@ WT_APP uses its own fitted parameter set (`params/new/WT_APP_1mo_article.json`) 
 # WT
 python -m circuit_model ring-run \
   --condition WT \
-  --params_json params/new/WT_1mo_article.json \
-  --amplitude AMP_WT --delay_ms 8000 \
-  --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
+  --amplitude 4 --delay_ms 8000 \
+  --w_pyr_pyr_inter 1 --w_pv_global 4 --sigma_pyr_deg 15 \
   --seed 42
 
 # WT_APP
 python -m circuit_model ring-run \
   --condition WT \
-  --params_json params/new/WT_APP_1mo_article.json \
-  --amplitude AMP_APP --delay_ms 8000 \
-  --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
+  --amplitude 4 --delay_ms 8000 \
+  --w_pyr_pyr_inter 1 --w_pv_global 5 --sigma_pyr_deg 15 \
   --seed 42
 ```
 
@@ -376,7 +441,6 @@ python -m circuit_model ring-run \
 python -m circuit_model ring-oscillation-study \
   --conditions WT \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -387,7 +451,6 @@ python -m circuit_model ring-oscillation-study \
 python -m circuit_model ring-oscillation-study \
   --conditions WT \
   --amplitudes AMP_APP \
-  --params_json params/new/WT_APP_1mo_article.json \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -420,7 +483,6 @@ python -m circuit_model ring-oscillation-study \
 python -m circuit_model ring-oscillation-study \
   --conditions WT \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 200 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -430,7 +492,6 @@ python -m circuit_model ring-oscillation-study \
 python -m circuit_model ring-oscillation-study \
   --conditions WT \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --params_json params/new/WT_APP_1mo_article.json \
   --n_trials 200 \
   --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -454,7 +515,6 @@ python -m circuit_model ring-oscillation-study \
 # WT — amplitude sweep
 python -m circuit_model ring-asymmetry \
   --conditions WT \
-  --params_json params/new/WT_1mo_article.json \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
@@ -464,7 +524,6 @@ python -m circuit_model ring-asymmetry \
 # WT_APP — amplitude sweep
 python -m circuit_model ring-asymmetry \
   --conditions WT \
-  --params_json params/new/WT_APP_1mo_article.json \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
@@ -493,7 +552,6 @@ python -m circuit_model ring-asymmetry \
 # WT
 python -m circuit_model ring-diffusion \
   --conditions WT \
-  --params_json params/new/WT_1mo_article.json \
   --amplitude AMP_WT \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
@@ -502,7 +560,6 @@ python -m circuit_model ring-diffusion \
 # WT_APP
 python -m circuit_model ring-diffusion \
   --conditions WT \
-  --params_json params/new/WT_APP_1mo_article.json \
   --amplitude AMP_APP \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
@@ -530,7 +587,6 @@ python -m circuit_model ring-diffusion \
 python -m circuit_model ring-bump-decay-study \
   --conditions WT \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --params_json params/new/WT_1mo_article.json \
   --delay_ms 15000 \
   --n_trials 200 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
@@ -540,7 +596,6 @@ python -m circuit_model ring-bump-decay-study \
 python -m circuit_model ring-bump-decay-study \
   --conditions WT \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --params_json params/new/WT_APP_1mo_article.json \
   --delay_ms 15000 \
   --n_trials 200 \
   --w_pyr_pyr_inter W_INTER_APP --w_pv_global W_PV_APP --sigma_pyr_deg 15 \
@@ -568,7 +623,6 @@ python -m circuit_model ring-bump-decay-study \
 python -m circuit_model ring-osc-distractor-study \
   --conditions WT \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --distractor_factors 0.5 1.0 1.5 \
   --offsets_deg 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 \
   --delay1_ms 1500 --distractor_duration_ms 200 --delay2_ms 4000 \
@@ -581,7 +635,6 @@ python -m circuit_model ring-osc-distractor-study \
 python -m circuit_model ring-osc-distractor-study \
   --conditions WT \
   --amplitudes AMP_APP \
-  --params_json params/new/WT_APP_1mo_article.json \
   --distractor_factors 0.5 1.0 1.5 \
   --offsets_deg 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 \
   --delay1_ms 1500 --distractor_duration_ms 200 --delay2_ms 4000 \
@@ -616,7 +669,6 @@ python -m circuit_model ring-osc-distractor-study \
 python -m circuit_model ring-osc-phase-distractor \
   --conditions WT \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --distractor_factors 1.0 \
   --offsets_deg 150 170 \
   --delay1_base_ms 500 \
@@ -630,7 +682,6 @@ python -m circuit_model ring-osc-phase-distractor \
 python -m circuit_model ring-osc-phase-distractor \
   --conditions WT \
   --amplitudes AMP_APP \
-  --params_json params/new/WT_APP_1mo_article.json \
   --distractor_factors 1.0 \
   --offsets_deg 150 170 \
   --delay1_base_ms 500 \
@@ -685,7 +736,6 @@ python -m circuit_model ring-osc-phase-distractor \
 python -m circuit_model ring-study \
   --conditions WT a7_KO b2_KO a5_KO \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 1000 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --n_workers 8 --error_band sem
@@ -713,7 +763,6 @@ python -m circuit_model ring-study \
 python -m circuit_model ring-oscillation-study \
   --conditions WT a7_KO b2_KO a5_KO \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -723,7 +772,6 @@ python -m circuit_model ring-oscillation-study \
 python -m circuit_model ring-oscillation-study \
   --conditions WT a7_KO b2_KO a5_KO \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 200 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --min_freq_hz 1.0 --max_freq_hz 15.0 \
@@ -753,7 +801,6 @@ python -m circuit_model ring-oscillation-study \
 # Amplitude sweep across all KOs
 python -m circuit_model ring-asymmetry \
   --conditions WT a7_KO b2_KO a5_KO \
-  --params_json params/new/WT_1mo_article.json \
   --amplitudes 2 4 6 8 10 12 15 18 22 27 33 40 \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
@@ -783,7 +830,6 @@ python -m circuit_model ring-asymmetry \
 ```bash
 python -m circuit_model ring-diffusion \
   --conditions WT a7_KO b2_KO a5_KO \
-  --params_json params/new/WT_1mo_article.json \
   --amplitude AMP_WT \
   --n_trials 500 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
@@ -808,7 +854,6 @@ python -m circuit_model ring-diffusion \
 python -m circuit_model ring-osc-distractor-study \
   --conditions WT a7_KO b2_KO a5_KO \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --distractor_factors 0.5 1.0 1.5 \
   --offsets_deg 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 \
   --delay1_ms 1500 --distractor_duration_ms 200 --delay2_ms 4000 \
@@ -859,18 +904,17 @@ python -m circuit_model ring-osc-distractor-study \
 
 ## PHASE 3 — KO×APP Interaction Study (Article Section 5)
 
-> **Goal**: Characterize the additional effect of APP on top of each KO. The WT vs WT_APP baseline comparison is already established in Phase 1. This phase focuses on the 8-condition interaction matrix and on the desensitization landscape.
+> **Goal**: Characterize the additional effect of the WT_APP parameter family on top of each KO. The WT vs WT_APP baseline comparison is already established in Phase 1. This phase focuses on the 8-condition interaction matrix.
 
 ### Task 3.1 — Full 8-condition ring study
 
-**What**: Run ring-study for all 8 conditions (WT, WT_APP-via-desensitization, 3×KO, 3×KO_APP) using WT params + APP desensitization levels. Note: this is distinct from the Phase 1 WT_APP which uses the fitted APP params. Here we use the nAChR desensitization formulation to characterize the KO×APP interaction.
+**What**: Run ring-study for all 8 conditions (WT, WT_APP, 3×KO, 3×KO_APP), with WT and WT_APP each using their own fitted parameter family. KO and KO_APP are obtained only by receptor-activation zeroing within each family.
 
 **Command**:
 ```bash
 python -m circuit_model ring-study \
   --conditions WT WT_APP a7_KO a7_KO_APP b2_KO b2_KO_APP a5_KO a5_KO_APP \
   --amplitudes AMP_WT \
-  --params_json params/new/WT_1mo_article.json \
   --n_trials 1000 \
   --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15 \
   --n_workers 8 --error_band sem
@@ -880,11 +924,11 @@ python -m circuit_model ring-study \
 
 | Pair | APP additional effect | Expected |
 |---|---|---|
-| a7_KO → a7_KO_APP | α7 already gone → APP hits remaining α5 (60%) and β2 (87.5%) | Small (saturation) |
-| b2_KO → b2_KO_APP | β2 already gone → APP hits α7 (10%) and α5 (60%) | Moderate |
-| a5_KO → a5_KO_APP | α5 already gone → APP hits α7 (10%) and β2 (87.5%) | Moderate |
+| a7_KO → a7_KO_APP | Add WT_APP family shift under fixed α7 KO | Data-driven (from fitted families) |
+| b2_KO → b2_KO_APP | Add WT_APP family shift under fixed β2 KO | Data-driven (from fitted families) |
+| a5_KO → a5_KO_APP | Add WT_APP family shift under fixed α5 KO | Data-driven (from fitted families) |
 
-**Key question**: Does a7_KO_APP ≈ a7_KO? If yes → α7 is the dominant driver of APP WM degradation.
+**Key question**: Which KO background amplifies or attenuates the WT→WT_APP shift in bump quality metrics?
 
 **Figure destination**: Fig 10
 
@@ -907,11 +951,11 @@ python -m circuit_model ring-study \
 
 ---
 
-## PHASE 4 — Parametric Desensitization Study (Article Section 5.3)
+## PHASE 4 — Receptor-Sensitivity Sweep Study (Article Section 5.3, optional)
 
-> **Goal**: Map the continuous landscape of receptor desensitization effects on WM quality.
+> **Goal**: Map how continuous receptor-activation changes affect WM metrics as a mechanistic stress test.
 
-### Task 4.1 — α7 desensitization sweep
+### Task 4.1 — α7 activation sweep
 
 **What**: Vary act_alpha7 from 0 to 1 in 10 steps, keeping β2 and α5 at WT levels. For each, run ring-study and extract bump metrics.
 
@@ -919,8 +963,7 @@ python -m circuit_model ring-study \
 
 **Command** (new script — see Code 5.2):
 ```bash
-python scripts/parametric_desensitization_sweep.py \
-  --params_json params/new/WT_1mo_article.json \
+python scripts/receptor_sensitivity_sweep.py \
   --sweep_param act_alpha7 \
   --sweep_values 0.0 0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.0 \
   --n_trials 500 \
@@ -935,15 +978,15 @@ python scripts/parametric_desensitization_sweep.py \
 - Diffusion coefficient B̂
 - Amplitude
 
-**Output**: Line plots of each metric vs act_alpha7, showing how WM quality degrades with increasing desensitization.
+**Output**: Line plots of each metric vs act_alpha7.
 
-**Key question**: Is there a threshold in α7 desensitization below which oscillatory stability collapses? The APP operating point (act_alpha7 = 0.10) should be near or past this threshold.
+**Key question**: Is there an α7 activation threshold below which oscillatory stability collapses?
 
 **Figure destination**: Fig 13 (x-axis)
 
 ---
 
-### Task 4.2 — α5 desensitization sweep
+### Task 4.2 — α5 activation sweep
 
 **What**: Same as Task 4.1 but for act_alpha5.
 
@@ -953,7 +996,7 @@ python scripts/parametric_desensitization_sweep.py \
 
 ---
 
-### Task 4.3 — 2D desensitization heatmap
+### Task 4.3 — 2D activation heatmap
 
 **What**: Sweep both act_alpha7 and act_alpha5 simultaneously (21×21 grid = 441 combinations). For each, extract a single WM quality metric.
 
@@ -961,9 +1004,9 @@ python scripts/parametric_desensitization_sweep.py \
 - Primary: corrected asymmetry mean|A(t)| (lower = better)
 - Secondary: oscillation frequency stability (variance of instantaneous frequency)
 
-**Output**: 2D heatmap with act_alpha7 on x-axis, act_alpha5 on y-axis, color = WM quality. Mark the WT operating point (1.0, 1.0) and the APP operating point (0.10, 0.60).
+**Output**: 2D heatmap with act_alpha7 on x-axis, act_alpha5 on y-axis, color = WM quality.
 
-**Why**: This is the most visually compelling result for the disease story. It shows the full landscape of how dual receptor desensitization degrades WM, and places the APP condition on that landscape.
+**Why**: This characterizes model sensitivity to receptor activation strength and can reveal nonlinear operating boundaries.
 
 **Interpretation**:
 - If there's a sharp boundary (phase transition) → below this, WM is impossible regardless of network compensation
@@ -995,12 +1038,12 @@ python scripts/parametric_desensitization_sweep.py \
 
 ---
 
-### Code 5.2 — Parametric activation sweep (if --set not in ring-study)
+### Code 5.2 — Receptor-activation sweep (if --set not in ring-study)
 
 **Purpose**: For Tasks 4.1–4.3
 
 **What to implement**:
-- Script `scripts/parametric_desensitization_sweep.py` that:
+- Script `scripts/receptor_sensitivity_sweep.py` that:
   1. Accepts ranges for act_alpha7, act_alpha5, act_beta2
   2. For each combination: modifies params, runs N trial ring simulations, extracts metrics
   3. Saves results to a single CSV
@@ -1044,7 +1087,7 @@ python scripts/parametric_desensitization_sweep.py \
 | Figure | Content | Data source (Tasks) | Status |
 |---|---|---|---|
 | **Fig 1** | Circuit diagram (4 populations + nAChR) + Ring schematic | Manual illustration | To draw |
-| **Fig 2** | Fit validation: simulated vs experimental rates, WT and WT_APP | Task 0.2 | To do |
+| **Fig 2** | Fit validation: simulated vs experimental rates, WT and WT_APP | Tasks 0.2–0.3 | To do |
 | **Fig 3** | WT vs WT_APP bump baseline: dashboard + oscillation + asymmetry slope + MSD | Tasks 1.1–1.5 | To do |
 | **Fig 4** | Distractor: merge/alternate map + PLV curves + phase gating, WT vs WT_APP | Tasks 1.7–1.8 | To do |
 | **Fig 5** | Delay-period firing rates per population at bump/background, WT vs WT_APP | Task 2.0 | To do (needs Code 5.1) |
@@ -1053,11 +1096,11 @@ python scripts/parametric_desensitization_sweep.py \
 | **Fig 8** | KO distractor: PLV curves per KO + merge threshold comparison | Task 2.5 | To do |
 | **Fig 9** | KO comparison summary: directional matrix + bar plots | Task 2.6 | To do (needs Code 5.3) |
 | **Fig 10** | 8-condition ring study: KO×APP interaction matrix | Task 3.1 | To do |
-| **Fig 11** | Parametric desensitization: 2D heatmap (α7 × α5 → WM quality) | Tasks 4.1–4.3 | To do (needs Code 5.2) |
+| **Fig 11** | Receptor-activation sweep: 2D heatmap (α7 × α5 → WM quality) | Tasks 4.1–4.3 | To do (needs Code 5.2) |
 | **Suppl. S1** | Calibration heatmaps: WT and WT_APP parameter spaces | Task 0.6 | To do |
 | **Suppl. S2** | Rate-matched comparison | Task 3.2 | To do |
 | **Suppl. S3** | Bump decay study: WT vs WT_APP | Task 1.6 | To do |
-| **Suppl. S4** | WT vs WT_APP Jacobian + parameter comparison | Task 0.3 | To do |
+| **Suppl. S4** | WT vs WT_APP parameter comparison (post-fit) | Task 0.3 | To do |
 | **Suppl. S5** | KO oscillation amplitude sweep | Task 2.2 | To do |
 
 ---

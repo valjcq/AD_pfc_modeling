@@ -12,6 +12,7 @@ Note: Requires matplotlib. Install with: pip install matplotlib
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
@@ -96,7 +97,7 @@ def plot_firing_rates(
     show_legend: bool = True,
     time_range: Optional[tuple[float, float]] = None,
     show_transient: bool = True,
-    unit: str = "transients/min",
+    unit: str = "Hz",
 ):
     """
     Plot firing rates over time for all 4 populations.
@@ -108,7 +109,7 @@ def plot_firing_rates(
         show_legend: Whether to show legend
         time_range: Optional (t_start, t_end) in ms to zoom in
         show_transient: Whether to show transient window markers (if present)
-        unit: Rate unit for Y-axis label (default: "transients/min")
+        unit: Rate unit for Y-axis label (default: "Hz")
 
     Returns:
         The matplotlib axis object
@@ -189,7 +190,6 @@ def plot_adaptation(
         _add_transient_markers(ax, result.transient_window, time_range, add_legend=False)
 
     ax.plot(t, I_adapt[:, 0], label="I_adapt (PYR)", color=ADAPTATION_COLORS["PYR"], linewidth=1.5)
-    ax.plot(t, I_adapt[:, 1], label="I_adapt (SOM)", color=ADAPTATION_COLORS["SOM"], linewidth=1.5)
 
     ax.set_xlabel("Time (ms)", fontsize=11)
     ax.set_ylabel("Adaptation Current", fontsize=11)
@@ -211,7 +211,7 @@ def plot_simulation_dashboard(
     figsize: tuple[float, float] = (12, 8),
     save_path: Optional[str] = None,
     show: bool = True,
-    unit: str = "transients/min",
+    unit: str = "Hz",
 ):
     """
     Create a comprehensive dashboard showing simulation results.
@@ -228,7 +228,7 @@ def plot_simulation_dashboard(
         figsize: Figure size (width, height)
         save_path: If provided, save figure to this path
         show: Whether to call plt.show()
-        unit: Rate unit for Y-axis labels (default: "transients/min")
+        unit: Rate unit for Y-axis labels (default: "Hz")
 
     Returns:
         The matplotlib figure object
@@ -278,6 +278,7 @@ def plot_simulation_dashboard(
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
     if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Figure saved to: {save_path}")
 
@@ -300,7 +301,7 @@ def plot_mean_rates_bar(
     target: Optional[np.ndarray] = None,
     ax=None,
     title: str = "Mean Firing Rates",
-    unit: str = "transients/min",
+    unit: str = "Hz",
 ):
     """
     Plot mean firing rates as a bar chart, optionally with target comparison.
@@ -310,7 +311,7 @@ def plot_mean_rates_bar(
         target: Optional array of shape (4,) with target rates
         ax: Matplotlib axis (creates new figure if None)
         title: Plot title
-        unit: Rate unit for Y-axis label (default: "transients/min")
+        unit: Rate unit for Y-axis label (default: "Hz")
 
     Returns:
         The matplotlib axis object
@@ -347,6 +348,88 @@ def plot_mean_rates_bar(
     ax.set_ylim(bottom=0)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+
+    return ax
+
+
+def plot_transfer_functions(
+    params,
+    ax=None,
+    I_range: tuple[float, float] = (-5.0, 80.0),
+    n_points: int = 500,
+    title: str = "Transfer Functions",
+    show_legend: bool = True,
+    save_path: Optional[str] = None,
+    show: bool = True,
+):
+    """
+    Plot the Wong-Wang transfer function Phi(I) for each population on a single axis.
+
+    Each population uses its own (Theta, alpha, A) parameters from `params`, with
+    the shared curvature `g`. The four curves can be directly compared.
+
+    Parameters:
+        params: CircuitParams instance
+        ax: Matplotlib axis (creates new figure if None)
+        I_range: (I_min, I_max) range of input current to plot
+        n_points: Number of points in the sweep
+        title: Plot title
+        show_legend: Whether to show a legend
+        save_path: If provided, save figure to this path
+        show: Whether to call plt.show()
+
+    Returns:
+        The matplotlib axis object
+    """
+    import matplotlib.pyplot as plt
+    from .transfer import phi_wong_wang
+
+    I = np.linspace(I_range[0], I_range[1], n_points)
+
+    pop_params = [
+        ("PYR", params.Theta_pyr, params.alpha_pyr, params.A_pyr),
+        ("SOM", params.Theta_som, params.alpha_som, params.A_som),
+        ("PV",  params.Theta_pv,  params.alpha_pv,  params.A_pv),
+        ("VIP", params.Theta_vip, params.alpha_vip, params.A_vip),
+    ]
+
+    created_fig = ax is None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+    for name, theta, alpha, A in pop_params:
+        phi = phi_wong_wang(I, theta=theta, c=alpha, g=params.g, A=A)
+        ax.plot(I, phi, label=f"{name}  (Θ={theta:.1f}, α={alpha:.2g}, A={A:.3g})",
+                color=POPULATION_COLORS[name], linewidth=2.0)
+
+    ax.set_xlabel("Input current I", fontsize=11)
+    ax.set_ylabel("Firing rate Φ(I)", fontsize=11)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlim(I_range)
+    ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if show_legend:
+        ax.legend(loc="upper left", framealpha=0.9, fontsize=9)
+
+    if created_fig:
+        fig = ax.get_figure()
+        fig.tight_layout()
+
+        if save_path:
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"Figure saved to: {save_path}")
+
+        if show:
+            if _check_display_available():
+                plt.show(block=True)
+            else:
+                fallback_path = save_path or "transfer_functions.png"
+                if not save_path:
+                    fig.savefig(fallback_path, dpi=150, bbox_inches="tight")
+                    print(f"No display available. Figure saved to: {fallback_path}")
 
     return ax
 

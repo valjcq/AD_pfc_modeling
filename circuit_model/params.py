@@ -36,9 +36,9 @@ class CircuitParams:
     # =========================================================================
     # TIME CONSTANTS (ms)
     # =========================================================================
-    tau_s: float = 37.3479          # Synaptic time constant (all populations)
-    tau_adapt_pyr: float = 186.602  # PYR adaptation time constant (~200ms)
-    tau_adapt_som: float = 2320.51  # SOM adaptation time constant (~2.3s, much slower)
+    tau_s: float = 20.0            # Synaptic time constant (all populations)
+    tau_adapt_pyr: float = 600.0   # PYR adaptation time constant (~600ms)
+    tau_adapt_som: float = 150.0   # SOM adaptation time constant (ms)
 
     # =========================================================================
     # SPIKE-FREQUENCY ADAPTATION
@@ -46,7 +46,7 @@ class CircuitParams:
     # Adaptation provides negative feedback: high firing -> builds up I_adapt -> reduces firing
     # This prevents runaway excitation and creates bistable UP/DOWN state dynamics
     J_adapt_pyr: float = 0.270443  # PYR adaptation strength (moderate)
-    J_adapt_som: float = 27.2356   # SOM adaptation strength (strong, slow kinetics)
+    J_adapt_som: float = 0.0       # SOM adaptation strength (off by default)
 
     # =========================================================================
     # NOISE
@@ -128,22 +128,27 @@ class CircuitParams:
     # TRANSFER FUNCTION PARAMETERS (Wong-Wang)
     # =========================================================================
     # Each population has its own threshold (Theta) and gain (alpha)
-    # g_e/g_i control curvature for excitatory/inhibitory populations
+    # g is shared curvature across all populations
 
-    Theta_pyr: float = 5.01691   # PYR threshold
-    alpha_pyr: float = 0.685403  # PYR gain
+    Theta_pyr: float = 7.0   # PYR threshold
+    alpha_pyr: float = 1.9   # PYR gain
 
-    Theta_pv: float = 16.3771    # PV threshold
-    alpha_pv: float = 1.47638    # PV gain
+    Theta_pv: float = 7.0    # PV threshold
+    alpha_pv: float = 2.6    # PV gain
 
-    Theta_som: float = 5.88155   # SOM threshold
-    alpha_som: float = 0.817185  # SOM gain
+    Theta_som: float = 7.0   # SOM threshold
+    alpha_som: float = 1.5   # SOM gain
 
-    Theta_vip: float = 13.9068   # VIP threshold
-    alpha_vip: float = 0.100998  # VIP gain
+    Theta_vip: float = 7.0   # VIP threshold
+    alpha_vip: float = 1.2   # VIP gain
 
-    g_e: float = 0.377039  # Curvature for excitatory (PYR)
-    g_i: float = 0.400125  # Curvature for inhibitory (PV, SOM, VIP)
+    g: float = 1.0  # Transfer function curvature (shared across all populations)
+
+    # Output scaling factors (Koukouli et al. 2025, Table 1)
+    A_pyr: float = 4.2   # PYR max firing rate scale
+    A_pv:  float = 10.1  # PV  max firing rate scale
+    A_som: float = 17.1  # SOM max firing rate scale
+    A_vip: float = 15.5  # VIP max firing rate scale
 
     def g_gaba(self) -> float:
         """Total GABA scaling factor."""
@@ -237,12 +242,12 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
 
     # Time constants
     b["tau_s"] = ParamBound(5.0, 100.0, mode="log")
-    b["tau_adapt_pyr"] = ParamBound(50.0, 5000.0, mode="log")
-    b["tau_adapt_som"] = ParamBound(50.0, 5000.0, mode="log")
+    b["tau_adapt_pyr"] = ParamBound(100.0, 800.0, mode="log")
+    b["tau_adapt_som"] = ParamBound(50.0, 2000.0, mode="log")
 
     # Adaptation strengths
-    b["J_adapt_pyr"] = ParamBound(0.0, 50.0, mode="lin")
-    b["J_adapt_som"] = ParamBound(0.0, 50.0, mode="lin")
+    b["J_adapt_pyr"] = ParamBound(0.1, 5.0, mode="log")
+    b["J_adapt_som"] = ParamBound(0.1, 5.0, mode="log")
 
     # Noise and GABA
     b["sigma_s"] = ParamBound(0.0, 10.0, mode="lin")
@@ -285,7 +290,12 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     for name in ["alpha_pyr", "alpha_pv", "alpha_som", "alpha_vip"]:
         b[name] = ParamBound(0.05, 10.0, mode="log")
 
-    b["g_e"] = ParamBound(0.1, 10.0, mode="log")
-    b["g_i"] = ParamBound(0.1, 10.0, mode="log")
+    b["g"] = ParamBound(0.1, 10.0, mode="log")
+
+    # Output scaling factors
+    b["A_pyr"] = ParamBound(0.5, 50.0, mode="log")
+    b["A_pv"]  = ParamBound(0.5, 50.0, mode="log")
+    b["A_som"] = ParamBound(0.5, 50.0, mode="log")
+    b["A_vip"] = ParamBound(0.5, 50.0, mode="log")
 
     return b

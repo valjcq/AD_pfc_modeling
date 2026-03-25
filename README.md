@@ -390,7 +390,7 @@ Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7`
 
 ```bash
 python -m circuit_model run
-python -m circuit_model run --params_json my_params.json --noise_type ou
+python -m circuit_model run --noise_type ou
 ```
 
 ### Optimize parameters

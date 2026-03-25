@@ -17,7 +17,7 @@ from typing import Optional
 import numpy as np
 
 from .simulation import NoiseType
-from .jacobian import compute_jacobian
+from .jacobian import compute_jacobian, _total_inputs, _phi_derivative
 from .params import CircuitParams
 
 
@@ -68,23 +68,27 @@ def loss_from_means(
     *,
     near_zero_threshold: float = 0.5,
     near_zero_weight: float = 10.0,
+    squared: bool = True,
 ) -> float:
     """
     Compute loss between simulated mean firing rates and targets.
 
-    Uses Mean Absolute Percentage Error (MAPE) plus a penalty for rates
+    Uses MAPE (default) or MSPE (squared=True) plus a penalty for rates
     that are too close to zero (to avoid silent solutions).
 
-    Loss = mean(|actual - target| / target) + penalty_weight * sum(near_zero_penalties)
+    Loss = mean(|actual - target| / target)        [squared=False, default]
+         = mean((actual - target)^2 / target^2)    [squared=True]
+    + penalty_weight * sum(near_zero_penalties)
     """
     tgt = target.as_array()
     denom = np.maximum(np.abs(tgt), 1e-3)
-    mape = float(np.mean(np.abs(means - tgt) / denom))
+    rel_err = (means - tgt) / denom
+    base_loss = float(np.mean(rel_err ** 2 if squared else np.abs(rel_err)))
 
     # Penalize rates that are too close to zero (biologically unrealistic)
     below = np.maximum(near_zero_threshold - means, 0.0)
     near_zero = float(np.sum((below / near_zero_threshold) ** 2))
-    return mape + near_zero_weight * near_zero
+    return base_loss + near_zero_weight * near_zero
 
 
 def loss_from_ko_pyr(
@@ -112,9 +116,9 @@ def loss_from_ko_pyr(
         - If actual change is negative, apply wrong_direction penalty
         - If actual change is too small, apply min_effect penalty
     """
-    # Standard MAPE term
+    # Squared percentage error (consistent with base loss)
     denom = max(abs(target_pyr), 1e-3)
-    mse = abs(pyr_mean - target_pyr) / denom
+    mse = ((pyr_mean - target_pyr) / denom) ** 2
 
     # Penalty for near-zero firing (biologically unrealistic)
     below = max(near_zero_threshold - pyr_mean, 0.0)
@@ -141,6 +145,35 @@ def loss_from_ko_pyr(
     return mse + near_zero_weight * near_zero + min_effect_weight * min_effect + wrong_direction_weight * wrong_dir
 
 
+def transfer_function_slope(
+    params: CircuitParams,
+    r_ss: np.ndarray,
+    population: str = "PYR",
+) -> float:
+    """Return Φ'(I*) — the full transfer-function derivative at the operating point.
+
+    Uses ``_total_inputs`` to recover the steady-state input current I* from the
+    steady-state rates ``r_ss``, then evaluates the Wong-Wang derivative (including
+    the population-specific amplitude scale A).
+
+    Parameters
+    ----------
+    params : CircuitParams
+    r_ss   : steady-state firing rates [pyr, som, pv, vip] (Hz)
+    population : one of "PYR", "SOM", "PV", "VIP"
+    """
+    I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
+    if population == "PYR":
+        return params.A_pyr * _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g)
+    if population == "SOM":
+        return params.A_som * _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g)
+    if population == "PV":
+        return params.A_pv * _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g)
+    if population == "VIP":
+        return params.A_vip * _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g)
+    raise ValueError(f"Unknown population: {population!r}")
+
+
 # Core connections that must have non-negligible effective gain.
 # (row=target_pop, col=source_pop) in the Jacobian, population order: PYR=0 SOM=1 PV=2 VIP=3
 _REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
@@ -160,20 +193,26 @@ def jacobian_connectivity_penalty(
     *,
     threshold: float = 0.05,
     weight: float = 20.0,
+    max_gain: float = 5.0,
+    max_gain_weight: float = 20.0,
 ) -> float:
-    """Penalize solutions where core connections have negligible effective gain.
+    """Penalize solutions where core connections have negligible or excessive effective gain.
 
-    For each required connection (i, j), if |J[i,j]| < threshold the penalty
+    Lower bound: for each required connection (i, j), if |J[i,j]| < threshold the penalty
     grows quadratically: weight * sum( ((threshold - |J|) / threshold)^2 ).
 
-    threshold = 0.05 means: a 1 Hz change in the source population must produce
-    at least a 0.05 Hz change in the target population, or the connection is
-    effectively silent and we penalize it.
+    Upper bound: applied to ALL entries of J. If |J[i,j]| > max_gain the penalty
+    grows quadratically: max_gain_weight * sum( ((|J| - max_gain) / max_gain)^2 ).
+    This prevents biologically implausible solutions where a single connection
+    dominates the network dynamics.
     """
     J = compute_jacobian(params, r_ss)
     penalty = 0.0
+
+    # Lower-bound penalty on required connections
     for (i, j) in _REQUIRED_CONNECTIONS:
         gain = abs(J[i, j])
         if gain < threshold:
-            penalty += ((threshold - gain) / threshold) ** 2
-    return weight * penalty
+            penalty += weight * ((threshold - gain) / threshold) ** 2
+
+    return penalty

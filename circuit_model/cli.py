@@ -27,6 +27,58 @@ from .optimization import nevergrad_optimize, KOMeans
 from .simulation import simulate_circuit
 from .jacobian import print_sanity_check, compute_jacobian
 
+DEFAULT_WT_PARAMS_PATH = Path("params/new/WT_1mo_article_ko.json")
+DEFAULT_APP_PARAMS_PATH = Path("params/new/WT_APP_1mo_article_ko.json")
+
+
+def _load_params_with_optional_condition(
+    *,
+    params_json: str,
+    condition_key: str | None,
+    context: str,
+) -> tuple[CircuitParams, str]:
+    """Load CircuitParams, optionally applying a study condition preset."""
+    if condition_key:
+        from .study import STUDY_CONDITIONS, apply_condition
+
+        cond = STUDY_CONDITIONS[condition_key]
+
+        if params_json:
+            base = load_params_json(params_json)
+            params = apply_condition(base, cond, app_params=None)
+            msg = f"Loaded parameters from: {params_json} + applied condition: {condition_key}"
+            return params, msg
+
+        if DEFAULT_WT_PARAMS_PATH.exists():
+            base = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
+            app_params = None
+            if cond.is_app and DEFAULT_APP_PARAMS_PATH.exists():
+                app_params = load_params_json(str(DEFAULT_APP_PARAMS_PATH))
+            params = apply_condition(base, cond, app_params=app_params)
+            if cond.is_app and app_params is None:
+                msg = (
+                    f"Loaded WT defaults from: {DEFAULT_WT_PARAMS_PATH} + applied condition: {condition_key} "
+                    f"(WT_APP defaults not found at {DEFAULT_APP_PARAMS_PATH})"
+                )
+            else:
+                msg = f"Loaded default project condition: {condition_key}"
+            return params, msg
+
+        params = apply_condition(CircuitParams(), cond, app_params=None)
+        msg = f"Using built-in defaults + applied condition: {condition_key}"
+        return params, msg
+
+    if params_json:
+        return load_params_json(params_json), f"Loaded parameters from: {params_json}"
+
+    if DEFAULT_WT_PARAMS_PATH.exists():
+        return load_params_json(str(DEFAULT_WT_PARAMS_PATH)), f"Loaded default project parameters from: {DEFAULT_WT_PARAMS_PATH}"
+
+    if context == "plot-transfer":
+        return CircuitParams(), "Using built-in default parameters"
+
+    return CircuitParams(), "Using built-in default parameters"
+
 
 def print_comparison_table(
     means: np.ndarray,
@@ -109,14 +161,15 @@ def print_parameter_status(
 
     # Group parameters by category
     categories = {
-        "Time constants": ["tau_s", "tau_adapt_pyr", "tau_adapt_som"],
-        "Adaptation": ["J_adapt_pyr", "J_adapt_som"],
+        "Time constants": ["tau_s", "tau_adapt_pyr"],
+        "Adaptation": ["J_adapt_pyr"],
         "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
-        "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g_e", "g_i"],
+        "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g"],
+        "Output scaling": ["A_pyr", "A_pv", "A_som", "A_vip"],
         "Receptor activation": ["act_alpha7", "act_beta2", "act_alpha5"],
     }
 
@@ -155,6 +208,54 @@ def add_simulation_args(parser: argparse.ArgumentParser) -> None:
                         help="Random seed for reproducibility")
     parser.add_argument("--params_json", type=str, default="",
                         help="Load parameters from JSON file")
+    parser.add_argument(
+        "--condition",
+        type=str,
+        default="",
+        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"],
+        help=(
+            "Apply an experimental condition preset. If --params_json is not provided, "
+            "the command auto-loads default project WT/WT_APP fitted files when available."
+        ),
+    )
+
+
+def cmd_plot_transfer(args: argparse.Namespace) -> None:
+    """Plot transfer functions for all 4 populations."""
+    from dataclasses import replace
+    from .plotting import plot_transfer_functions
+
+    condition_key = args.condition if getattr(args, "condition", "") else None
+    params, load_msg = _load_params_with_optional_condition(
+        params_json=args.params_json,
+        condition_key=condition_key,
+        context="plot-transfer",
+    )
+    print(load_msg)
+
+    if args.set_params:
+        overrides = parse_set_params(args.set_params)
+        allowed = {f.name for f in fields(CircuitParams)}
+        clean = {k: v for k, v in overrides.items() if k in allowed}
+        params = replace(params, **clean)
+
+    if args.save_plot:
+        save_path = args.save_plot
+    elif args.params_json:
+        from pathlib import Path as _Path
+        stem = _Path(args.params_json).stem
+        save_path = f"figs/optim/transfer_functions_{stem}.png"
+    elif condition_key:
+        save_path = f"figs/optim/transfer_functions_{condition_key}.png"
+    else:
+        save_path = "figs/optim/transfer_functions.png"
+
+    plot_transfer_functions(
+        params,
+        I_range=(args.I_min, args.I_max),
+        save_path=save_path,
+        show=not args.no_show,
+    )
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -162,13 +263,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     from dataclasses import replace
     from .plotting import plot_simulation_dashboard, print_simulation_summary
 
-    # Load or create parameters
-    if args.params_json:
-        params = load_params_json(args.params_json)
-        print(f"Loaded parameters from: {args.params_json}")
-    else:
-        params = CircuitParams()
-        print("Using default parameters")
+    condition_key = args.condition if getattr(args, "condition", "") else None
+    params, load_msg = _load_params_with_optional_condition(
+        params_json=args.params_json,
+        condition_key=condition_key,
+        context="run",
+    )
+    print(load_msg)
 
     # Apply transient settings if enabled
     use_transient = args.enable_transient
@@ -211,11 +312,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     print_simulation_summary(result, burn_in_ms=burn_in)
 
     # Plot
-    time_range = None
     if args.time_range:
         parts = args.time_range.split(",")
         if len(parts) == 2:
             time_range = (float(parts[0]), float(parts[1]))
+        else:
+            time_range = None
+    else:
+        # Skip burn-in by default to avoid the initial transient spike
+        time_range = (burn_in, result.t_ms[-1])
 
     title = f"Circuit Model Simulation (noise={args.noise_type})"
     if use_transient:
@@ -226,7 +331,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/single_node/runs", args.params_json)
-        save_path = os.path.join(out_dir, f"circuit_simulation_{args.noise_type}.png")
+        if condition_key:
+            fname = f"circuit_simulation_{args.noise_type}_{condition_key}.png"
+        elif args.params_json:
+            stem = Path(args.params_json).stem
+            fname = f"circuit_simulation_{args.noise_type}_{stem}.png"
+        else:
+            fname = f"circuit_simulation_{args.noise_type}.png"
+        save_path = os.path.join(out_dir, fname)
 
     plot_simulation_dashboard(
         result,
@@ -247,20 +359,28 @@ def cmd_study(args: argparse.Namespace) -> None:
         plot_study_boxplots,
     )
 
-    # Load base parameters
+    # Load base parameters (prefer project default fit when params_json is omitted)
     if args.params_json:
         base_params = load_params_json(args.params_json)
         print(f"Loaded parameters from: {args.params_json}")
+    elif DEFAULT_WT_PARAMS_PATH.exists():
+        base_params = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
+        print(f"Loaded default project WT parameters from: {DEFAULT_WT_PARAMS_PATH}")
     else:
         base_params = CircuitParams()
-        print("Using default parameters")
+        print("Using built-in default parameters")
 
-    # Load APP parameters if provided (dual-params mode)
+    # Load APP parameters (dual-params mode). Prefer explicit app_params_json,
+    # otherwise use project default WT_APP fit when available.
     app_params = None
     if args.app_params_json:
         app_params = load_params_json(args.app_params_json)
         print(f"Loaded APP parameters from: {args.app_params_json}")
         print("  -> Dual-params mode: APP conditions use the APP fit directly.")
+    elif DEFAULT_APP_PARAMS_PATH.exists():
+        app_params = load_params_json(str(DEFAULT_APP_PARAMS_PATH))
+        print(f"Loaded default project WT_APP parameters from: {DEFAULT_APP_PARAMS_PATH}")
+        print("  -> Dual-params mode: APP conditions use the WT_APP fit directly.")
 
     # Override noise amplitude if provided
     if args.sigma_noise is not None:
@@ -351,6 +471,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 if _line:
                     last_entry = _json.loads(_line)
                     last_step = last_entry.get("step", last_step)
+        if last_entry is None:
+            raise ValueError(f"--resume: log file '{log_path}' has no entries")
         step_offset = last_step
         append_log = True
         print(f"Appending to log '{log_path}' from step {last_step}")
@@ -380,12 +502,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     # Load or create base parameters (only if not already loaded via --resume)
     if not getattr(args, "resume", False):
-        if args.params_json:
-            base = load_params_json(args.params_json)
-            print(f"Loaded base parameters from: {args.params_json}")
-        else:
-            base = CircuitParams()
-            print("Using default base parameters")
+        condition_key = args.condition if getattr(args, "condition", "") else None
+        base, load_msg = _load_params_with_optional_condition(
+            params_json=args.params_json,
+            condition_key=condition_key,
+            context="optimize",
+        )
+        print(load_msg)
 
     # Apply --set overrides (e.g. --set w_sp=0)
     if args.set_params:
@@ -449,11 +572,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         optimizer=args.optimizer,
         freeze=freeze,
         early_stop_loss=args.early_stop_loss,
+        plateau_patience=args.plateau_patience,
         log_file=args.log_file or None,
         log_interval=args.log_interval,
         save_best_json=args.save_best_json or None,
         step_offset=step_offset,
         append_log=append_log,
+        squared_loss=args.squared_loss,
     )
 
     if not best:
@@ -563,9 +688,9 @@ Examples:
                             help="Duration of transient pulse (ms), default=500")
     run_parser.add_argument("--trans_factor", type=float, default=0.2,
                             help="Transient as fraction of each population's I0, default=0.2")
-    run_parser.add_argument("--unit", type=str, default="transients/min",
-                            choices=["transients/min", "Hz"],
-                            help="Rate unit for display and plots (default: transients/min)")
+    run_parser.add_argument("--unit", type=str, default="Hz",
+                            choices=["Hz"],
+                            help="Rate unit for display and plots (default: Hz)")
 
     # =========================================================================
     # OPTIMIZE subcommand
@@ -577,9 +702,9 @@ Examples:
     )
 
     # Unit selection
-    opt_parser.add_argument("--unit", type=str, default="transients/min",
-                            choices=["transients/min", "Hz"],
-                            help="Rate unit for display (default: transients/min)")
+    opt_parser.add_argument("--unit", type=str, default="Hz",
+                            choices=["Hz"],
+                            help="Rate unit for display (default: Hz)")
 
     # Target firing rates (required)
     opt_parser.add_argument("--target_pyr", type=float, default=None,
@@ -600,12 +725,16 @@ Examples:
                             help="Target PYR rate under beta2 knockout")
 
     # Optimization settings
+    opt_parser.add_argument("--squared_loss", action=argparse.BooleanOptionalAction, default=True,
+                            help="Use MSPE (squared percentage error) loss — default on. Pass --no_squared_loss to revert to MAPE.")
     opt_parser.add_argument("--n_samples", type=int, default=5000,
                             help="Number of optimization samples")
     opt_parser.add_argument("--top_k", type=int, default=10,
                             help="Keep top K candidates")
     opt_parser.add_argument("--early_stop_loss", type=float, default=1e-4,
                             help="Stop if loss falls below this value")
+    opt_parser.add_argument("--plateau_patience", type=int, default=1000,
+                            help="Stop if no improvement for this many steps (0 to disable)")
     opt_parser.add_argument(
         "--optimizer", type=str, default="de",
         choices=["de", "cma", "chaining", "auto"],
@@ -654,6 +783,37 @@ Examples:
                             help="Log every N steps")
     opt_parser.add_argument("--resume", action="store_true",
                             help="Resume from best_params.json, appending to existing log")
+
+    # =========================================================================
+    # PLOT-TRANSFER subcommand
+    # =========================================================================
+    tf_parser = subparsers.add_parser(
+        "plot-transfer",
+        help="Plot transfer functions for all 4 populations",
+        description="Plot Phi(I) = A * u / (1 - exp(-g*u)) for each population on a single axis."
+    )
+    tf_parser.add_argument("--params_json", type=str, default="",
+                           help="Load parameters from JSON file (default: use built-in defaults)")
+    tf_parser.add_argument(
+        "--condition",
+        type=str,
+        default="",
+        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"],
+        help=(
+            "Apply an experimental condition preset. If --params_json is not provided, "
+            "the command auto-loads default project WT/WT_APP fitted files when available."
+        ),
+    )
+    tf_parser.add_argument("--set", dest="set_params", type=str, default="",
+                           help="Override parameter values: 'name=val,name=val'")
+    tf_parser.add_argument("--I_min", type=float, default=-5.0,
+                           help="Minimum input current to plot (default: -5)")
+    tf_parser.add_argument("--I_max", type=float, default=7.0,
+                           help="Maximum input current to plot (default: 7)")
+    tf_parser.add_argument("--save_plot", type=str, default="",
+                           help="Save plot to file (e.g., 'transfer_functions.png')")
+    tf_parser.add_argument("--no_show", action="store_true",
+                           help="Don't display the plot")
 
     # =========================================================================
     # STUDY subcommand
@@ -710,9 +870,9 @@ Examples:
                               help="Parallel workers (auto if None)")
 
     # Display options
-    study_parser.add_argument("--unit", type=str, default="transients/min",
-                              choices=["transients/min", "Hz"],
-                              help="Rate unit for display (default: transients/min)")
+    study_parser.add_argument("--unit", type=str, default="Hz",
+                              choices=["Hz"],
+                              help="Rate unit for display (default: Hz)")
 
     # =========================================================================
     # RING-RUN subcommand
@@ -1360,6 +1520,22 @@ Examples:
     )
 
 
+    # =========================================================================
+    # RING-OPTIMIZE subcommand
+    # =========================================================================
+    ring_opt_parser = subparsers.add_parser(
+        "ring-optimize",
+        help="Joint optimization of circuit + ring parameters against ring-level firing rate targets",
+        description=(
+            "Optimize CircuitParams and RingParams simultaneously so the ring network "
+            "at rest (no stimulus) reproduces the target firing rates from quiet wakefulness data. "
+            "Mode 1 (default): match firing rates only. "
+            "Mode 2 (--bump_mode): also require that a bump forms after a cue stimulus."
+        ),
+    )
+    from .ring.cli import add_ring_optimize_args as _add_ring_optimize_args
+    _add_ring_optimize_args(ring_opt_parser)
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -1370,8 +1546,10 @@ Examples:
               "'ring-osc-phase-distractor', "
               "'ring-diffusion', 'ring-noise-floor', "
               "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
-              "or 'ring-pre-cue-power-study'.")
+              "'ring-pre-cue-power-study', or 'ring-optimize'.")
         sys.exit(1)
+    elif args.command == "plot-transfer":
+        cmd_plot_transfer(args)
     elif args.command == "run":
         cmd_run(args)
     elif args.command == "optimize":
@@ -1413,6 +1591,9 @@ Examples:
         _cmd(args)
     elif args.command == "ring-pre-cue-power-study":
         from .ring.cli import cmd_pre_cue_power_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-optimize":
+        from .ring.cli import cmd_ring_optimize as _cmd
         _cmd(args)
     else:
         parser.print_help()

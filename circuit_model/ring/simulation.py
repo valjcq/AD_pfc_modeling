@@ -299,15 +299,14 @@ def simulate_ring(
             float(p.w_vp),
             float(p.w_ev),
             float(p.J_adapt_pyr),
-            float(p.J_adapt_som),
             float(p.tau_adapt_pyr),
+            float(p.J_adapt_som),
             float(p.tau_adapt_som),
             float(p.Theta_pyr),
             float(p.alpha_pyr),
-            float(p.g_e),
+            float(p.g),
             float(p.Theta_som),
             float(p.alpha_som),
-            float(p.g_i),
             float(p.Theta_pv),
             float(p.alpha_pv),
             float(p.Theta_vip),
@@ -401,10 +400,10 @@ def simulate_ring(
             I_vip = p.w_ev * r_pyr + I_ext_vip_arr[k]
 
             # === TRANSFER FUNCTION (vectorized) ===
-            Phi_pyr = phi_wong_wang(I_pyr, theta=p.Theta_pyr, c=p.alpha_pyr, g=p.g_e)
-            Phi_som = phi_wong_wang(I_som, theta=p.Theta_som, c=p.alpha_som, g=p.g_i)
-            Phi_pv = phi_wong_wang(I_pv_curr, theta=p.Theta_pv, c=p.alpha_pv, g=p.g_i)
-            Phi_vip = phi_wong_wang(I_vip, theta=p.Theta_vip, c=p.alpha_vip, g=p.g_i)
+            Phi_pyr = phi_wong_wang(I_pyr, theta=p.Theta_pyr, c=p.alpha_pyr, g=p.g, A=p.A_pyr)
+            Phi_som = phi_wong_wang(I_som, theta=p.Theta_som, c=p.alpha_som, g=p.g, A=p.A_som)
+            Phi_pv = phi_wong_wang(I_pv_curr, theta=p.Theta_pv, c=p.alpha_pv, g=p.g, A=p.A_pv)
+            Phi_vip = phi_wong_wang(I_vip, theta=p.Theta_vip, c=p.alpha_vip, g=p.g, A=p.A_vip)
 
             Phi = np.stack([Phi_pyr, Phi_som, Phi_pv, Phi_vip], axis=1)
 
@@ -416,8 +415,8 @@ def simulate_ring(
             # === EULER UPDATE: ADAPTATION ===
             # tau_adapt * dI_adapt/dt = -I_adapt + J_adapt * r
             dIap = (-Iap_curr + p.J_adapt_pyr * r_pyr) / p.tau_adapt_pyr
-            dIas = (-Ias_curr + p.J_adapt_som * r_som) / p.tau_adapt_som
             Iap_curr = Iap_curr + dt_ms * dIap
+            dIas = (-Ias_curr + p.J_adapt_som * r_som) / p.tau_adapt_som
             Ias_curr = Ias_curr + dt_ms * dIas
 
             # === RECORD ===
@@ -556,7 +555,7 @@ def simulate_ring_batch(
     Theta_som = _arr(lambda p: p.Theta_som);  alpha_som = _arr(lambda p: p.alpha_som)
     Theta_pv  = _arr(lambda p: p.Theta_pv);   alpha_pv  = _arr(lambda p: p.alpha_pv)
     Theta_vip = _arr(lambda p: p.Theta_vip);  alpha_vip = _arr(lambda p: p.alpha_vip)
-    g_e = _arr(lambda p: p.g_e);  g_i = _arr(lambda p: p.g_i)
+    g = _arr(lambda p: p.g)
 
     # sigma_s and tau_s: (n_batch, 1, 1) to broadcast against (n_batch, n_nodes, 4)
     sigma_s = np.array([float(p.sigma_s) for p in local_params_list])[:, None, None]
@@ -611,10 +610,10 @@ def simulate_ring_batch(
         I_vip  = w_ev * r_pyr + I_ext_vip_k
 
         Phi = np.stack([
-            _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g_e),
-            _phi_numpy(I_som,  Theta_som, alpha_som, g_i),
-            _phi_numpy(I_pv_c, Theta_pv,  alpha_pv,  g_i),
-            _phi_numpy(I_vip,  Theta_vip, alpha_vip, g_i),
+            _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g),
+            _phi_numpy(I_som,  Theta_som, alpha_som, g),
+            _phi_numpy(I_pv_c, Theta_pv,  alpha_pv,  g),
+            _phi_numpy(I_vip,  Theta_vip, alpha_vip, g),
         ], axis=-1)  # (n_batch, n_nodes, 4)
 
         if use_noise:

@@ -795,7 +795,6 @@ def plot_population_activity(
       - VIP @ cue location   (separate subplot)
       - VIP @ opposite location (separate subplot)
       - PYR adaptation current: cue + opposite  (only when I_adapt_stored is available)
-      - SOM adaptation current: cue + opposite  (only when I_adapt_stored is available)
 
     The time window starts pre_cue_ms before cue onset and covers the full delay period.
 
@@ -851,20 +850,20 @@ def plot_population_activity(
                          fn_dist))
 
     if has_adapt:
-        for adapt_idx, name in enumerate(["PYR", "SOM"]):
-            fn_dist_adapt = (
-                (lambda m=mask, nd=distractor_node, ai=adapt_idx:
-                     result.I_adapt_stored[m, nd, ai])
-                if has_distractor else None
-            )
-            rows.append(
-                (f"{name} adapt.", f"I_adapt\n(a.u.)", name,
-                 lambda m=mask, nd=stim_node, ai=adapt_idx:
-                     result.I_adapt_stored[m, nd, ai],
-                 lambda m=mask, nd=opp_node, ai=adapt_idx:
-                     result.I_adapt_stored[m, nd, ai],
-                 fn_dist_adapt)
-            )
+        adapt_idx = 0  # PYR only
+        fn_dist_adapt = (
+            (lambda m=mask, nd=distractor_node, ai=adapt_idx:
+                 result.I_adapt_stored[m, nd, ai])
+            if has_distractor else None
+        )
+        rows.append(
+            ("PYR adapt.", "I_adapt\n(a.u.)", "PYR",
+             lambda m=mask, nd=stim_node, ai=adapt_idx:
+                 result.I_adapt_stored[m, nd, ai],
+             lambda m=mask, nd=opp_node, ai=adapt_idx:
+                 result.I_adapt_stored[m, nd, ai],
+             fn_dist_adapt)
+        )
 
     n_rows = len(rows)
     fig, axes = plt.subplots(n_rows, 1, figsize=(10, 1.5 * n_rows + 1), sharex=True)
@@ -2505,6 +2504,9 @@ def plot_calibration_scatter(
 
 def plot_noise_summary(
     noise_data: dict,
+    cap_hit_fraction_data: Optional[dict[str, dict[float, float]]] = None,
+    cap_warning_threshold: float = 0.10,
+    cap_rate_hz: float = 200.0,
     condition_colors: Optional[dict] = None,
     figsize: tuple[float, float] = (8, 5),
     save_path: Optional[str] = None,
@@ -2514,6 +2516,10 @@ def plot_noise_summary(
 
     Parameters:
         noise_data: Dict mapping condition_key -> {w_inter: threshold}.
+        cap_hit_fraction_data: Optional dict mapping condition_key ->
+            {w_inter: fraction_of_trials_hitting_rate_cap}.
+        cap_warning_threshold: Warning threshold on cap-hit fraction.
+        cap_rate_hz: Per-node firing-rate cap used for warnings.
         condition_colors: Color per condition key. Defaults to CONDITION_COLORS.
         figsize: Figure size.
         save_path: If provided, save figure.
@@ -2530,12 +2536,34 @@ def plot_noise_summary(
 
     fig, ax = plt.subplots(figsize=figsize)
 
+    warn_label_used = False
     for cond_key, thresholds in noise_data.items():
         color = condition_colors.get(cond_key, "#666666")
         label = STUDY_CONDITIONS[cond_key].name if cond_key in STUDY_CONDITIONS else cond_key
         ws = sorted(thresholds.keys())
         ys = [thresholds[w] for w in ws]
         ax.plot(ws, ys, color=color, marker="o", markersize=5, lw=2, label=label)
+
+        cond_cap_frac = (cap_hit_fraction_data or {}).get(cond_key, {})
+        warn_ws = [w for w in ws if float(cond_cap_frac.get(w, 0.0)) >= float(cap_warning_threshold)]
+        if warn_ws:
+            warn_ys = [thresholds[w] for w in warn_ws]
+            warn_label = None
+            if not warn_label_used:
+                cap_rate_text = f"{cap_rate_hz:g}"
+                warn_pct = int(round(100.0 * float(cap_warning_threshold)))
+                warn_label = f">={warn_pct}% trials hit {cap_rate_text} Hz cap"
+                warn_label_used = True
+            ax.scatter(
+                warn_ws,
+                warn_ys,
+                marker="x",
+                s=80,
+                linewidths=1.8,
+                color="#D62728",
+                zorder=5,
+                label=warn_label,
+            )
 
     ax.set_xlabel("$w_{pyr-pyr}^{inter}$")
     ax.set_ylabel("Noise threshold ($\\hat{A}$)")

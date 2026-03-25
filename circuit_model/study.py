@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Optional, Literal
 
 import numpy as np
 from tqdm import tqdm
@@ -32,11 +32,6 @@ from .plotting import POPULATION_NAMES, POPULATION_COLORS
 class ActivationDistribution:
     """
     Distribution for receptor activation values.
-
-    For APP conditions, activation values are sampled from distributions:
-    - α7: ~90% inactivated → 5-15% remains (mean=0.10, std=0.03)
-    - α5: ~40% inactivated → 50-70% remains (mean=0.60, std=0.05)
-    - β2: ~0-25% inactivated → 75-100% remains (uniform)
     """
     mean: float
     std: float = 0.0  # If 0, use fixed value (no sampling)
@@ -51,12 +46,6 @@ class ActivationDistribution:
         return float(np.clip(value, self.lo, self.hi))
 
 
-# APP desensitization distributions
-APP_ALPHA7 = ActivationDistribution(mean=0.10, std=0.03, lo=0.02, hi=0.20)  # 80-98% inactivated
-APP_ALPHA5 = ActivationDistribution(mean=0.60, std=0.05, lo=0.45, hi=0.75)  # 25-55% inactivated
-APP_BETA2 = ActivationDistribution(mean=0.875, std=0.06, lo=0.75, hi=1.0)   # 0-25% inactivated
-
-
 @dataclass(frozen=True)
 class ExperimentalCondition:
     """Definition of an experimental condition."""
@@ -66,9 +55,9 @@ class ExperimentalCondition:
     ko_alpha7: bool = False # alpha7 receptor is knocked out
     ko_alpha5: bool = False # alpha5 receptor is knocked out
     ko_beta2: bool = False  # beta2 receptor is knocked out
-    act_alpha7: ActivationDistribution = None  # Used in single-params mode only
-    act_alpha5: ActivationDistribution = None
-    act_beta2: ActivationDistribution = None
+    act_alpha7: ActivationDistribution | float | None = None  # Used in single-params mode only
+    act_alpha5: ActivationDistribution | float | None = None
+    act_beta2: ActivationDistribution | float | None = None
     g_alpha7: Optional[float] = None  # None means use default from base params
 
     def __post_init__(self):
@@ -84,9 +73,9 @@ class ExperimentalCondition:
             else ActivationDistribution(mean=self.act_beta2 if self.act_beta2 is not None else 1.0))
 
 
-# The 8 conditions.
-# In single-params mode: APP conditions sample activations from distributions.
-# In dual-params mode:   APP conditions use app_params; KO flags set activations to 0.
+# Condition catalog.
+# WT_APP and *_KO_APP use the WT_APP fitted parameter family (in dual-params mode).
+# Receptor activations remain at 1.0 unless KO flags force the targeted receptor to 0.
 STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "WT": ExperimentalCondition(
         name="WT",
@@ -97,7 +86,7 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
         name="WT APP",
         label="Wild Type + APP",
         is_app=True,
-        act_alpha7=APP_ALPHA7, act_alpha5=APP_ALPHA5, act_beta2=APP_BETA2
+        act_alpha7=1.0, act_alpha5=1.0, act_beta2=1.0
     ),
     "a7_KO": ExperimentalCondition(
         name="a7 KO",
@@ -108,8 +97,10 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "a7_KO_APP": ExperimentalCondition(
         name="a7 KO APP",
         label="alpha7 Knockout + APP",
-        is_app=True, ko_alpha7=True,
-        act_alpha7=0.0, g_alpha7=0.0, act_alpha5=APP_ALPHA5, act_beta2=APP_BETA2
+        is_app=True,
+        ko_alpha7=True,
+        act_alpha7=0.0,
+        g_alpha7=0.0,
     ),
     "b2_KO": ExperimentalCondition(
         name="b2 KO",
@@ -120,8 +111,9 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "b2_KO_APP": ExperimentalCondition(
         name="b2 KO APP",
         label="beta2 Knockout + APP",
-        is_app=True, ko_beta2=True,
-        act_beta2=0.0, act_alpha7=APP_ALPHA7, act_alpha5=APP_ALPHA5
+        is_app=True,
+        ko_beta2=True,
+        act_beta2=0.0,
     ),
     "a5_KO": ExperimentalCondition(
         name="a5 KO",
@@ -132,8 +124,9 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
     "a5_KO_APP": ExperimentalCondition(
         name="a5 KO APP",
         label="alpha5 Knockout + APP",
-        is_app=True, ko_alpha5=True,
-        act_alpha5=0.0, act_alpha7=APP_ALPHA7, act_beta2=APP_BETA2
+        is_app=True,
+        ko_alpha5=True,
+        act_alpha5=0.0,
     ),
 }
 
@@ -153,7 +146,7 @@ class StudyConfig:
     dt_ms: float = 0.1
     burn_in_ms: float = 1800.0
     window_ms: float = 500.0
-    noise_type: str = "white"  # Use white noise by default
+    noise_type: Literal["none", "white", "ou"] = "white"  # Use white noise by default
     tau_noise_ms: float = 5.0
     n_workers: Optional[int] = None  # Auto-detect
     fixed_receptor_values: bool = False  # If True, use mean instead of sampling
@@ -189,8 +182,7 @@ def apply_condition(
         chosen. No activation sampling occurs.
 
     Single-params mode (app_params is None):
-        APP conditions sample activations from distributions (APP_ALPHA7 etc.) on
-        top of base_params to simulate biological variability.
+        Uses the condition's fixed activation values on top of base_params.
 
     Parameters:
         base_params: WT CircuitParams
@@ -215,15 +207,26 @@ def apply_condition(
             kwargs['act_beta2'] = 0.0
         return replace(chosen, **kwargs) if kwargs else chosen
 
+    def _as_dist(val: ActivationDistribution | float | None) -> ActivationDistribution:
+        if isinstance(val, ActivationDistribution):
+            return val
+        if val is None:
+            return ActivationDistribution(mean=1.0)
+        return ActivationDistribution(mean=float(val))
+
+    act_alpha7_dist = _as_dist(condition.act_alpha7)
+    act_alpha5_dist = _as_dist(condition.act_alpha5)
+    act_beta2_dist = _as_dist(condition.act_beta2)
+
     # Single-params mode: sample or use mean activation values
     if rng is None:
-        act_a7 = condition.act_alpha7.mean
-        act_a5 = condition.act_alpha5.mean
-        act_b2 = condition.act_beta2.mean
+        act_a7 = act_alpha7_dist.mean
+        act_a5 = act_alpha5_dist.mean
+        act_b2 = act_beta2_dist.mean
     else:
-        act_a7 = condition.act_alpha7.sample(rng)
-        act_a5 = condition.act_alpha5.sample(rng)
-        act_b2 = condition.act_beta2.sample(rng)
+        act_a7 = act_alpha7_dist.sample(rng)
+        act_a5 = act_alpha5_dist.sample(rng)
+        act_b2 = act_beta2_dist.sample(rng)
 
     kwargs = {
         'act_alpha7': act_a7,
@@ -426,13 +429,13 @@ def run_study(
 def plot_study_boxplots(
     results: StudyResults,
     title: str = "Firing Rate Distribution by Condition",
-    figsize: tuple[float, float] = (14, 6),
+    figsize: tuple[float, float] = (16, 10),
     save_path: Optional[str] = None,
     show: bool = True,
-    unit: str = "transients/min",
+    unit: str = "Hz",
 ):
     """
-    Create box plots showing firing rate distributions for the PYR population.
+    Create box plots showing firing rate distributions for all populations.
 
     Parameters:
         results: StudyResults from run_study
@@ -450,51 +453,51 @@ def plot_study_boxplots(
 
     n_conditions = len(results.conditions)
 
-    fig, ax_pyr = plt.subplots(figsize=figsize, constrained_layout=True)
-
-    pop_idx = 0  # PYR
-    color = POPULATION_COLORS["PYR"]
+    fig, axes = plt.subplots(2, 2, figsize=figsize, constrained_layout=True)
+    axes = axes.flatten()
 
     # Condition labels
     condition_labels = [STUDY_CONDITIONS[k].name for k in results.conditions]
 
-    # Collect data for PYR across all conditions
-    data = [results.data[cond_key][:, pop_idx] for cond_key in results.conditions]
+    for pop_idx, pop_name in enumerate(POPULATION_NAMES):
+        ax = axes[pop_idx]
+        color = POPULATION_COLORS[pop_name]
 
-    # Create box plot
-    bp = ax_pyr.boxplot(
-        data,
-        patch_artist=True,
-        medianprops=dict(color='black', linewidth=1.5),
-        whiskerprops=dict(color='gray'),
-        capprops=dict(color='gray'),
-        flierprops=dict(marker='o', markersize=3, alpha=0.5),
-    )
+        # Collect data for this population across all conditions
+        data = [results.data[cond_key][:, pop_idx] for cond_key in results.conditions]
 
-    # Color all boxes with the population color
-    for patch in bp['boxes']:
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-        patch.set_edgecolor('black')
+        # Create box plot
+        bp = ax.boxplot(
+            data,
+            patch_artist=True,
+            medianprops=dict(color='black', linewidth=1.5),
+            whiskerprops=dict(color='gray'),
+            capprops=dict(color='gray'),
+            flierprops=dict(marker='o', markersize=3, alpha=0.5),
+        )
 
-    # X-axis
-    ax_pyr.set_xticks(range(1, n_conditions + 1))
-    ax_pyr.set_xticklabels(condition_labels, rotation=45, ha='right', fontsize=9)
+        # Color all boxes with the population color
+        for patch in bp['boxes']:
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+            patch.set_edgecolor('black')
 
-    # Y-axis: zoom in on the data range with 20% padding
-    all_vals = np.concatenate(data)
-    vmin, vmax = all_vals.min(), all_vals.max()
-    margin = max((vmax - vmin) * 0.2, 0.05 * vmax)
-    ax_pyr.set_ylabel(f"Rate ({unit})", fontsize=10)
-    ax_pyr.set_ylim(max(0, vmin - margin), vmax + margin)
+        # X-axis
+        ax.set_xticks(range(1, n_conditions + 1))
+        ax.set_xticklabels(condition_labels, rotation=45, ha='right', fontsize=9)
 
-    # Title
-    ax_pyr.set_title("PYR", fontsize=13, fontweight='bold', color=color)
+        # Y-axis: zoom in on the data range with 20% padding
+        all_vals = np.concatenate(data)
+        vmin, vmax = all_vals.min(), all_vals.max()
+        margin = max((vmax - vmin) * 0.2, 0.05 * max(vmax, 1e-6))
+        ax.set_ylabel(f"Rate ({unit})", fontsize=10)
+        ax.set_ylim(max(0, vmin - margin), vmax + margin)
 
-    # Style
-    ax_pyr.spines['top'].set_visible(False)
-    ax_pyr.spines['right'].set_visible(False)
-    ax_pyr.grid(axis='y', alpha=0.3)
+        # Title and style
+        ax.set_title(pop_name, fontsize=13, fontweight='bold', color=color)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(axis='y', alpha=0.3)
 
     # Main title
     fig.suptitle(title, fontsize=14, fontweight='bold')

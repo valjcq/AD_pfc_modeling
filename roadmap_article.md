@@ -9,7 +9,7 @@
 This paper makes two core contributions:
 
 1. **Methodological**: First ring attractor model to incorporate three distinct interneuron classes (PV, SOM, VIP) with realistic cholinergic modulation via nicotinic acetylcholine receptors (nAChRs).
-2. **Biological**: Systematic dissection of each interneuron class's contribution to bump formation, and how their dysfunction (via β-amyloid/APP desensitization of nAChRs) degrades working memory.
+2. **Biological**: Systematic dissection of each interneuron class's contribution to bump formation, and how disease-state circuit changes (WT_APP fitted family) degrade working memory.
 
 The paper moves from model construction → validation → mechanistic dissection (KO studies) → disease case study (APP).
 
@@ -26,10 +26,10 @@ The paper moves from model construction → validation → mechanistic dissectio
 - Existing ring attractor models use single or generic inhibitory populations — they miss interneuron diversity.
 - PFC contains at least three functionally distinct interneuron classes: PV (perisomatic, fast feedback), SOM (dendritic, slow adaptation), VIP (disinhibitory, top-down modulation).
 - Each class expresses distinct nAChR subtypes (α7 on PV/SOM, β2 on SOM, α5 on VIP) → cholinergic tone differentially modulates each population.
-- Alzheimer's disease (early stage: APP/Aβ accumulation) causes nAChR desensitization → selective loss of cholinergic drive per interneuron class.
+- Alzheimer's disease (early stage: APP/Aβ accumulation) shifts the operating circuit state (captured by a dedicated WT_APP fitted parameter family).
 - **Gap**: No ring attractor study has used a multi-class interneuron circuit to study how class-specific cholinergic dysfunction impacts bump quality.
 
-**End of intro**: State the three goals — (1) characterize each interneuron's role via KO, (2) define bump quality metrics for each, (3) predict how APP-level desensitization degrades WM.
+**End of intro**: State the three goals — (1) characterize each interneuron's role via KO, (2) define bump quality metrics for each, (3) predict how the WT_APP circuit state degrades WM.
 
 ---
 
@@ -67,7 +67,7 @@ Brief literature grounding for each class's expected role (cited, not derived fr
 
 #### 2.4 Parameter fitting — local circuit
 
-- Optimization target: calcium imaging data from WT and WT_APP mice (1-month timepoint).
+- Optimization target: in vivo spike rate data from WT and WT_APP mice (1-month timepoint; `AD_data/AD_spikes/datafiles/firing_rate_data.csv`).
 - Loss function: relative MSE on per-population mean firing rates across conditions.
 - Fitted parameters include synaptic weights, time constants, external currents, receptor currents.
 - **Figure**: Simulated vs. experimental rates (WT and WT_APP); show good fit.
@@ -80,7 +80,7 @@ There are two distinct levels of fitting that must be treated separately.
 
 **Level 1 — Local circuit (single-node) parameters**
 
-These are the parameters of the 4-population local circuit: synaptic weights within a node, time constants, external currents, receptor currents. They are fitted to calcium imaging data (population mean firing rates).
+These are the parameters of the 4-population local circuit: synaptic weights within a node, time constants, external currents, receptor currents. They are fitted to in vivo spike rate data (population mean firing rates from `AD_data/AD_spikes/`).
 
 *Option A — Zero activation*: Use the WT-optimized local circuit parameter set and set the relevant receptor activation to zero (e.g. act_alpha7=0 for A7ko). This implicitly assumes no local synaptic compensation.
 
@@ -298,14 +298,11 @@ The merging/alternation behavior depends on three factors, each modulated by a d
 
 **Goal**: Translate the mechanistic understanding from KO studies to a graded, disease-relevant perturbation.
 
-**Rationale**: In APP mice (early Alzheimer's model), Aβ does not fully silence nAChRs — it desensitizes them. The remaining activation levels are:
-- α7: 10% (nearly silent)
-- β2: 87.5% (mostly preserved)
-- α5: 60% (moderately reduced)
+**Rationale**: In APP mice (early Alzheimer's model), the disease effect is represented by a dedicated WT_APP fitted local-circuit parameter family. In this workflow, APP is not applied by receptor desensitization sampling during ring simulations.
 
 #### 5.0 Methodological concern: parameter space mismatch
 
-> **Critical caveat**: WT and WT_APP do not operate in the same parameter space. The working regime (range of weights supporting bump formation) is shifted between WT and WT_APP. In vivo, the network would likely adjust its synaptic weights to the disease state. A naive comparison using the same parameters conflates the direct effect of nAChR desensitization with the shift in operating regime.
+> **Critical caveat**: WT and WT_APP do not operate in the same parameter space. The working regime (range of weights supporting bump formation) is shifted between WT and WT_APP. In vivo, the network would likely adjust its synaptic weights to the disease state. A naive comparison using the same parameters conflates disease-state circuit differences with the shift in operating regime.
 
 **Approach**:
 - Map the 2D working regime (excitatory × inhibitory weight) for both conditions to visualize the shift.
@@ -321,27 +318,27 @@ The merging/alternation behavior depends on three factors, each modulated by a d
 - Run corrected asymmetry: expect higher mean|A(t)| and steeper growth with stimulus amplitude in WT_APP.
 - Run distractor analysis (Section 3.3 protocol): characterize whether the merge/alternate regime and phase alignment change in WT_APP vs WT. The impairment of phase alignment in APP would suggest reduced oscillatory coordination capacity as a disease marker.
 
-**Prediction from KO analysis**: dominant effect should be α7-like (most desensitized), but modulated by partial α5 loss (amplitude reduction). β2 is largely preserved, so SOM-mediated adaptation should be mostly intact.
+**Prediction from KO analysis**: compare KO effects within each parameter family first, then quantify the additional WT→WT_APP shift under each KO background (KO vs KO_APP).
 
 #### 5.2 APP on KO backgrounds (8 conditions)
 
 Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP) and extract bump metrics, oscillation metrics, and distractor metrics for each.
 
-**Key question**: Does APP further degrade WM in KO animals? Is there an additive or saturating effect?
-- a7KO_APP vs a7KO: α7 already gone in a7KO; APP primarily hits α7 → expect minimal additional effect (saturation).
-- b2KO_APP vs b2KO: β2 barely desensitized in APP (~87.5% remaining) → b2KO_APP ≈ b2KO expected.
-- a5KO_APP vs a5KO: α5 at 60% in APP → moderate additional effect expected.
+**Key question**: Does the WT_APP family further degrade WM in KO animals? Is there an additive or buffering interaction?
+- a7KO_APP vs a7KO: additional disease-family shift with α7 already removed.
+- b2KO_APP vs b2KO: additional disease-family shift with β2 removed.
+- a5KO_APP vs a5KO: additional disease-family shift with α5 removed.
 
-**Oscillatory prediction**: A7ko_APP should not show further oscillation frequency shift compared to A7ko (α7 already silent). Alpha5ko_APP may show amplitude-driven oscillation power reduction on top of Alpha5ko.
+**Oscillatory prediction**: quantify which KO background most amplifies WT→WT_APP oscillation changes (frequency, power, stability).
 
-**Interpretation**: Tests nAChR subtype independence and matches transgenic mouse experimental design. Saturation in a7KO_APP would confirm that α7 is the dominant driver of APP-induced WM degradation.
+**Interpretation**: Tests subtype-specific robustness of disease-state network changes and identifies which KO backgrounds are most sensitive to WT→WT_APP shifts.
 
-#### 5.3 Rate changes and noise sensitivity as a function of desensitization level
+#### 5.3 Rate changes and noise sensitivity as a function of receptor-sensitivity sweeps (optional)
 
 - Parametric sweep: vary act_alpha7 from 0 → 1 (keeping others at WT). Then same for act_beta2 and act_alpha5.
 - For each point: extract bump metrics, oscillation frequency, corrected asymmetry, and noise floor ratio.
 - **Figure**: Phase diagram of WM quality (corrected asymmetry, oscillation stability) as function of α7 and α5 activation level (2D heatmap).
-- Key insight: is there a threshold in α7 desensitization below which the bump's oscillatory stability collapses? Does α5 interact with this threshold?
+- Key insight: are there receptor-sensitivity thresholds where bump oscillatory stability collapses, and do these thresholds align with observed WT vs WT_APP differences?
 
 ---
 
@@ -360,9 +357,9 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
    - WT_APP prediction: model correctly predicts increased PYR rate in APP condition.
 
 3. **Clinical relevance**:
-   - Early Alzheimer's: α7 nAChR desensitization is the dominant hit → primarily degrades oscillatory stability and bump precision.
-   - α5 desensitization adds amplitude reduction and increased susceptibility to distractor interference.
-   - β2 is relatively spared in early APP → SOM-mediated slow adaptation largely intact.
+   - Early Alzheimer's: disease-state local-circuit changes primarily degrade oscillatory stability and bump precision.
+   - KO-background comparisons (KO vs KO_APP) identify which receptor pathways are most sensitive to the disease-state shift.
+   - The relative robustness of β2/SOM pathways can be tested directly via b2_KO vs b2_KO_APP metrics.
    - Implication: working memory errors in early AD may be primarily errors of spatial imprecision and oscillatory instability (the memory trace exists but is spatially noisy), not complete trace loss.
    - The pre-cue network state influences the delay-period trace (A7ko_APP pre-cue → delay correlation): disease may impair the network's ability to reset upon stimulus onset.
 
@@ -374,13 +371,13 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
 5. **Limitations**:
    - Rate model (not spiking) — oscillation frequencies are approximate; spike timing and gamma-band dynamics require spiking models.
    - 1D ring (spatial WM) — may not generalize to non-spatial WM.
-   - Calcium imaging data = proxy for firing rate; calibration assumptions.
-   - KO is an extreme perturbation; in reality, partial desensitization is graded.
+   - Spike rate data derived from calcium imaging via event detection; conversion assumptions.
+   - KO is an extreme perturbation; in reality, receptor dysfunction is graded.
    - WT and WT_APP do not operate in the same parameter space — some observed differences may reflect operating regime shifts rather than direct nAChR effects.
 
 6. **Future directions**:
    - Spiking network implementation for precise oscillation frequency and spike timing analysis.
-   - 3-month and 6-month APP timepoints (progressive desensitization trajectories).
+   - 3-month and 6-month APP timepoints (progressive disease-state trajectories).
    - Therapeutic predictions: α7-positive allosteric modulators to rescue PV/SOM drive and restore oscillatory stability.
    - Timing of distractor presentation relative to oscillation phase as a predictor of merge vs alternate outcome.
 
@@ -397,7 +394,7 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
 - [ ] Oscillation metrics: dominant frequency, instantaneous frequency variance, spectral power
 - [ ] Distractor protocol: offset angles, phase alignment metric (cross-correlation of amplitude timeseries)
 - [ ] Optimization procedure (Nevergrad, loss function, number of iterations)
-- [ ] Experimental data processing (calcium imaging → transients/min → target rates)
+- [ ] Experimental data: spike rates from calcium imaging (event detection → Hz; `AD_data/AD_spikes/`) → optimization targets (`per_neuron_mean`)
 - [ ] Statistical tests for between-condition comparisons
 - [ ] Parameter strategy — Level 1 (local circuit): re-optimize on KO data vs. zero activation in WT params
 - [ ] Parameter strategy — Level 2 (ring connectivity): WT network for all conditions vs. per-condition rate-matched fit (~18Hz PYR during delay)
@@ -422,7 +419,7 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
 | Fig 10 | APP condition — all 8 conditions: population rates + bump quality metrics (rate-matched) | Partial (figs/optim/) |
 | Fig 11 | APP oscillatory analysis: spectrogram comparison WT vs WT_APP; pre-cue → delay asymmetry correlation | To do |
 | Fig 12 | APP distractor: phase alignment WT vs WT_APP; impairment of oscillatory coordination | To do |
-| Fig 13 | Parametric desensitization sweep: 2D heatmap (act_alpha7 × act_alpha5) → corrected asymmetry / oscillation stability | To do |
+| Fig 13 | Parametric receptor-sensitivity sweep: 2D heatmap (act_alpha7 × act_alpha5) → corrected asymmetry / oscillation stability | To do |
 | Suppl. | Parameter space working regime (2D weight sweep); rate-matched vs same-parameter comparison | To do |
 
 ---
@@ -459,7 +456,7 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
 - [ ] Quantify size difference of bump-formation region between conditions.
 - [ ] Run rate-matched comparison: find weight sets for WT and WT_APP with equal mean PYR delay-period rate; compare bump metrics.
 
-### Step 6 — Parametric desensitization study
+### Step 6 — Parametric receptor-sensitivity study
 - [ ] Sweep act_alpha7 (0→1, 10 steps) and act_alpha5 (0→1, 10 steps) independently.
 - [ ] For each: extract corrected asymmetry, oscillation stability, noise floor ratio.
 - [ ] Plot 2D heatmap: (act_alpha7, act_alpha5) → key WM quality metric.
@@ -483,7 +480,7 @@ Run all 8 conditions (WT, WT_APP, a7KO, a7KO_APP, b2KO, b2KO_APP, a5KO, a5KO_APP
 4. Does oscillation frequency shift under A7ko? Does it match the prediction from reduced PV feedback (faster or slower)?
 5. Does Beta2ko affect late-delay oscillation damping more than early-delay? (SOM adaptation timescale ~2300ms)
 6. Is the oscillation in our model related to theta or gamma rhythms in the PFC literature? Can we interpret the ~7 Hz oscillation as a theta-like rhythm driven by the interneuron feedback loop?
-7. Is there a critical desensitization level for α7 below which the oscillatory stability collapses irreversibly?
+7. Is there a critical α7 sensitivity level below which oscillatory stability collapses irreversibly?
 
 **Distractor / phase dynamics**
 8. Does the timing of the distractor presentation (relative to the oscillation phase of the first bump) predict whether they merge or alternate? This requires a controlled experiment sweeping distractor onset within one oscillation period.
