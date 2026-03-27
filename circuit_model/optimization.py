@@ -14,6 +14,7 @@ This module contains:
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, fields, replace
 from typing import Any, Optional
 from pathlib import Path
@@ -24,7 +25,7 @@ from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, transfer_function_slope
 from .io import log_best_result, save_params_json
 
 
@@ -47,6 +48,21 @@ class Candidate:
 
 # Type alias for condition results
 ConditionResult = tuple[str, bool, np.ndarray]  # (name, ok, means)
+
+
+@dataclass
+class LossBreakdown:
+    """Breakdown of loss components."""
+    firing_rate: float
+    ko_penalty: float
+    jacobian: float
+    turing: float
+    total: float
+
+    def __str__(self) -> str:
+        return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_penalty:.3g}, "
+                f"jac={self.jacobian:.3g}, turing={self.turing:.3g}, "
+                f"total={self.total:.3g}]")
 
 
 def run_trials(params: CircuitParams, cfg: FitConfig, base_seed: int) -> tuple[bool, np.ndarray]:
@@ -115,14 +131,22 @@ def _loss_from_results(
     params: CircuitParams,
     *,
     squared_loss: bool = True,
-) -> tuple[float, np.ndarray, KOMeans]:
-    """Compute total loss from a list of condition simulation results."""
+    turing_weight: float = 0.0,
+    turing_margin: float = 0.05,
+    turing_w_inter_ref: float = 10.0,
+    turing_cue_scale: float = 5.0,
+) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
+    """Compute total loss from a list of condition simulation results.
+    
+    Returns:
+        Tuple of (total_loss, base_means, ko_means, breakdown).
+    """
     ko_means = KOMeans()
     base_means = np.zeros(4, dtype=float)
 
     for name, ok, means in results:
         if not ok:
-            return 1e9, base_means, ko_means
+            return 1e9, base_means, ko_means, LossBreakdown(1e9, 0., 0., 0., 1e9)
         if name == "base":
             base_means = means
         elif name == "alpha7_ko":
@@ -132,9 +156,11 @@ def _loss_from_results(
         elif name == "beta2_ko":
             ko_means.beta2_ko = means
 
-    total = loss_from_means(base_means, target, squared=squared_loss)
+    # Firing rate loss
+    fr_loss = loss_from_means(base_means, target, squared=squared_loss)
     base_pyr = float(base_means[0])
 
+    # Knockout penalty
     ko_loss = 0.0
     n_ko = 0
     if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
@@ -159,14 +185,29 @@ def _loss_from_results(
         )
         n_ko += 1
 
-    # Normalise KO loss by number of KO conditions so it always has the same
-    # weight as the base loss regardless of how many KOs are active.
-    if n_ko > 0:
-        total += ko_loss / n_ko
+    # Normalise KO loss by number of KO conditions
+    ko_penalty = ko_loss / n_ko if n_ko > 0 else 0.0
 
-    total += jacobian_connectivity_penalty(params, base_means)
+    # Jacobian connectivity penalty
+    jac_loss = jacobian_connectivity_penalty(params, base_means)
 
-    return total, base_means, ko_means
+    # Turing instability penalty
+    turing_loss = 0.0
+    if turing_weight > 0.0:
+        from dataclasses import replace as _replace
+        w = turing_w_inter_ref
+        slope_rest = transfer_function_slope(params, base_means, population="PYR")
+        params_cue = _replace(params, I0_pyr=turing_cue_scale * params.I0_pyr)
+        slope_cue  = transfer_function_slope(params_cue, base_means, population="PYR")
+        t_loss = (max(0.0, slope_rest * w - (1.0 - turing_margin)) ** 2
+                + max(0.0, 1.0 + turing_margin - slope_cue * w) ** 2)
+        turing_loss = turing_weight * t_loss
+
+    total = fr_loss + ko_penalty + jac_loss + turing_loss
+    breakdown = LossBreakdown(firing_rate=fr_loss, ko_penalty=ko_penalty, 
+                               jacobian=jac_loss, turing=turing_loss, total=total)
+
+    return total, base_means, ko_means, breakdown
 
 
 def evaluate_params(
@@ -177,14 +218,22 @@ def evaluate_params(
     rng: np.random.Generator,
     executor: Optional[ProcessPoolExecutor] = None,
     squared_loss: bool = True,
-) -> tuple[float, np.ndarray, KOMeans]:
-    """Evaluate a parameter set under baseline and knockout conditions."""
+    turing_weight: float = 0.0,
+    turing_margin: float = 0.05,
+    turing_w_inter_ref: float = 10.0,
+    turing_cue_scale: float = 5.0,
+) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
+    """Evaluate a parameter set under baseline and knockout conditions.
+    
+    Returns:
+        Tuple of (total_loss, means, ko_means, breakdown).
+    """
     conditions = _build_conditions(params, target, cfg, rng)
     if executor is not None and len(conditions) > 1:
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss)
+    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale)
 
 
 def build_nevergrad_parametrization(
@@ -289,6 +338,10 @@ def nevergrad_optimize(
     step_offset: int = 0,
     append_log: bool = False,
     squared_loss: bool = True,
+    turing_weight: float = 0.0,
+    turing_margin: float = 0.05,
+    turing_w_inter_ref: float = 10.0,
+    turing_cue_scale: float = 5.0,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -346,8 +399,11 @@ def nevergrad_optimize(
         p = params_from_ng_dict(x.value, base)
         cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
 
-        L, means, ko_means = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss)
+        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale)
         ng_optimizer.tell(x, L)
+        
+        # Update progress bar with loss breakdown
+        pbar.set_postfix_str(str(breakdown))
 
         prev_best_loss = best[0].loss if best else float("inf")
         cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)

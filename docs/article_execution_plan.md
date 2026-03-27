@@ -73,20 +73,26 @@ KO conditions (a7_KO, b2_KO, a5_KO) are simulated via zero-activation on the WT 
 
 ---
 
-Two optimization modes are available. **Mode 1** (firing rate only) is faster and recommended first. **Mode 2** (firing rate + bump quality) adds a soft constraint ensuring the ring forms a stable bump post-stimulus; run after Mode 1 converges using its output as a warm start.
+The optimization uses a single mode: **ring optimization, no adaptation, with the two-sided Turing bistability penalty** (see `docs/transfer_function.md`).
 
-> **Current branch strategy update (2026-03-25)**:
-> - Keep `sigma_pyr_deg` fixed to `15` in optimization commands.
-> - Keep `tau_adapt_som=150` fixed.
-> - Free transfer-function shape parameters (`Theta_*`, `alpha_*`, `g`) instead of freezing article table values, to test whether rate-scale fitting requires a different transfer regime.
+### Transfer function parameter convention
+
+All transfer function shape parameters are fixed to the W&W 2006 values and **frozen** in every optimization run. Only the output-scaling factors `A_x` remain free.
+
+| Parameter | Code field | Fixed value | Source |
+|-----------|-----------|-------------|--------|
+| PYR gain | `alpha_pyr` | 310 Hz/nA | W&W 2006 |
+| PV/SOM/VIP gain | `alpha_pv`, `alpha_som`, `alpha_vip` | 615 Hz/nA | W&W 2006 |
+| PYR threshold | `Theta_pyr` | 0.40323 nA (= 125/310) | W&W 2006 |
+| PV/SOM/VIP threshold | `Theta_pv`, `Theta_som`, `Theta_vip` | 0.28780 nA (= 177/615) | W&W 2006 |
+| PYR curvature | `g_exc` | 0.16 s | W&W 2006 |
+| SOM/PV/VIP curvature | `g_inh` | 0.087 s | W&W 2006 |
+| Synaptic time constant | `tau_s` | 20 ms | Beierlein 2003 |
+| Ring connectivity width | `sigma_pyr_deg` | 15° | fixed protocol |
 
 ---
 
-##### Mode 1 — Firing rate only
-
 #### Variant A — 4-population fit only (WT)
-
-Fit only the 4 per-population rates; no KO constraints. Recommended first pass.
 
 ```bash
 python -m circuit_model ring-optimize \
@@ -96,16 +102,15 @@ python -m circuit_model ring-optimize \
   --target_vip 6.051 \
   --optimizer chaining \
   --n_samples 50000 \
-  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
-  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
+  --turing_weight 2.0 \
   --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article.json \
   --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ring.json \
-  --log_file figs/optim/1mo/ring_firing_rate/log.jsonl
+  --log_file figs/optim/1mo/ring_turing/log.jsonl
 ```
 
 #### Variant B — 4-population + KO PYR constraints (WT)
-
-Adds the 3 KO PYR targets as optional constraints. More constrained; use after Variant A converges or when KO predictions are needed.
 
 ```bash
 python -m circuit_model ring-optimize \
@@ -118,11 +123,12 @@ python -m circuit_model ring-optimize \
   --target_alpha5_ko_pyr 9.285 \
   --optimizer chaining \
   --n_samples 50000 \
-  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
-  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
+  --turing_weight 2.0 \
   --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_ko.json \
   --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ko_ring.json \
-  --log_file figs/optim/1mo_ko/ring_firing_rate/log.jsonl
+  --log_file figs/optim/1mo_ko/ring_turing/log.jsonl
 ```
 
 #### Variant C — 4-population fit only (WT_APP)
@@ -135,11 +141,12 @@ python -m circuit_model ring-optimize \
   --target_vip 5.551 \
   --optimizer chaining \
   --n_samples 50000 \
-  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
-  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
+  --turing_weight 2.0 \
   --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article.json \
   --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ring.json \
-  --log_file figs/optim/1mo_APP/ring_firing_rate/log.jsonl
+  --log_file figs/optim/1mo_APP/ring_turing/log.jsonl
 ```
 
 #### Variant D — 4-population + KO_APP PYR constraints (WT_APP)
@@ -155,104 +162,15 @@ python -m circuit_model ring-optimize \
   --target_alpha5_ko_pyr 3.113 \
   --optimizer chaining \
   --n_samples 50000 \
-  --set "tau_s=20,tau_adapt_pyr=600,tau_adapt_som=150,sigma_pyr_deg=15" \
-  --freeze "tau_s,tau_adapt_pyr,tau_adapt_som,sigma_pyr_deg" \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
+  --turing_weight 2.0 \
   --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_ko.json \
   --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ko_ring.json \
-  --log_file figs/optim/1mo_APP_ko/ring_firing_rate/log.jsonl
-```
-
----
-
-##### Mode 2 — Ring optimization with Turing instability constraint
-
-Fit jointly on the ring with an analytical Turing penalty. The penalty enforces `Φ'(I*_PYR) × w_pyr_pyr_inter ≥ 1 + turing_margin`, a necessary condition for the ring to support a localised bump state. Evaluated analytically from the ring rest rates — no additional simulation required. `tau_adapt` parameters are left free (not frozen).
-
-#### Variant A-turing — 4-population fit only (WT)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 8.214 \
-  --target_som 4.295 \
-  --target_pv  4.073 \
-  --target_vip 6.051 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15" \
-  --freeze "tau_s,sigma_pyr_deg" \
-  --turing_weight 2.0 \
-  --turing_margin 0.1 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_turing.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_turing_ring.json \
-  --log_file figs/optim/1mo/ring_turing/log.jsonl
-```
-
-#### Variant B-turing — 4-population + KO PYR constraints (WT)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 8.214 \
-  --target_som 4.295 \
-  --target_pv  4.073 \
-  --target_vip 6.051 \
-  --target_alpha7_ko_pyr 17.539 \
-  --target_beta2_ko_pyr  17.965 \
-  --target_alpha5_ko_pyr 9.285 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15" \
-  --freeze "tau_s,sigma_pyr_deg" \
-  --turing_weight 2.0 \
-  --turing_margin 0.1 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_turing_ko.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_turing_ko_ring.json \
-  --log_file figs/optim/1mo_ko/ring_turing/log.jsonl
-```
-
-#### Variant C-turing — 4-population fit only (WT_APP)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 12.466 \
-  --target_som 4.814 \
-  --target_pv  4.241 \
-  --target_vip 5.551 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15" \
-  --freeze "tau_s,sigma_pyr_deg" \
-  --turing_weight 2.0 \
-  --turing_margin 0.1 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_turing.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ring.json \
-  --log_file figs/optim/1mo_APP/ring_turing/log.jsonl
-```
-
-#### Variant D-turing — 4-population + KO_APP PYR constraints (WT_APP)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 12.466 \
-  --target_som 4.814 \
-  --target_pv  4.241 \
-  --target_vip 5.551 \
-  --target_alpha7_ko_pyr 13.599 \
-  --target_beta2_ko_pyr  19.109 \
-  --target_alpha5_ko_pyr 3.113 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15" \
-  --freeze "tau_s,sigma_pyr_deg" \
-  --turing_weight 2.0 \
-  --turing_margin 0.1 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ko.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_turing_ko_ring.json \
   --log_file figs/optim/1mo_APP_ko/ring_turing/log.jsonl
 ```
 
----
-
-**Recommended order**: A → B if KO coverage needed; C → D if KO_APP coverage needed. The Turing penalty biases the optimiser towards parameter regimes that analytically support bump formation, without requiring costly bump simulations.
+**Recommended order**: A → B if KO coverage needed; C → D if KO_APP coverage needed.
 
 ---
 
@@ -403,19 +321,30 @@ KO_APP applies the same KO rule on the WT_APP parameter family.
 
 **Commands**:
 ```bash
-# WT
+# WT with 128 nodes
 python -m circuit_model ring-run \
   --condition WT \
-  --amplitude 4 --delay_ms 8000 \
-  --w_pyr_pyr_inter 1 --w_pv_global 4 --sigma_pyr_deg 15 \
-  --seed 42
+  --amplitude 0.1 --delay_ms 8000 \
+  --n_nodes 128
 
-# WT_APP
+# WT with 64 nodes
 python -m circuit_model ring-run \
   --condition WT \
-  --amplitude 4 --delay_ms 8000 \
-  --w_pyr_pyr_inter 1 --w_pv_global 5 --sigma_pyr_deg 15 \
-  --seed 42
+  --amplitude 1.1 --delay_ms 8000 \
+  --n_nodes 64
+
+# WT with 128 nodes and higher amplitude
+python -m circuit_model ring-run \
+  --condition WT \
+  --amplitude 1.2 --delay_ms 8000 \
+  --n_nodes 128
+
+# WT with 128 nodes and lower amplitude
+python -m circuit_model ring-run \
+  --condition WT \
+  --amplitude 1.3 --delay_ms 8000 \
+  --n_nodes 128
+
 ```
 
 **Expected outputs** (per condition): `dashboard.png`, `bump_metrics.png`, `connectome.png`, `snapshot_evolution.mp4`

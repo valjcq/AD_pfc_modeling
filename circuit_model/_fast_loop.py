@@ -13,8 +13,9 @@ which is still 3-5x faster than the current NumPy version (no array-creation
 overhead per call).
 
 Design notes:
-  - noise_arr must be pre-generated outside (shape (n_steps-1, 4), all-zeros
-    if sigma_s == 0 or noise_type == "none").
+  - noise_arr must be pre-generated outside (shape (n_steps-1,), all-zeros
+    if sigma_noise == 0 or noise_type == "none"). Only PYR receives noise;
+    noise_scale = sigma_noise * I_ext_pyr is passed as a precomputed scalar.
   - External currents are passed as static floats; the transient case is
     handled at the caller level (not here).
   - cache=True persists compiled bytecode across Python sessions (~1-2 s
@@ -76,10 +77,10 @@ def _phi_scalar(I: float, theta: float, c: float, g: float, A: float = 1.0) -> f
 def _euler_loop(
     r_out: np.ndarray,       # (n_steps, 4) — r_out[0] = r0 on entry
     I_adapt_out: np.ndarray, # (n_steps, 2) — I_adapt_out[0] = I_adapt0 on entry
-    noise_arr: np.ndarray,   # (n_steps-1, 4) — pre-generated, or zeros
+    noise_arr: np.ndarray,   # (n_steps-1,) — pre-generated PYR noise, or zeros
     n_steps: int,
     dt_ms: float,
-    sigma_s: float,
+    noise_scale: float,      # = sigma_noise * I_ext_pyr (precomputed, nA)
     tau_s: float,
     # GABA scaling
     ggaba: float,
@@ -94,7 +95,8 @@ def _euler_loop(
     # External currents (static — precomputed from params)
     I_ext_pyr: float, I_ext_som: float, I_ext_pv: float, I_ext_vip: float,
     # Transfer function parameters
-    Theta_pyr: float, alpha_pyr: float, g: float,
+    Theta_pyr: float, alpha_pyr: float, g_exc: float,
+    g_inh: float,
     Theta_som: float, alpha_som: float,
     Theta_pv: float,  alpha_pv: float,
     Theta_vip: float, alpha_vip: float,
@@ -120,7 +122,8 @@ def _euler_loop(
         I_pyr = (w_ee * r_pyr) / denom \
                 - ggaba * w_se * r_som \
                 - Iap \
-                + I_ext_pyr
+                + I_ext_pyr \
+                + noise_scale * noise_arr[k]  # current-space noise (PYR only)
         I_som = w_es * r_pyr \
                 - w_vs * r_vip \
                 + I_ext_som
@@ -132,18 +135,18 @@ def _euler_loop(
         I_vip = w_ev * r_pyr + I_ext_vip
 
         # Transfer function (scalar, zero overhead)
-        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g, A_pyr)
-        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g, A_som)
-        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g, A_pv)
-        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g, A_vip)
+        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_exc, A_pyr)
+        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g_inh, A_som)
+        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g_inh, A_pv)
+        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g_inh, A_vip)
 
         # Euler update: firing rates
         # Operation order matches reference exactly: dt_ms * (sum / tau_s)
         # (NOT dt_ms/tau_s * sum — that reorders FP ops and breaks bit-identity)
-        dr_pyr = (-r_pyr + phi_pyr + sigma_s * noise_arr[k, 0]) / tau_s
-        dr_som = (-r_som + phi_som + sigma_s * noise_arr[k, 1]) / tau_s
-        dr_pv  = (-r_pv  + phi_pv  + sigma_s * noise_arr[k, 2]) / tau_s
-        dr_vip = (-r_vip + phi_vip + sigma_s * noise_arr[k, 3]) / tau_s
+        dr_pyr = (-r_pyr + phi_pyr) / tau_s  # noise already in I_pyr above
+        dr_som = (-r_som + phi_som) / tau_s
+        dr_pv  = (-r_pv  + phi_pv)  / tau_s
+        dr_vip = (-r_vip + phi_vip) / tau_s
         r_out[k + 1, 0] = max(0.0, r_pyr + dt_ms * dr_pyr)
         r_out[k + 1, 1] = max(0.0, r_som + dt_ms * dr_som)
         r_out[k + 1, 2] = max(0.0, r_pv  + dt_ms * dr_pv)

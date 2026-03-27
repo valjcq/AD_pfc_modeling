@@ -76,6 +76,8 @@ from .plotting import (
     plot_study_firing_rates_violin,
 )
 
+from .optimization import evaluate_ring_params, RingFitConfig
+
 
 # ============================================================================
 # JAX GPU DETECTION
@@ -104,10 +106,65 @@ CAP_WARNING_FRACTION = 0.10
 
 BUMP_DECAY_REF_OFFSET_MS: float = 400.0  # ms after cue offset used as normalization reference
 
-DEFAULT_WT_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article_turing.json")
-DEFAULT_APP_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article_turing.json")
-DEFAULT_WT_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article_turing_ring.json")
-DEFAULT_APP_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article_turing_ring.json")
+DEFAULT_WT_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article.json")
+DEFAULT_APP_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article.json")
+DEFAULT_WT_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article_ring.json")
+DEFAULT_APP_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article_ring.json")
+
+DEFAULT_FIT_INIT_KWARGS = {
+    "A_pv": 0.2813469553996421,
+    "A_pyr": 0.10622438622381115,
+    "A_som": 0.053626173859774605,
+    "A_vip": 0.7723361306933505,
+    "I0_pv": 0.6130979378060619,
+    "I0_pyr": 0.3821414536202422,
+    "I0_som": 0.11512854870837885,
+    "I0_vip": 0.12136730155398323,
+    "I_alpha5_vip": 0.09225916188797047,
+    "I_alpha7_pv": 0.020175772646610295,
+    "I_alpha7_som": 0.08177895911432663,
+    "I_beta2_som": 0.079151548590087,
+    "J_adapt_pyr": 0.0,
+    "J_adapt_som": 0.0,
+    "Theta_pv": 0.2878,
+    "Theta_pyr": 0.40323,
+    "Theta_som": 0.2878,
+    "Theta_vip": 0.2878,
+    "act_alpha5": 1.0,
+    "act_alpha7": 1.0,
+    "act_beta2": 1.0,
+    "alpha_pv": 615.0,
+    "alpha_pyr": 310.0,
+    "alpha_som": 615.0,
+    "alpha_vip": 615.0,
+    "g_alpha7": 0.7213380324449714,
+    "g_exc": 0.16,
+    "g_gaba_base": 2.5960505603954847,
+    "g_inh": 0.087,
+    "sigma_s": 3.126269167838911,
+    "tau_adapt_pyr": 313.0585187879324,
+    "tau_adapt_som": 137.7859489361114,
+    "tau_s": 20.0,
+    "trans_duration_ms": 500.0,
+    "trans_enabled": False,
+    "trans_factor": 0.8726352154216228,
+    "trans_start_ms": 1000.0,
+    "w_ee": 0.045891098339490385,
+    "w_ep": 0.028903939659089523,
+    "w_es": 0.029993026459236054,
+    "w_ev": 0.021899228366116387,
+    "w_pe": 0.015503689971303277,
+    "w_pp": 0.038493293925154694,
+    "w_se": 0.017018335007708562,
+    "w_sp": 0.005373346546445335,
+    "w_vp": 0.007492381010792029,
+    "w_vs": 0.04408816168444669,
+}
+
+
+def _default_fit_init_params() -> CircuitParams:
+    """Return hardcoded fit initialization parameters."""
+    return CircuitParams(**DEFAULT_FIT_INIT_KWARGS)
 
 # Set per-command when loading base params. The local apply_condition wrapper
 # then uses this as app_params for *_APP conditions automatically.
@@ -119,6 +176,16 @@ _ring_args_from_defaults: bool = False
 
 # Fallback ring param values used when no JSON file is found.
 _RING_PARAMS_FALLBACK = {"w_pyr_pyr_inter": 8.0, "sigma_pyr_deg": 30.0, "w_pv_global": 10.0, "n_nodes": 128}
+
+
+def _print_ring_init_summary(base_circuit: CircuitParams, base_ring: RingParams, ring_means: np.ndarray, init_loss: float) -> None:
+    """Print effective ring optimization initialization and its predicted ring rates."""
+    print("Initial condition (effective after --set/--no_adapt):")
+    print(f"  Circuit I0: pyr={base_circuit.I0_pyr:.6g}, som={base_circuit.I0_som:.6g}, pv={base_circuit.I0_pv:.6g}, vip={base_circuit.I0_vip:.6g}")
+    print(f"  Ring: n_nodes={base_ring.n_nodes}, w_pyr_pyr_inter={base_ring.w_pyr_pyr_inter:.6g}, w_pv_global={base_ring.w_pv_global:.6g}, sigma_pyr_deg={base_ring.sigma_pyr_deg:.6g}")
+    print("Initial predicted ring rates (Hz):")
+    print(f"  PYR={ring_means[0]:.4f}, SOM={ring_means[1]:.4f}, PV={ring_means[2]:.4f}, VIP={ring_means[3]:.4f}")
+    print(f"  Initial loss={init_loss:.6g}")
 
 
 def _load_ring_params_json(path: str) -> RingParams:
@@ -191,7 +258,7 @@ def _load_base_params_for_ring(
         _ACTIVE_APP_PARAMS = None
         _ACTIVE_RING_PARAMS = None
         _ACTIVE_APP_RING_PARAMS = None
-        result = CircuitParams(), "Using built-in default parameters"
+        result = _default_fit_init_params(), "Using hardcoded fit-init default parameters"
 
     # Patch CLI args that were left at None with values from the ring params JSON.
     if args is not None:
@@ -375,7 +442,8 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
     emit(f"       J_adapt_pyr   = {base_params.J_adapt_pyr:.4g}")
 
     emit("  ── Noise")
-    emit(f"       sigma_s       = {base_params.sigma_s:.4g}")
+    emit(f"       sigma_noise   = {base_params.sigma_noise:.4g}"
+         f"  (noise current std = {base_params.sigma_noise * base_params.I_ext_pyr():.4g} nA)")
 
     emit("  ── GABA scaling")
     emit(f"       g_gaba_base   = {base_params.g_gaba_base:.4g}")
@@ -415,7 +483,7 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
              f"   duration={base_params.trans_duration_ms:.0f} ms")
 
     emit("  ── Transfer function")
-    emit(f"       g={base_params.g:.4g}  (shared curvature)")
+    emit(f"       g_exc={base_params.g_exc:.4g} (PYR)   g_inh={base_params.g_inh:.4g} (SOM/PV/VIP)")
     emit(f"       PYR: Theta={base_params.Theta_pyr:.4g}  alpha={base_params.alpha_pyr:.4g}")
     emit(f"       PV:  Theta={base_params.Theta_pv:.4g}  alpha={base_params.alpha_pv:.4g}")
     emit(f"       SOM: Theta={base_params.Theta_som:.4g}  alpha={base_params.alpha_som:.4g}")
@@ -731,6 +799,13 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--response_factor", type=float, default=0.5,
         help="Response transient strength as fraction of I0 (default: 0.5)",
+    )
+
+    parser.add_argument(
+        "--sigma_noise", type=float, default=None,
+        help="Relative noise amplitude: std of current noise injected into PYR = "
+             "sigma_noise × I_ext_pyr. Default: use value from params (typically 0.1). "
+             "Set to 0 to disable noise.",
     )
 
     parser.add_argument(
@@ -3455,6 +3530,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     base_params, ring_params, T_ms, stimuli, amp_factor = _build_common(args)
 
+    if getattr(args, 'sigma_noise', None) is not None:
+        base_params = replace(base_params, sigma_noise=args.sigma_noise)
+        print(f"Noise override: sigma_noise = {args.sigma_noise}")
+
     cond_key = getattr(args, "condition", "WT")
     if cond_key not in STUDY_CONDITIONS:
         print(
@@ -3482,7 +3561,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     out_dir_parts = [
         _output_dir("figs/ring/run", args.params_json),
         _run_type_label(args),
-        _network_label(ring_params),
+        f"amp{_fmt(amp_factor)}",
     ]
     if _has_distractor(args):
         out_dir_parts.append(
@@ -7253,8 +7332,8 @@ def cmd_burnin_stability(args: argparse.Namespace) -> None:
     print(load_msg)
 
     if getattr(args, 'sigma_noise', None) is not None:
-        base_params = replace(base_params, sigma_s=args.sigma_noise)
-        print(f"Noise amplitude overridden: sigma_s = {args.sigma_noise}")
+        base_params = replace(base_params, sigma_noise=args.sigma_noise)
+        print(f"Noise override: sigma_noise = {args.sigma_noise}")
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
@@ -8636,24 +8715,24 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Number of ring nodes (fixed during optimization, default: 64)")
 
     # --- Starting point for ring params ---
-    parser.add_argument("--w_pyr_pyr_inter_init", type=float, default=8.0,
-                        help="Initial inter-node PYR->PYR weight (default: 8.0)")
-    parser.add_argument("--w_pv_global_init", type=float, default=10.0,
-                        help="Initial global PV->PYR inhibition weight (default: 10.0)")
+    parser.add_argument("--w_pyr_pyr_inter_init", type=float, default=0.004,
+                        help="Initial inter-node PYR->PYR weight (default: 0.004)")
+    parser.add_argument("--w_pv_global_init", type=float, default=0.008,
+                        help="Initial global PV->PYR inhibition weight (default: 0.008)")
     parser.add_argument("--sigma_pyr_deg_init", type=float, default=15.0,
                         help="Initial PYR connectivity Gaussian width in degrees (default: 15.0)")
 
     # --- Ring parameter search bounds (optional overrides) ---
-    parser.add_argument("--w_pyr_pyr_inter_lo", type=float, default=1.0,
-                        help="Lower bound for w_pyr_pyr_inter (default: 1.0)")
-    parser.add_argument("--w_pyr_pyr_inter_hi", type=float, default=30.0,
-                        help="Upper bound for w_pyr_pyr_inter (default: 30.0)")
-    parser.add_argument("--w_pv_global_lo", type=float, default=0.5,
-                        help="Lower bound for w_pv_global (default: 0.5)")
-    parser.add_argument("--w_pv_global_hi", type=float, default=20.0,
-                        help="Upper bound for w_pv_global (default: 20.0)")
-    parser.add_argument("--sigma_pyr_deg_lo", type=float, default=10.0,
-                        help="Lower bound for sigma_pyr_deg (default: 10.0)")
+    parser.add_argument("--w_pyr_pyr_inter_lo", type=float, default=0.0005,
+                        help="Lower bound for w_pyr_pyr_inter (default: 0.0005)")
+    parser.add_argument("--w_pyr_pyr_inter_hi", type=float, default=0.015,
+                        help="Upper bound for w_pyr_pyr_inter (default: 0.015)")
+    parser.add_argument("--w_pv_global_lo", type=float, default=0.0005,
+                        help="Lower bound for w_pv_global (default: 0.0005)")
+    parser.add_argument("--w_pv_global_hi", type=float, default=0.03,
+                        help="Upper bound for w_pv_global (default: 0.03)")
+    parser.add_argument("--sigma_pyr_deg_lo", type=float, default=5.0,
+                        help="Lower bound for sigma_pyr_deg (default: 5.0)")
     parser.add_argument("--sigma_pyr_deg_hi", type=float, default=60.0,
                         help="Upper bound for sigma_pyr_deg (default: 60.0)")
 
@@ -8733,11 +8812,13 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
 
     # --- Turing instability penalty ---
     parser.add_argument("--turing_weight", type=float, default=0.0,
-                        help="Weight of Turing instability penalty (default: 0 = disabled). "
-                             "Penalises solutions where Phi'(I*_PYR) * w_pyr_pyr_inter < 1 + turing_margin.")
-    parser.add_argument("--turing_margin", type=float, default=0.1,
-                        help="Safety margin for the Turing condition: penalise if turing < 1 + margin "
-                             "(default: 0.1)")
+                        help="Weight of two-sided Turing bistability penalty (default: 0 = disabled). "
+                             "Penalises rest-state gain above 1-margin AND cue-state gain below 1+margin.")
+    parser.add_argument("--turing_margin", type=float, default=0.05,
+                        help="Safety margin around the Turing threshold (default: 0.05)")
+    parser.add_argument("--turing_cue_scale", type=float, default=5.0,
+                        help="Multiplier applied to I0_pyr to approximate the cue operating point "
+                             "(default: 5.0, matching the bump stimulus amplitude)")
 
     # --- I/O settings ---
     parser.add_argument("--output_dir", type=str, default="",
@@ -8761,7 +8842,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     from ..loss import TargetRates, FitConfig
     from ..io import load_params_json, save_params_json
     from .params import RingParams, default_ring_bounds
-    from .optimization import RingFitConfig, BumpTarget, nevergrad_optimize_ring, _save_ring_candidate
+    from .optimization import BumpTarget, nevergrad_optimize_ring, _save_ring_candidate
 
     # --- Load base circuit parameters ---
     if args.params_json:
@@ -8771,9 +8852,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         base_circuit = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
         print(f"Loaded default CircuitParams from: {DEFAULT_WT_PARAMS_PATH}")
     else:
-        from ..params import CircuitParams
-        base_circuit = CircuitParams()
-        print("Using built-in default CircuitParams")
+        base_circuit = _default_fit_init_params()
+        print("Using hardcoded fit-init CircuitParams")
 
     # --- Apply --set overrides to base circuit params ---
     if args.set_params:
@@ -8882,6 +8962,21 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     print(f"Output dir: {args.output_dir}")
     print()
 
+    init_rng = np.random.default_rng(args.seed if args.seed is not None else 0)
+    init_loss, init_ring_means, _ = evaluate_ring_params(
+        base_circuit,
+        base_ring,
+        target,
+        ring_cfg,
+        bump_target,
+        init_rng,
+        turing_weight=args.turing_weight,
+        turing_margin=args.turing_margin,
+        turing_cue_scale=args.turing_cue_scale,
+    )
+    _print_ring_init_summary(base_circuit, base_ring, init_ring_means, init_loss)
+    print()
+
     # --- Run optimization ---
     best = nevergrad_optimize_ring(
         target,
@@ -8903,6 +8998,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         save_output_dir=args.output_dir or None,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
+        turing_cue_scale=args.turing_cue_scale,
     )
 
     if not best:

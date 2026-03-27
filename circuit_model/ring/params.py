@@ -96,12 +96,31 @@ def default_ring_bounds() -> "dict[str, ParamBound]":
     Only covers the three optimizable scalar fields of RingParams.
     n_nodes is fixed by the user and not optimized.
 
-    Bounds are in linear space since all three parameters have
-    a well-defined expected range without spanning orders of magnitude.
+    Units follow the W&W-grounded physical convention:
+    - w_pyr_pyr_inter: nA/Hz  (inter-node PYR→PYR Gaussian row-sum)
+    - w_pv_global:     nA/Hz  (uniform PV→PYR global inhibition)
+    - sigma_pyr_deg:   degrees (spatial width, unit-independent)
+
+    Working initialization (see params/init/network_ring_init.json):
+    - w_pyr_pyr_inter = 4e-3 nA/Hz
+    - w_pv_global     = 8e-3 nA/Hz
+    - sigma_pyr_deg   = 15°
+
+    These values are based on the corrected W&W transfer function (A_pyr=0.76,
+    I0_pyr=0.44 nA). The old bounds (hi=0.001) were derived from a buggy
+    simulation that omitted the A scaler — with A correctly applied, rates are
+    ~2.5× lower so weights must be ~2.5× larger.
+
+    Turing window (analytical, 10× cue): [4.2e-3, 6.1e-3] nA/Hz for w_inter.
+    Global PV effectively raises the practical upper bound for w_inter, so
+    w_inter can safely reach ~1e-2 with w_pv balanced accordingly.
+
+    w_pv_global upper bound (3e-2) corresponds to near-silent regime where
+    inhibition suppresses all activity.
     """
     from ..params import ParamBound
     return {
-        "w_pyr_pyr_inter": ParamBound(lo=1.0,  hi=30.0, mode="lin"),
-        "w_pv_global":     ParamBound(lo=0.5,  hi=20.0, mode="lin"),
-        "sigma_pyr_deg":   ParamBound(lo=10.0, hi=60.0, mode="lin"),
+        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=1.5e-2, mode="log"),
+        "w_pv_global":     ParamBound(lo=5e-4,  hi=3.0e-2, mode="log"),
+        "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=60.0,   mode="lin"),
     }

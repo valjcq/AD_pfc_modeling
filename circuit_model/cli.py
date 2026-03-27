@@ -23,12 +23,68 @@ import numpy as np
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
 from .io import load_params_json, save_params_json, save_fit_summary_txt, format_params_as_code, build_fit_comparison, output_dir as _output_dir
-from .optimization import nevergrad_optimize, KOMeans
+from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBreakdown
 from .simulation import simulate_circuit
 from .jacobian import print_sanity_check, compute_jacobian
 
-DEFAULT_WT_PARAMS_PATH = Path("params/new/WT_1mo_article_ko.json")
-DEFAULT_APP_PARAMS_PATH = Path("params/new/WT_APP_1mo_article_ko.json")
+DEFAULT_WT_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article.json")
+DEFAULT_APP_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article.json")
+
+# Hardcoded fallback initialization used when params/fit_init.json is unavailable.
+DEFAULT_FIT_INIT_KWARGS = {
+    "A_pv": 0.12,
+    "A_pyr": 0.31,
+    "A_som": 0.11,
+    "A_vip": 0.16,
+    "I0_pv": 0.35,
+    "I0_pyr": 0.51,
+    "I0_som": 0.35,
+    "I0_vip": 0.33,
+    "I_alpha5_vip": 0.0,
+    "I_alpha7_pv": 0.0,
+    "I_alpha7_som": 0.0,
+    "I_beta2_som": 0.0,
+    "J_adapt_pyr": 0.002,
+    "J_adapt_som": 0.0,
+    "Theta_pv": 0.2878,
+    "Theta_pyr": 0.40323,
+    "Theta_som": 0.2878,
+    "Theta_vip": 0.2878,
+    "act_alpha5": 1.0,
+    "act_alpha7": 1.0,
+    "act_beta2": 1.0,
+    "alpha_pv": 615.0,
+    "alpha_pyr": 310.0,
+    "alpha_som": 615.0,
+    "alpha_vip": 615.0,
+    "g_alpha7": 0.0,
+    "g_exc": 0.16,
+    "g_gaba_base": 1.0,
+    "g_inh": 0.087,
+    "sigma_s": 0.0,
+    "tau_adapt_pyr": 600.0,
+    "tau_adapt_som": 150.0,
+    "tau_s": 20.0,
+    "trans_duration_ms": 500.0,
+    "trans_enabled": False,
+    "trans_factor": 0.2,
+    "trans_start_ms": 1000.0,
+    "w_ee": 0.002,
+    "w_ep": 0.002,
+    "w_es": 0.002,
+    "w_ev": 0.002,
+    "w_pe": 0.05,
+    "w_pp": 0.002,
+    "w_se": 0.002,
+    "w_sp": 0.002,
+    "w_vp": 0.002,
+    "w_vs": 0.002,
+}
+
+
+def _default_fit_init_params() -> CircuitParams:
+    """Return hardcoded fit initialization parameters."""
+    return CircuitParams(**DEFAULT_FIT_INIT_KWARGS)
 
 
 def _load_params_with_optional_condition(
@@ -64,8 +120,8 @@ def _load_params_with_optional_condition(
                 msg = f"Loaded default project condition: {condition_key}"
             return params, msg
 
-        params = apply_condition(CircuitParams(), cond, app_params=None)
-        msg = f"Using built-in defaults + applied condition: {condition_key}"
+        params = apply_condition(_default_fit_init_params(), cond, app_params=None)
+        msg = f"Using hardcoded fit-init defaults + applied condition: {condition_key}"
         return params, msg
 
     if params_json:
@@ -75,9 +131,9 @@ def _load_params_with_optional_condition(
         return load_params_json(str(DEFAULT_WT_PARAMS_PATH)), f"Loaded default project parameters from: {DEFAULT_WT_PARAMS_PATH}"
 
     if context == "plot-transfer":
-        return CircuitParams(), "Using built-in default parameters"
+        return _default_fit_init_params(), "Using hardcoded fit-init default parameters"
 
-    return CircuitParams(), "Using built-in default parameters"
+    return _default_fit_init_params(), "Using hardcoded fit-init default parameters"
 
 
 def print_comparison_table(
@@ -163,7 +219,7 @@ def print_parameter_status(
     categories = {
         "Time constants": ["tau_s", "tau_adapt_pyr"],
         "Adaptation": ["J_adapt_pyr"],
-        "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
+        "Noise & GABA": ["sigma_noise", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
@@ -192,6 +248,20 @@ def print_parameter_status(
     print("\n" + "-" * 70)
     print(f"Total: {len(free)} free parameters, {len(frozen)} frozen parameters")
     print("=" * 70 + "\n")
+
+
+def _print_opt_init_summary(params: CircuitParams, means: np.ndarray, breakdown: "LossBreakdown") -> None:  # type: ignore
+    """Print effective optimization initialization and its predicted rates."""
+    print("Initial condition (effective after --set/--no_adapt):")
+    print(f"  I0: pyr={params.I0_pyr:.6g}, som={params.I0_som:.6g}, pv={params.I0_pv:.6g}, vip={params.I0_vip:.6g}")
+    print(f"  A:  pyr={params.A_pyr:.6g}, som={params.A_som:.6g}, pv={params.A_pv:.6g}, vip={params.A_vip:.6g}")
+    print(f"  W:  w_ee={params.w_ee:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
+    print(f"      w_pe={params.w_pe:.6g}, w_pp={params.w_pp:.6g}, w_se={params.w_se:.6g}, w_sp={params.w_sp:.6g}, w_vp={params.w_vp:.6g}, w_vs={params.w_vs:.6g}")
+    print(f"  Transfer: tau_s={params.tau_s:.6g}, alpha_pyr={params.alpha_pyr:.6g}, alpha_som={params.alpha_som:.6g}, alpha_pv={params.alpha_pv:.6g}, alpha_vip={params.alpha_vip:.6g}")
+    print(f"            Theta_pyr={params.Theta_pyr:.6g}, Theta_som={params.Theta_som:.6g}, Theta_pv={params.Theta_pv:.6g}, Theta_vip={params.Theta_vip:.6g}")
+    print("Initial predicted rates (Hz):")
+    print(f"  PYR={means[0]:.4f}, SOM={means[1]:.4f}, PV={means[2]:.4f}, VIP={means[3]:.4f}")
+    print(f"  Initial {breakdown}")
 
 
 def add_simulation_args(parser: argparse.ArgumentParser) -> None:
@@ -285,7 +355,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Print key parameter values
     print("\nKey parameters:")
     print(f"  tau_s = {params.tau_s:.2f} ms")
-    print(f"  sigma_s = {params.sigma_s:.2f} (noise)")
+    print(f"  sigma_noise = {params.sigma_noise:.4f} (noise ratio, effective {params.sigma_noise * params.I_ext_pyr():.4f} nA)")
     print(f"  g_gaba = {params.g_gaba():.2f} (GABA scaling)")
 
     if use_transient:
@@ -367,8 +437,8 @@ def cmd_study(args: argparse.Namespace) -> None:
         base_params = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
         print(f"Loaded default project WT parameters from: {DEFAULT_WT_PARAMS_PATH}")
     else:
-        base_params = CircuitParams()
-        print("Using built-in default parameters")
+        base_params = _default_fit_init_params()
+        print("Using hardcoded fit-init default parameters")
 
     # Load APP parameters (dual-params mode). Prefer explicit app_params_json,
     # otherwise use project default WT_APP fit when available.
@@ -385,8 +455,8 @@ def cmd_study(args: argparse.Namespace) -> None:
     # Override noise amplitude if provided
     if args.sigma_noise is not None:
         from dataclasses import replace
-        base_params = replace(base_params, sigma_s=args.sigma_noise)
-        print(f"Noise amplitude overridden: sigma_s = {args.sigma_noise}")
+        base_params = replace(base_params, sigma_noise=args.sigma_noise)
+        print(f"Noise amplitude overridden: sigma_noise = {args.sigma_noise}")
 
     # Build config
     cfg = StudyConfig(
@@ -409,9 +479,9 @@ def cmd_study(args: argparse.Namespace) -> None:
     if cfg.noise_type == "none":
         noise_detail = "none"
     elif cfg.noise_type == "white":
-        noise_detail = f"white, sigma_s={base_params.sigma_s:.4f}"
+        noise_detail = f"white, sigma_noise={base_params.sigma_noise:.4f}"
     else:  # ou
-        noise_detail = f"ou, sigma_s={base_params.sigma_s:.4f}, tau_noise={cfg.tau_noise_ms}ms"
+        noise_detail = f"ou, sigma_noise={base_params.sigma_noise:.4f}, tau_noise={cfg.tau_noise_ms}ms"
     print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={noise_detail}")
     print(f"  Receptor activation: {'fixed mean values' if cfg.fixed_receptor_values else 'sampled from distributions'}")
     print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
@@ -523,8 +593,16 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             base = replace(base, **clean)
             print(f"Overrides applied: {', '.join(f'{k}={v}' for k, v in clean.items())}")
 
+    # --no_adapt: zero and freeze adaptation strengths
+    if args.no_adapt:
+        from dataclasses import replace
+        base = replace(base, J_adapt_pyr=0.0, J_adapt_som=0.0)
+        print("--no_adapt: J_adapt_pyr=0, J_adapt_som=0 (frozen)")
+
     bounds = default_bounds(base)
     freeze = parse_freeze_list(args.freeze)
+    if args.no_adapt:
+        freeze |= {"J_adapt_pyr", "J_adapt_som"}
 
     # Print parameter status
     if args.show_params:
@@ -560,6 +638,22 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"  beta2 KO PYR: {target.beta2_ko_pyr} {unit}")
     print()
 
+    init_seed = args.seed if args.seed is not None else 0
+    init_rng = np.random.default_rng(init_seed)
+    init_loss, init_means, _, init_breakdown = evaluate_params(
+        base,
+        target,
+        fit_cfg,
+        rng=init_rng,
+        squared_loss=args.squared_loss,
+        turing_weight=args.turing_weight,
+        turing_margin=args.turing_margin,
+        turing_w_inter_ref=args.turing_w_inter_ref,
+        turing_cue_scale=args.turing_cue_scale,
+    )
+    _print_opt_init_summary(base, init_means, init_breakdown)
+    print()
+
     # Run optimization
     best = nevergrad_optimize(
         target,
@@ -579,6 +673,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         step_offset=step_offset,
         append_log=append_log,
         squared_loss=args.squared_loss,
+        turing_weight=args.turing_weight,
+        turing_margin=args.turing_margin,
+        turing_w_inter_ref=args.turing_w_inter_ref,
+        turing_cue_scale=args.turing_cue_scale,
     )
 
     if not best:
@@ -774,6 +872,24 @@ Examples:
     opt_parser.add_argument("--show_params", action="store_true",
                             help="Show which parameters are free vs frozen")
 
+    # Adaptation
+    opt_parser.add_argument("--no_adapt", action="store_true",
+                            help="Disable spike-frequency adaptation: set J_adapt_pyr=0 and J_adapt_som=0 "
+                                 "and freeze them.")
+
+    # Turing instability penalty
+    opt_parser.add_argument("--turing_weight", type=float, default=0.0,
+                            help="Weight of two-sided Turing bistability penalty (default: 0 = disabled). "
+                                 "Penalises rest-state gain above 1-margin AND cue-state gain below 1+margin.")
+    opt_parser.add_argument("--turing_margin", type=float, default=0.05,
+                            help="Safety margin around the Turing threshold (default: 0.05)")
+    opt_parser.add_argument("--turing_w_inter_ref", type=float, default=10.0,
+                            help="Reference inter-node weight used in the Turing condition for single-node "
+                                 "optimization (default: 10.0). Has no effect if --turing_weight is 0.")
+    opt_parser.add_argument("--turing_cue_scale", type=float, default=5.0,
+                            help="Multiplier applied to I0_pyr to approximate the cue operating point "
+                                 "(default: 5.0, matching the bump stimulus amplitude)")
+
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
                             help="Save best parameters to JSON file")
@@ -841,7 +957,7 @@ Examples:
     study_parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="white",
                               help="Noise type (default: white)")
     study_parser.add_argument("--sigma_noise", type=float, default=None,
-                              help="Noise amplitude sigma_s (overrides params_json value)")
+                              help="Noise ratio sigma_noise (overrides params_json value)")
     study_parser.add_argument("--tau_noise_ms", type=float, default=5.0,
                               help="OU noise time constant (ms)")
     study_parser.add_argument("--seed", type=int, default=None,

@@ -44,45 +44,56 @@ class CircuitParams:
     # SPIKE-FREQUENCY ADAPTATION
     # =========================================================================
     # Adaptation provides negative feedback: high firing -> builds up I_adapt -> reduces firing
-    # This prevents runaway excitation and creates bistable UP/DOWN state dynamics
-    J_adapt_pyr: float = 0.270443  # PYR adaptation strength (moderate)
-    J_adapt_som: float = 0.0       # SOM adaptation strength (off by default)
+    # J_adapt in nA/Hz: at r_pyr ~ 8.5 Hz, J_adapt_pyr=0.002 gives I_adapt ~ 0.017 nA.
+    J_adapt_pyr: float = 0.002   # PYR adaptation strength (nA/Hz)
+    J_adapt_som: float = 0.0     # SOM adaptation strength (off by default)
 
     # =========================================================================
     # NOISE
     # =========================================================================
-    sigma_s: float = 5.88856  # Noise amplitude (std dev of Gaussian noise input)
+    sigma_s: float = 0.0   # Noise amplitude (Hz); 0 for deterministic init/testing
+    # Relative noise amplitude: std of noise current injected into PYR = sigma_noise * I_ext_pyr.
+    # The noise enters the transfer function (current-space), so it is naturally scaled by the
+    # drive strength and filtered through the transfer function slope.
+    sigma_noise: float = 0.3
 
     # =========================================================================
     # GABA SCALING (Inhibitory gain modulation)
     # =========================================================================
     # Total GABA scaling = g_gaba_base + g_alpha7
     # This multiplies inhibitory weights, implementing gain control
-    g_gaba_base: float = 3.93207  # Baseline GABA scaling
-    g_alpha7: float = 0.95607     # alpha7 nAChR-dependent GABA enhancement
+    g_gaba_base: float = 1.0   # Baseline GABA scaling (dimensionless)
+    g_alpha7: float = 0.0      # alpha7 nAChR-dependent GABA enhancement
 
     # =========================================================================
     # SYNAPTIC WEIGHTS
     # =========================================================================
     # Notation: w_XY = weight from Y to X (e=PYR, p=PV, s=SOM, v=VIP)
 
+    # All weights in nA/Hz.  At r ~ 10 Hz, weight × rate → nA of synaptic input.
+    # Default: small uniform starting point for the W&W operating regime.
+
     # --- Connections FROM PYR (excitatory) ---
-    w_ee: float = 6.27108   # PYR -> PYR: Recurrent excitation (maintains persistent activity)
-    w_ep: float = 42.5334   # PYR -> PV:  Drives fast feedback inhibition
-    w_es: float = 6.56939   # PYR -> SOM: Recruits dendritic inhibition
-    w_ev: float = 2.9622e-06  # PYR -> VIP: Very weak (VIP driven by other inputs)
+    w_ee: float = 0.002   # PYR -> PYR: Recurrent excitation
+    w_ep: float = 0.002   # PYR -> PV:  Drives fast feedback inhibition
+    w_es: float = 0.002   # PYR -> SOM: Recruits dendritic inhibition
+    w_ev: float = 0.002   # PYR -> VIP: Disinhibitory drive
 
-    # --- Connections FROM PV (inhibitory, perisomatic) ---
-    w_pe: float = 2.22239   # PV -> PYR: Perisomatic inhibition (divisive, shunting)
-    w_pp: float = 105.44    # PV -> PV:  Self-inhibition (limits PV firing rate)
+    # --- Connections FROM PV (inhibitory, perisomatic / DIVISIVE) ---
+    # w_pe enters as denominator: denom = 1 + g_gaba * w_pe * r_pv.
+    # Meaningful shunting requires g_gaba * w_pe * r_pv ~ 0.2–1.
+    # At r_pv ~ 4 Hz, g_gaba ~ 1: w_pe ~ 0.05–0.25 nA/Hz (much larger than additive weights).
+    # Default set to 0.05 so the J[PYR,PV] connectivity threshold is met at baseline.
+    w_pe: float = 0.05    # PV -> PYR: Perisomatic shunting inhibition
+    w_pp: float = 0.002   # PV -> PV:  Self-inhibition
 
-    # --- Connections FROM SOM (inhibitory, dendritic) ---
-    w_se: float = 2.61788   # SOM -> PYR: Dendritic inhibition (subtractive)
-    w_sp: float = 6.12585e-06  # SOM -> PV: Very weak cross-inhibition
+    # --- Connections FROM SOM (inhibitory, dendritic / subtractive) ---
+    w_se: float = 0.002   # SOM -> PYR: Dendritic inhibition
+    w_sp: float = 0.002   # SOM -> PV:  Cross-inhibition
 
     # --- Connections FROM VIP (inhibitory, disinhibitory) ---
-    w_vp: float = 0.0105234  # VIP -> PV:  Weak disinhibition of PV
-    w_vs: float = 1.27414    # VIP -> SOM: Core disinhibition pathway (VIP->SOM->PYR)
+    w_vp: float = 0.002   # VIP -> PV:  Weak disinhibition of PV
+    w_vs: float = 0.002   # VIP -> SOM: Core disinhibition pathway (VIP→SOM→PYR)
 
     # =========================================================================
     # EXTERNAL CURRENTS
@@ -90,20 +101,27 @@ class CircuitParams:
     # Each population receives baseline + receptor-mediated currents
 
     # --- PYR external input ---
-    I0_pyr: float = 1.7854 + 5.03758   # Baseline tonic drive
+    # I0_pyr must be > Theta_e ≈ 0.403 nA so PYR operates above threshold.
+    # Working init: I_syn* ≈ 0.428 nA  (= I0_pyr - 0.012 nA from small weight contributions)
+    # Chosen at z≈1.2 (30% below W&W asymptote) to give a 30% Turing window for the ring.
+    I0_pyr: float = 0.44   # Baseline tonic drive (nA)
 
     # --- PV external input ---
-    I0_pv: float = 5.58459        # Baseline tonic drive
-    I_alpha7_pv: float = 9.90322  # alpha7 nAChR-mediated current (cholinergic enhancement)
+    # I0_pv must be > Theta_i ≈ 0.288 nA.
+    # Working init: I_syn* ≈ 0.338 nA  (= I0_pv - 0.012 nA)
+    I0_pv: float = 0.35            # Baseline tonic drive (nA)
+    I_alpha7_pv: float = 0.0       # alpha7 nAChR current (nA); 0 at baseline, fitted for ACh condition
 
     # --- SOM external input ---
-    I0_som: float = 5.48551        # Baseline tonic drive
-    I_alpha7_som: float = 5.84835  # alpha7 nAChR-mediated current
-    I_beta2_som: float = 9.05679   # beta2 nAChR-mediated current (alpha4beta2 receptors on SOM)
+    # Working init: I_syn* ≈ 0.355 nA  (= I0_som + 0.005 nA)
+    I0_som: float = 0.35           # Baseline tonic drive (nA)
+    I_alpha7_som: float = 0.0      # alpha7 nAChR current (nA)
+    I_beta2_som: float = 0.0       # beta2 nAChR current (nA)
 
     # --- VIP external input ---
-    I0_vip: float = 7.57337        # Baseline tonic drive
-    I_alpha5_vip: float = 1.44659  # alpha5 nAChR-mediated current (alpha4beta2alpha5 on VIP)
+    # Working init: I_syn* ≈ 0.347 nA  (= I0_vip + 0.017 nA)
+    I0_vip: float = 0.33           # Baseline tonic drive (nA)
+    I_alpha5_vip: float = 0.0      # alpha5 nAChR current (nA)
 
     # =========================================================================
     # RECEPTOR ACTIVATION MULTIPLIERS (for knockout experiments)
@@ -125,30 +143,47 @@ class CircuitParams:
     trans_enabled: bool = False        # Whether to use time-dependent transient
 
     # =========================================================================
-    # TRANSFER FUNCTION PARAMETERS (Wong-Wang)
+    # TRANSFER FUNCTION PARAMETERS (Wong-Wang 2006, exact values)
     # =========================================================================
-    # Each population has its own threshold (Theta) and gain (alpha)
-    # g is shared curvature across all populations
+    # Form: Phi(I) = A * alpha * (I - Theta) / (1 - exp(-g * alpha * (I - Theta)))
+    # which is equivalent to the W&W form  A * (c*I - I0) / (1 - exp(-g*(c*I - I0)))
+    # with  alpha = c_x (Hz/nA),  Theta = I0_x / c_x (nA),  g = g_x (s).
+    #
+    # These six constants are FIXED from W&W 2006 and are NOT optimised.
+    # Derived thresholds: Theta_e = 125/310 ≈ 0.403 nA  (PYR begins to fire)
+    #                     Theta_i = 177/615 ≈ 0.288 nA  (PV/SST/VIP begin to fire)
 
-    Theta_pyr: float = 7.0   # PYR threshold
-    alpha_pyr: float = 1.9   # PYR gain
+    # Excitatory (PYR)
+    alpha_pyr: float = 310.0          # c_e  (Hz/nA) — W&W 2006
+    Theta_pyr: float = 125.0 / 310.0  # I0_e / c_e  (nA)
+    g_exc:     float = 0.16           # g_e  (s)     — W&W 2006
 
-    Theta_pv: float = 7.0    # PV threshold
-    alpha_pv: float = 2.6    # PV gain
+    # Inhibitory (PV, SST, VIP) — same W&W class
+    alpha_pv:  float = 615.0          # c_i  (Hz/nA) — W&W 2006
+    Theta_pv:  float = 177.0 / 615.0  # I0_i / c_i  (nA)
 
-    Theta_som: float = 7.0   # SOM threshold
-    alpha_som: float = 1.5   # SOM gain
+    alpha_som: float = 615.0
+    Theta_som: float = 177.0 / 615.0
 
-    Theta_vip: float = 7.0   # VIP threshold
-    alpha_vip: float = 1.2   # VIP gain
+    alpha_vip: float = 615.0
+    Theta_vip: float = 177.0 / 615.0
 
-    g: float = 1.0  # Transfer function curvature (shared across all populations)
+    g_inh: float = 0.087              # g_i  (s)     — W&W 2006
 
-    # Output scaling factors (Koukouli et al. 2025, Table 1)
-    A_pyr: float = 4.2   # PYR max firing rate scale
-    A_pv:  float = 10.1  # PV  max firing rate scale
-    A_som: float = 17.1  # SOM max firing rate scale
-    A_vip: float = 15.5  # VIP max firing rate scale
+    # Output scaling factors (dimensionless) — the ONLY free TF parameter per population.
+    # A_x is calibrated so that the NOISY mean rate (sigma_noise=0.3) matches targets.
+    # Targets: PYR ~8.5 Hz, PV ~4.0 Hz, SST ~4.5 Hz, VIP ~6.0 Hz.
+    #
+    # With I0_pyr=0.44 nA (z≈1.2), the W&W TF is convex → noise boosts mean rate
+    # (Jensen's inequality). The deterministic rate at A_pyr=0.40 is ~4.4 Hz, but
+    # with sigma_noise=0.3 the noisy mean is ~8.6 Hz (correct operating point).
+    #
+    # IMPORTANT: deterministic simulations will show ~4-5 Hz for PYR, which is
+    # expected. The optimizer always runs with noise_type='white'.
+    A_pyr: float = 0.40   # PYR: noisy mean ≈ 8.6 Hz; det ≈ 4.4 Hz at I_syn = 0.428 nA
+    A_pv:  float = 0.12   # PV:  core ≈ 33.1 Hz at I_syn = 0.338 nA
+    A_som: float = 0.11   # SST: core ≈ 42.5 Hz at I_syn = 0.355 nA
+    A_vip: float = 0.16   # VIP: core ≈ 38.0 Hz at I_syn = 0.347 nA
 
     def g_gaba(self) -> float:
         """Total GABA scaling factor."""
@@ -226,76 +261,83 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     """
     Define search bounds for each optimizable parameter.
 
-    Bounds are set based on:
-    - Biological plausibility (e.g., time constants in reasonable range)
-    - Numerical stability (e.g., weights not too large)
-    - Prior knowledge from literature
+    Units (W&W physical convention):
+    - Synaptic weights:        nA/Hz  (weight × rate → nA input current)
+    - External / nAChR drives: nA     (enter I_syn directly)
+    - Adaptation strengths:    nA/Hz  (J_adapt × rate → nA adaptation current)
+    - Output scalers A_x:      dimensionless
+    - GABA modulation:         dimensionless
+    Note: sigma_noise is fixed (not optimized); noise enters optimization via n_trials averaging.
 
-    Parameters are searched in "log" space (logarithmic) when they span
-    orders of magnitude, or "lin" space (linear) otherwise.
+    Transfer function shape parameters (alpha_x, Theta_x, g_exc, g_inh) are FIXED
+    from W&W 2006 and are NOT included here.
 
-    Some weights have minimum values to prevent the optimizer from
-    finding "degenerate" solutions where KO conditions have no effect
-    because the relevant pathway is already silenced.
+    Threshold references:
+    - Theta_e = 125/310 ≈ 0.403 nA  (PYR threshold)
+    - Theta_i = 177/615 ≈ 0.288 nA  (PV/SST/VIP threshold)
+
+    Working init: I_syn* ≈ 0.49 nA (PYR), 0.34–0.36 nA (interneurons).
+    All I0_x lower bounds are set ABOVE the W&W threshold so the network
+    is never initialised in the silent (below-threshold) regime.
     """
     b: dict[str, ParamBound] = {}
 
-    # Time constants
-    b["tau_s"] = ParamBound(5.0, 100.0, mode="log")
-    b["tau_adapt_pyr"] = ParamBound(100.0, 800.0, mode="log")
-    b["tau_adapt_som"] = ParamBound(50.0, 2000.0, mode="log")
+    # --- Time constants (ms) — tau_s fixed at 20 ms, not optimised ---
+    # Tightened around working init: tau_adapt_pyr=600, tau_adapt_som=150.
+    b["tau_adapt_pyr"] = ParamBound(300.0, 1200.0, mode="log")
+    b["tau_adapt_som"] = ParamBound(80.0, 300.0, mode="log")
 
-    # Adaptation strengths
-    b["J_adapt_pyr"] = ParamBound(0.1, 5.0, mode="log")
-    b["J_adapt_som"] = ParamBound(0.1, 5.0, mode="log")
+    # --- Adaptation strengths (nA/Hz) ---
+    # Tightened around working init: J_adapt_pyr=0.002, J_adapt_som=0.
+    b["J_adapt_pyr"] = ParamBound(0.001, 0.004, mode="log")
+    b["J_adapt_som"] = ParamBound(0.0, 0.005, mode="lin")   # lin: can be exactly 0 (off)
 
-    # Noise and GABA
-    b["sigma_s"] = ParamBound(0.0, 10.0, mode="lin")
-    b["g_gaba_base"] = ParamBound(0.0, 5.0, mode="lin")
-    b["g_alpha7"] = ParamBound(0.0, 5.0, mode="lin")
+    # --- GABA modulation (dimensionless) ---
+    # Tightened around working init: g_gaba_base=1.0, g_alpha7=0.0.
+    b["g_gaba_base"] = ParamBound(0.5, 2.0, mode="lin")
+    b["g_alpha7"]    = ParamBound(0.0, 1.0, mode="lin")
 
-    def w_range(x: float, *, min_val: float = 0.1, hi_factor: float = 5.0) -> ParamBound:
-        hi = max(min_val, hi_factor * x)
-        lo = min_val
-        return ParamBound(lo, hi, mode="log")
+    # --- Synaptic weights (nA/Hz) ---
+    # Additive connections centered near working init 0.002 nA/Hz.
+    _W_LO = 0.001
+    _W_HI = 0.008
 
-    # All weights have a floor of 0.1 — no connection can be fully silenced.
-    # Degeneracy (functionally near-zero connections) is instead discouraged
-    # via the Jacobian connectivity penalty in the loss function.
-    for name in ["w_ee", "w_pe", "w_ep", "w_pp", "w_se", "w_es", "w_vs"]:
-        b[name] = w_range(getattr(base, name))
+    for name in ["w_ee", "w_ep", "w_pp", "w_se", "w_es", "w_vs", "w_ev", "w_sp", "w_vp"]:
+        b[name] = ParamBound(_W_LO, _W_HI, mode="log")
 
-    # w_ev, w_sp, w_vp have near-zero defaults so 5×default ≈ 0 — explicit range
-    b["w_ev"] = ParamBound(0.1, 10.0, mode="log")
-    b["w_sp"] = ParamBound(0.1, 10.0, mode="log")
-    b["w_vp"] = ParamBound(0.1, 10.0, mode="log")
+    # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
+    # For meaningful shunting at r_pv ~ 4 Hz: g_gaba*w_pe*r_pv ~ 0.2–2  → w_pe ~ 0.05–0.5.
+    # Tightened around working init w_pe=0.05 while preserving room for stronger shunting.
+    b["w_pe"] = ParamBound(0.02, 0.20, mode="log")
 
-    # External currents
-    b["I0_pyr"] = ParamBound(0.0, 10.0, mode="lin")
-    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # Transient as fraction of I0 (0-100%)
+    # --- External tonic drives (nA) ---
+    # Lower bounds are set ABOVE the W&W thresholds so I_syn > Theta_x at initialisation.
+    # Tightened around working init (still safely above threshold).
+    # I0_pyr working init is 0.44 nA (W&W operating point at z≈1.2).
+    # Lower bound > Theta_pyr=0.403 so PYR stays above threshold.
+    b["I0_pyr"] = ParamBound(0.41, 0.65, mode="lin")
+    b["I0_pv"]  = ParamBound(0.30, 0.60, mode="lin")
+    b["I0_som"] = ParamBound(0.30, 0.60, mode="lin")
+    b["I0_vip"] = ParamBound(0.30, 0.55, mode="lin")
 
-    b["I0_pv"] = ParamBound(0.0, 15.0, mode="lin")
-    b["I_alpha7_pv"] = ParamBound(0.0, 10.0, mode="lin")
+    # Transient stimulus (dimensionless fraction of I0_pyr), centered near working init 0.2.
+    b["trans_factor"] = ParamBound(0.0, 0.5, mode="lin")
 
-    b["I0_som"] = ParamBound(0.0, 10.0, mode="lin")
-    b["I_alpha7_som"] = ParamBound(0.0, 10.0, mode="lin")
-    b["I_beta2_som"] = ParamBound(0.0, 10.0, mode="lin")
+    # --- nAChR cholinergic currents (nA) ---
+    # These add to I0_x; should be comparable fraction of (I0_x - Theta_x).
+    # Working init is 0 for all receptor-mediated currents; keep moderate headroom.
+    b["I_alpha7_pv"]  = ParamBound(0.0, 0.15, mode="lin")
+    b["I_alpha7_som"] = ParamBound(0.0, 0.15, mode="lin")
+    b["I_beta2_som"]  = ParamBound(0.0, 0.15, mode="lin")
+    b["I_alpha5_vip"] = ParamBound(0.0, 0.15, mode="lin")
 
-    b["I0_vip"] = ParamBound(0.0, 10.0, mode="lin")
-    b["I_alpha5_vip"] = ParamBound(0.0, 10.0, mode="lin")
-
-    # Transfer function parameters
-    for name in ["Theta_pyr", "Theta_pv", "Theta_som", "Theta_vip"]:
-        b[name] = ParamBound(0.0, 20.0, mode="lin")
-    for name in ["alpha_pyr", "alpha_pv", "alpha_som", "alpha_vip"]:
-        b[name] = ParamBound(0.05, 10.0, mode="log")
-
-    b["g"] = ParamBound(0.1, 10.0, mode="log")
-
-    # Output scaling factors
-    b["A_pyr"] = ParamBound(0.5, 50.0, mode="log")
-    b["A_pv"]  = ParamBound(0.5, 50.0, mode="log")
-    b["A_som"] = ParamBound(0.5, 50.0, mode="log")
-    b["A_vip"] = ParamBound(0.5, 50.0, mode="log")
+    # --- Output scaling factors (dimensionless) ---
+    # Working init: A_pyr=0.76, A_pv=0.12, A_som=0.11, A_vip=0.16.
+    # A_pyr was raised from 0.31 to 0.76 because I0_pyr was lowered to 0.44 nA
+    # (lower operating point → lower phi_core → higher A needed for same target rate).
+    b["A_pyr"] = ParamBound(0.15, 1.50, mode="log")
+    b["A_pv"]  = ParamBound(0.06, 0.30, mode="log")
+    b["A_som"] = ParamBound(0.05, 0.30, mode="log")
+    b["A_vip"] = ParamBound(0.08, 0.40, mode="log")
 
     return b

@@ -53,7 +53,7 @@ class FitConfig:
     n_trials: int = 8             # Number of trials per parameter set
     init_rate_scale: float = 0.2  # Scale for random initial conditions
 
-    noise_type: NoiseType = "none"
+    noise_type: NoiseType = "white"
     tau_noise_ms: float = 5.0
 
     max_rate: float = 200.0       # Maximum allowed rate (stability check)
@@ -164,13 +164,13 @@ def transfer_function_slope(
     """
     I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
     if population == "PYR":
-        return params.A_pyr * _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g)
+        return params.A_pyr * _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc)
     if population == "SOM":
-        return params.A_som * _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g)
+        return params.A_som * _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh)
     if population == "PV":
-        return params.A_pv * _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g)
+        return params.A_pv * _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh)
     if population == "VIP":
-        return params.A_vip * _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g)
+        return params.A_vip * _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh)
     raise ValueError(f"Unknown population: {population!r}")
 
 

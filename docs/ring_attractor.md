@@ -107,19 +107,21 @@ $$I_{\text{inter},i}^{\text{PV}\to\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{P
 
 Each node follows rate dynamics governed by:
 
-$$\tau_s \frac{dr_i^X}{dt} = -r_i^X + \Phi^X(I_i^X) + \sigma_s \, \xi_i^X(t)$$
+$$\tau_s \frac{dr_i^X}{dt} = -r_i^X + \Phi^X(I_i^X)$$
 
-where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, $I_i^X$ is the total input current, $\sigma_s$ is the noise amplitude, and $\xi_i^X(t)$ is a noise process.
+where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, and $I_i^X$ is the total input current. Noise is injected into the PYR input current (see [Section 7](#7-noise)).
 
 Firing rates are clamped to $r_i^X \in [0,\, 200]$ Hz at each integration step. The upper bound acts as a safety net against numerical overflow in large networks while remaining well above physiological firing rates.
 
 ### 3.1 Input Current Equations
 
-**PYR** receives local recurrent excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, and stimulus:
+**PYR** receives local recurrent excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, stimulus, and noise:
 
-$$I_i^{\text{PYR}} = \frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t)$$
+$$I_i^{\text{PYR}} = \frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
 
 The term $\frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}}$ implements **divisive (shunting) inhibition** from PV interneurons, modeling the effect of perisomatic GABAergic synapses on input resistance.
+
+The noise term $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$ injects stochastic current into each PYR node. Injecting noise at the current level (before the transfer function $\Phi^{\text{PYR}}$) means its effect on firing rate is naturally filtered by the transfer function slope $\Phi'$, consistent with a diffusion-approximation interpretation of Poisson spiking variability. The proportionality to $I_{\text{ext}}^{\text{PYR}}$ ensures noise scales automatically across experimental conditions.
 
 **SOM** (local connections only):
 
@@ -283,47 +285,61 @@ Multiple stimuli are summed: $I_{\text{stim},i}(t) = \sum_k I_{\text{stim},i}^{(
 
 ## 7. Noise
 
-Three noise modes are available, added to each population at each node:
+Noise is injected as a stochastic current perturbation into the **PYR input current only**, at each node independently. This models the variability in excitatory synaptic drive (diffusion approximation of Poisson spike trains).
 
-### White Noise
-$$\xi_i^X(t) \sim \mathcal{N}(0, 1) \quad \text{(i.i.d. at each time step)}$$
+### Noise equation
 
-### Ornstein-Uhlenbeck (OU) Noise
-$$d\xi_i^X = -\frac{\xi_i^X}{\tau_{\text{noise}}} \, dt + \sqrt{\frac{2}{\tau_{\text{noise}}}} \, dW_i^X$$
+The noisy PYR current at node $i$ is:
+
+$$I_i^{\text{PYR}}(t) = I_i^{\text{PYR,det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
+
+where $I_i^{\text{PYR,det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the noise process (see below). The noise scale is proportional to the baseline PYR drive $I_{\text{ext}}^{\text{PYR}}$, so it automatically adjusts across experimental conditions with different drive levels.
+
+| Parameter | Symbol | Default | Description |
+|-----------|--------|---------|-------------|
+| `sigma_noise` | $\sigma_{\text{noise}}$ | `0.3` | Dimensionless noise amplitude. Noise current std = `sigma_noise × I_ext_pyr` (nA) |
+
+### Noise processes
+
+Two stochastic processes are available for $\xi_i(t)$:
+
+**White noise** (default): i.i.d. Gaussian samples at each integration step
+$$\xi_i(t) \sim \mathcal{N}(0, 1) \quad \text{independent across nodes and time steps}$$
+
+**Ornstein-Uhlenbeck (OU) noise**: temporally correlated noise with time constant $\tau_{\text{noise}}$
+$$d\xi_i = -\frac{\xi_i}{\tau_{\text{noise}}} \, dt + \sqrt{\frac{2}{\tau_{\text{noise}}}} \, dW_i$$
 
 Discretized (Euler-Maruyama):
-$$\xi_i^X(t + \Delta t) = \xi_i^X(t) - \frac{\xi_i^X(t)}{\tau_{\text{noise}}} \Delta t + \sqrt{\frac{2\,\Delta t}{\tau_{\text{noise}}}} \, \eta_i^X, \quad \eta_i^X \sim \mathcal{N}(0, 1)$$
+$$\xi_i(t + \Delta t) = \xi_i(t) - \frac{\xi_i(t)}{\tau_{\text{noise}}} \Delta t + \sqrt{\frac{2\,\Delta t}{\tau_{\text{noise}}}} \, \eta_i, \quad \eta_i \sim \mathcal{N}(0, 1)$$
 
-### No Noise
-$$\xi_i^X(t) = 0$$
+**No noise**: $\xi_i(t) = 0$ (set `sigma_noise = 0`).
 
 ---
 
 ### Relation to Seeholzer et al. (2019)
 
-The Langevin equation (their Eq. 4) contains a single white noise term $\sqrt{B}\,\eta(t)$ with 
-$\langle\eta(t)\,\eta(t')\rangle = \delta(t - t')$. This is **not** a noise injected into the network 
-directly; it is the *emergent* effective noise on the bump center $\varphi(t)$, obtained by projecting 
-the full $N$-dimensional spiking variability onto the 1D attractor manifold via the left eigenvector 
+The Langevin equation (their Eq. 4) contains a single white noise term $\sqrt{B}\,\eta(t)$ with
+$\langle\eta(t)\,\eta(t')\rangle = \delta(t - t')$. This is **not** a noise injected into the network
+directly; it is the *emergent* effective noise on the bump center $\varphi(t)$, obtained by projecting
+the full $N$-dimensional spiking variability onto the 1D attractor manifold via the left eigenvector
 $e_l$ (their §"Diffusion", p. 24).
 
-The underlying noise source in the paper is **independent white Gaussian noise per neuron** — 
+The underlying noise source in the paper is **independent white Gaussian noise per neuron** —
 a diffusion approximation to Poisson spike emission:
 
-$$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad 
+$$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad
 \langle\eta_i(t)\,\eta_j(t')\rangle = \delta(t-t')\,\delta_{ij}$$
 
-(their p. 24, lines immediately before Eq. 20). This is exactly our **white noise** mode (up to 
-the $\sqrt{\phi_{0,i}}$ amplitude scaling, which in our rate model is absorbed into $\sigma_{\text{noise}}$).
+(their p. 24, lines immediately before Eq. 20). Our model injects current-space noise into PYR with amplitude $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}$, which after passing through the transfer function slope $\Phi'$ produces effective rate noise consistent with this formulation. The $\sqrt{\phi_{0,i}}$ amplitude scaling of the original is absorbed into $\sigma_{\text{noise}}$.
 
-**OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside 
-the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion 
-coefficient $B$ in Eq. (5) to hold. OU noise is instead motivated as a model of slowly fluctuating 
+**OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside
+the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion
+coefficient $B$ in Eq. (5) to hold. OU noise is instead motivated as a model of slowly fluctuating
 background input from other cortical areas, independent of the bump attractor theory.
 
-**In practice:** white noise is the appropriate mode for comparing empirical diffusion coefficients 
-$\hat{B}$ to the theoretical prediction of Eq. (5). OU noise produces trial-to-trial variability 
-with a characteristic timescale but will not match the $\langle[\varphi(t)-\varphi(0)]^2\rangle = B \cdot t$ 
+**In practice:** white noise is the appropriate mode for comparing empirical diffusion coefficients
+$\hat{B}$ to the theoretical prediction of Eq. (5). OU noise produces trial-to-trial variability
+with a characteristic timescale but will not match the $\langle[\varphi(t)-\varphi(0)]^2\rangle = B \cdot t$
 scaling predicted by the theory.
 
 ## 8. Experimental Conditions
@@ -395,6 +411,11 @@ The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the
 
 The standard workflow optimizes `CircuitParams` against single-node firing rates and then tunes ring parameters (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) separately via calibration sweeps. This two-step approach can produce inconsistencies: the local circuit was fit assuming no inter-node coupling, but ring connectivity alters the effective input each node receives. Joint optimization resolves this by optimizing all parameters simultaneously against ring-level measurements.
 
+A deeper problem is that matching firing rates alone does not guarantee that the fitted network can support a working-memory bump. Rate matching is a necessary but not sufficient condition: a network can reproduce quiet-wakefulness rates while being unable to sustain localized activity. Two additional constraints address this:
+
+1. **Turing instability** (`--turing_weight`): a necessary condition for bump formation, derived analytically from the parameters without any additional simulation.
+2. **Adaptation control** (`--no_adapt`): spike-frequency adaptation can mask whether a bump is truly self-sustaining or merely decaying; disabling it tests robustness under the most permissive conditions for bump stability.
+
 ### 10.2 Parameter Space
 
 The joint search space is `CircuitParams` (~60 parameters) extended with three ring-specific parameters:
@@ -409,9 +430,9 @@ The joint search space is `CircuitParams` (~60 parameters) extended with three r
 
 ### 10.3 Loss Function
 
-**Mode 1 — rates only** (default):
+All modes share the base loss terms:
 
-$$\mathcal{L} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
+$$\mathcal{L}_\text{base} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
 
 where $\mathcal{L}_\text{rate}$ is the MSPE between node-averaged ring firing rates and the target rates from quiet wakefulness:
 
@@ -423,15 +444,63 @@ $$\bar{r}^X = \frac{1}{N} \sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}$$
 
 KO conditions (alpha7, alpha5, beta2) are run on single-node by default or on the ring with `--ko_on_ring`.
 
-**Mode 2 — rates + bump quality** (with `--bump_mode`):
+#### Turing instability penalty (optional, `--turing_weight`)
 
-$$\mathcal{L} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian} + w_\text{bump} \cdot \mathcal{L}_\text{bump}$$
+For a ring network to support cue-triggered bump states without generating spontaneous bumps at rest, the network must satisfy two conditions simultaneously. These conditions correspond to the two sides of a **bistability requirement**: the homogeneous (uniform) state must be stable at rest, so that no bump appears spontaneously before the cue; and the same state must become unstable under cue-level drive, so that a bump can nucleate and persist during the delay.
 
-The bump loss is a one-sided soft constraint:
+Both conditions are expressed via the **Turing instability criterion** for a ring network. In a simplified one-population ring model, the uniform state is linearly unstable to spatially non-uniform perturbations when:
+
+$$\Phi'(I^*_\text{PYR}) \cdot w_\text{pyr}^\text{inter} > 1$$
+
+where $\Phi'(I^*_\text{PYR}) = A_\text{PYR} \cdot \phi'(I^*_\text{PYR})$ is the full transfer-function derivative evaluated at the PYR operating-point current $I^*_\text{PYR}$, and $w_\text{pyr}^\text{inter}$ is the total inter-node PYR→PYR coupling (row-sum). Below this threshold any spatial perturbation decays and no bump can exist. Above it, the uniform state destabilizes and a bump forms spontaneously.
+
+The desired working memory regime therefore requires:
+
+$$\Phi'(I^*_\text{rest}) \cdot w_\text{pyr}^\text{inter} < 1 \qquad \text{(stable at rest — no spontaneous bump)}$$
+
+$$\Phi'(I^*_\text{cue}) \cdot w_\text{pyr}^\text{inter} > 1 \qquad \text{(unstable under cue — bump can form and persist)}$$
+
+**Computing the two operating points.** The rest operating point $I^*_\text{rest}$ is recovered directly from the circuit equations at the fitted baseline firing rates, exactly as in the standard rate-loss evaluation. The cue operating point $I^*_\text{cue}$ is obtained by scaling the PYR external drive by a factor of 5 (`--turing_cue_scale`, default 5.0):
+
+$$I^*_\text{cue} = I^*_\text{rest}\big|_{I_0^\text{PYR} \,\to\, 5 \cdot I_0^\text{PYR}}$$
+
+This factor is grounded in the stimulus protocol: the cue is delivered as a current injection to PYR nodes with a peak amplitude calibrated to approximately $5 \times I_0^\text{PYR}$ (see §6.3), so this operating point directly reflects the input level a cued node experiences during stimulus presentation. No additional simulation is required — both operating points and their transfer-function derivatives are computed analytically from the current parameter set.
+
+**Penalty.** The two conditions are enforced as a combined soft penalty with safety margin $m$ (default 0.05, `--turing_margin`):
+
+$$\mathcal{L}_\text{Turing} = \underbrace{\max\!\left(0,\; \Phi'(I^*_\text{rest}) \cdot w_\text{pyr}^\text{inter} - (1 - m)\right)^2}_{\text{penalise spontaneous bumps at rest}} + \underbrace{\max\!\left(0,\; 1 + m - \Phi'(I^*_\text{cue}) \cdot w_\text{pyr}^\text{inter}\right)^2}_{\text{penalise failure to form bump under cue}}$$
+
+The first term is zero when the network is safely below the Turing threshold at rest; it activates as soon as the gain product approaches 1, pushing the optimizer away from parameter regions that produce spontaneous bumps. The second term is zero when the network is safely above threshold under cue-level drive; it activates when the cue-driven gain is insufficient to destabilize the uniform state, pushing the optimizer toward parameter regions where the cue can reliably trigger and sustain a bump.
+
+Note that satisfying this penalty guarantees the correct **geometry** for bistability — the rest and cue operating points straddle the Turing threshold — but does not guarantee bump persistence through the full delay period, which additionally depends on adaptation dynamics and noise. Bump persistence is verified empirically via simulation.
+
+#### Adaptation (`--no_adapt`)
+
+When `--no_adapt` is set, $J_\text{adapt,PYR}$ and $J_\text{adapt,SOM}$ are fixed to zero and excluded from the search space. Spike-frequency adaptation introduces a slow negative feedback that can compensate for strong recurrent excitation and mask whether a bump is truly self-sustaining. Fitting without adaptation is a conservative choice: parameters that support a bump without adaptation will also support one in the presence of adaptation (which only helps stability). This mode is useful to establish a baseline that is independent of the adaptation time constants.
+
+#### Summary of modes
+
+| Mode | `ring-optimize` flags | Extra loss terms |
+|------|----------------------|-----------------|
+| 1 — rates only | *(none)* | — |
+| 2 — rates + Turing | `--turing_weight 2.0` | $w_T \cdot \mathcal{L}_\text{Turing}$ |
+| 3 — rates + Turing + no adapt | `--turing_weight 2.0 --no_adapt` | $w_T \cdot \mathcal{L}_\text{Turing}$ |
+| 4 — single-node + no adapt + Turing | `optimize --turing_weight 2.0 --no_adapt` | $w_T \cdot \mathcal{L}_\text{Turing}$ (fixed $w_\text{ref}$) |
+| 5 — rates + bump quality | `--bump_mode` | $w_B \cdot \mathcal{L}_\text{bump}$ |
+
+The full loss for mode 2/3 is:
+
+$$\mathcal{L} = \mathcal{L}_\text{base} + w_T \cdot \mathcal{L}_\text{Turing}$$
+
+The full loss for mode 5 (bump quality) is:
+
+$$\mathcal{L} = \mathcal{L}_\text{base} + w_B \cdot \mathcal{L}_\text{bump}$$
+
+where:
 
 $$\mathcal{L}_\text{bump} = \max\!\left(0,\; A_\text{min} - \langle A \rangle_\text{window}\right)^2$$
 
-where $\langle A \rangle_\text{window}$ is the mean population-vector amplitude during a post-stimulus window and $A_\text{min}$ (default 0.3) is the minimum acceptable amplitude. This is independent of the rate targets — it only penalises parameter sets for which the network cannot sustain a bump at all.
+$\langle A \rangle_\text{window}$ is the mean population-vector amplitude during a post-stimulus window and $A_\text{min}$ (default 0.3) is the minimum acceptable amplitude. Mode 5 requires running an additional bump simulation per candidate, making it significantly more expensive than modes 2/3.
 
 ### 10.4 Computational Cost
 
@@ -439,8 +508,9 @@ Ring simulations are ~10–50× slower than single-node. To stay tractable:
 - `n_trials_ring = 3` (vs 8 for single-node)
 - KO conditions on single-node (same `CircuitParams`, no ring overhead)
 - `n_nodes = 64` recommended during optimization (smaller and faster)
+- The Turing penalty adds no simulation overhead — it is a pure analytical computation from the rest rates already computed in step 1
 
-Each evaluation is roughly: 3 ring sims + 3 single-node KO sims.
+Each evaluation is roughly: 3 ring sims + 3 single-node KO sims (+ 1 bump sim in mode 5).
 
 ### 10.5 Output
 

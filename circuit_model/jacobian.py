@@ -133,10 +133,10 @@ def compute_jacobian(
 
     # Transfer function derivatives at the operating point
     I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
-    dphi_pyr = _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g)
-    dphi_som = _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g)
-    dphi_pv  = _phi_derivative(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g)
-    dphi_vip = _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g)
+    dphi_pyr = _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc)
+    dphi_som = _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh)
+    dphi_pv  = _phi_derivative(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh)
+    dphi_vip = _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh)
 
     # Partial derivatives ∂I_i/∂r_j  (explicit, adaptation treated as fixed)
     denom = 1.0 + ggaba * params.w_pe * r_pv

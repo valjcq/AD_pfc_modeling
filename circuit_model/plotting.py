@@ -387,18 +387,18 @@ def plot_transfer_functions(
     I = np.linspace(I_range[0], I_range[1], n_points)
 
     pop_params = [
-        ("PYR", params.Theta_pyr, params.alpha_pyr, params.A_pyr),
-        ("SOM", params.Theta_som, params.alpha_som, params.A_som),
-        ("PV",  params.Theta_pv,  params.alpha_pv,  params.A_pv),
-        ("VIP", params.Theta_vip, params.alpha_vip, params.A_vip),
+        ("PYR", params.Theta_pyr, params.alpha_pyr, params.A_pyr, params.g_exc),
+        ("SOM", params.Theta_som, params.alpha_som, params.A_som, params.g_inh),
+        ("PV",  params.Theta_pv,  params.alpha_pv,  params.A_pv,  params.g_inh),
+        ("VIP", params.Theta_vip, params.alpha_vip, params.A_vip, params.g_inh),
     ]
 
     created_fig = ax is None
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
 
-    for name, theta, alpha, A in pop_params:
-        phi = phi_wong_wang(I, theta=theta, c=alpha, g=params.g, A=A)
+    for name, theta, alpha, A, g_pop in pop_params:
+        phi = phi_wong_wang(I, theta=theta, c=alpha, g=g_pop, A=A)
         ax.plot(I, phi, label=f"{name}  (Θ={theta:.1f}, α={alpha:.2g}, A={A:.3g})",
                 color=POPULATION_COLORS[name], linewidth=2.0)
 

@@ -224,26 +224,50 @@ def turing_instability_loss(
     params: CircuitParams,
     ring_params: RingParams,
     r_ss: np.ndarray,
-    margin: float = 0.1,
+    margin: float = 0.05,
+    cue_scale: float = 5.0,
 ) -> float:
-    """Soft penalty enforcing the Turing instability condition for bump formation.
+    """Two-sided soft penalty enforcing the Turing bistability condition.
 
-    The condition Φ'(I*_PYR) · w_pyr_pyr_inter > 1 is necessary for the ring to
-    support a spatially localised bump state (ignoring PV feedback).
+    For working-memory bump states, the network must straddle the Turing
+    instability threshold:
 
-    Penalty:  max(0,  1 + margin − turing)²
-    which is 0 once  turing ≥ 1 + margin  (one-sided soft constraint).
+      - At rest  : Φ'(I*_rest) · w_inter < 1   (uniform state stable, no spontaneous bump)
+      - Under cue: Φ'(I*_cue)  · w_inter > 1   (uniform state unstable, bump can nucleate)
+
+    I*_rest is recovered from r_ss via the circuit equations.
+    I*_cue  is computed at the same rates but with I0_pyr scaled by cue_scale
+    (default 5), matching the stimulus amplitude in the bump protocol.
+
+    Penalty (two terms, each one-sided quadratic with safety margin m):
+
+      L = max(0, Φ'(I*_rest)·w − (1−m))²   [penalise spontaneous bumps at rest]
+        + max(0, (1+m) − Φ'(I*_cue)·w  )²  [penalise failure to form bump under cue]
 
     Parameters
     ----------
     params    : CircuitParams — local circuit parameters
     ring_params : RingParams — ring connectivity parameters
     r_ss      : steady-state firing rates [pyr, som, pv, vip] from ring rest trials
-    margin    : safety margin above the instability threshold (default 0.1)
+    margin    : safety margin around the instability threshold (default 0.05)
+    cue_scale : multiplier applied to I0_pyr to approximate the cue operating point
     """
-    slope = transfer_function_slope(params, r_ss, population="PYR")
-    turing = slope * ring_params.w_pyr_pyr_inter
-    return max(0.0, 1.0 + margin - turing) ** 2
+    from dataclasses import replace as _replace
+
+    w = ring_params.w_pyr_pyr_inter
+
+    # Rest operating point
+    slope_rest = transfer_function_slope(params, r_ss, population="PYR")
+    turing_rest = slope_rest * w
+
+    # Cue operating point: same rates, stronger PYR external drive
+    params_cue = _replace(params, I0_pyr=cue_scale * params.I0_pyr)
+    slope_cue = transfer_function_slope(params_cue, r_ss, population="PYR")
+    turing_cue = slope_cue * w
+
+    loss_rest = max(0.0, turing_rest - (1.0 - margin)) ** 2   # penalise spontaneous bumps
+    loss_cue  = max(0.0, 1.0 + margin - turing_cue) ** 2      # penalise failure under cue
+    return loss_rest + loss_cue
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +282,8 @@ def evaluate_ring_params(
     bump_target: Optional[BumpTarget],
     rng: np.random.Generator,
     turing_weight: float = 0.0,
-    turing_margin: float = 0.1,
+    turing_margin: float = 0.05,
+    turing_cue_scale: float = 5.0,
 ) -> tuple[float, np.ndarray, KOMeans]:
     """
     Evaluate a (CircuitParams, RingParams) pair.
@@ -354,7 +379,7 @@ def evaluate_ring_params(
 
     # --- Step 4: Turing instability penalty (analytical, from ring rest rates) ---
     if turing_weight > 0.0:
-        t_loss = turing_instability_loss(params, ring_params, ring_means, turing_margin)
+        t_loss = turing_instability_loss(params, ring_params, ring_means, turing_margin, turing_cue_scale)
         total += turing_weight * t_loss
 
     # --- Step 5: Bump quality (Mode 2) ---
@@ -473,7 +498,8 @@ def nevergrad_optimize_ring(
     log_interval: int = 50,
     save_output_dir: Optional[str] = None,
     turing_weight: float = 0.0,
-    turing_margin: float = 0.1,
+    turing_margin: float = 0.05,
+    turing_cue_scale: float = 5.0,
 ) -> list[RingCandidate]:
     """
     Joint optimization of CircuitParams + RingParams against ring-level targets.
@@ -505,8 +531,9 @@ def nevergrad_optimize_ring(
         log_file: Path to JSONL log file
         log_interval: Log every N steps
         save_output_dir: Directory to save best circuit + ring params during optimization
-        turing_weight: Weight of the Turing instability penalty (0 = disabled)
-        turing_margin: Safety margin above the Turing threshold (penalize if turing < 1 + margin)
+        turing_weight: Weight of the two-sided Turing bistability penalty (0 = disabled)
+        turing_margin: Safety margin around the Turing threshold (default 0.05)
+        turing_cue_scale: Multiplier applied to I0_pyr to approximate the cue operating point (default 5.0)
 
     Returns:
         List of top-k RingCandidates sorted by loss (ascending)
@@ -556,7 +583,7 @@ def nevergrad_optimize_ring(
         p = params_from_ng_dict(ng_dict, base_circuit)
         rp = ring_params_from_ng_dict(ng_dict, base_ring)
 
-        L, ring_means, ko_means = evaluate_ring_params(p, rp, target, ring_cfg, bump_target, rng, turing_weight, turing_margin)
+        L, ring_means, ko_means = evaluate_ring_params(p, rp, target, ring_cfg, bump_target, rng, turing_weight, turing_margin, turing_cue_scale)
         ng_optimizer.tell(x, L)
 
         prev_best_loss = best[0].loss if best else float("inf")

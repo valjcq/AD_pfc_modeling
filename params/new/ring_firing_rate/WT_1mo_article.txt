@@ -1,33 +1,33 @@
 ================================================================================
   FIT SUMMARY  —  WT_1mo_article.json
-  Generated: 2026-03-25
+  Generated: 2026-03-27
 ================================================================================
-  Loss: 9.1e-05
+  Loss: 0.0001
 
   FIRING RATES: actual vs target
   ──────────────────────────────────────────────────────────────────────────────
   Condition       Pop     Actual    Target    Error
   ──────────────────────────────────────────────────────────────────────────────
-  base            PYR      8.289     8.214    +0.9%
-  base            SOM      4.351     4.295    +1.3%
-  base            PV       4.096     4.073    +0.6%
-  base            VIP      6.104     6.051    +0.9%
+  base            PYR      8.268     8.214    +0.7%
+  base            SOM      4.219     4.295    -1.8%
+  base            PV       4.085     4.073    +0.3%
+  base            VIP      6.014     6.051    -0.6%
   ──────────────────────────────────────────────────────────────────────────────
-  alpha7_ko       PYR     11.926         —   (info)
+  alpha7_ko       PYR      4.406         —   (info)
   ──────────────────────────────────────────────────────────────────────────────
-  alpha5_ko       PYR      6.059         —   (info)
+  alpha5_ko       PYR      2.829         —   (info)
   ──────────────────────────────────────────────────────────────────────────────
-  beta2_ko        PYR      7.269         —   (info)
+  beta2_ko        PYR      3.595         —   (info)
   ──────────────────────────────────────────────────────────────────────────────
 
   TRANSFER FUNCTION  Phi(I) = A · c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))
-  Shared: g = 0.1299
+  Curvature: g_exc (PYR) = 0.1600   g_inh (SOM/PV/VIP) = 0.0870
   ──────────────────────────────────────────────────────────────────────────────
                  PYR       SOM        PV       VIP
   ──────────────────────────────────────────────────────────────────────────────
-  A            0.739     8.187     2.839     6.169
-  Theta        0.219    19.857    11.018    14.698
-  alpha       0.1031    0.3977    6.1886    0.7876
+  A            0.450     0.050     0.188     0.084
+  Theta        0.403     0.288     0.288     0.288
+  alpha     310.0000  615.0000  615.0000  615.0000
   ──────────────────────────────────────────────────────────────────────────────
 
   JACOBIAN MATRIX  (J[row, col] = dr_row / dr_col)
@@ -35,24 +35,24 @@
   ──────────────────────────────────────────────────────────────────────────────
                 PYR        SOM         PV        VIP
   ──────────────────────────────────────────────────────────────────────────────
-  PYR       +0.1249    -0.0623    -0.2247    +0.0000
-  SOM       +1.7537    +0.0000    +0.0000    -0.1458
-  PV        +2.8084    -0.5992    -5.7422    -0.4975
-  VIP       +0.0373    +0.0000    +0.0000    +0.0000
+  PYR       +0.4939    -1.2631    -0.2775    +0.0000
+  SOM       +4.7724    +0.0000    +0.0000    -3.4909
+  PV        +2.7030    -1.7114    -2.8166    -1.4324
+  VIP       +4.8527    +0.0000    +0.0000    +0.0000
   ──────────────────────────────────────────────────────────────────────────────
 
   CONNECTION DETAILS  (raw weight → effective gain)
   ──────────────────────────────────────────────────────────────────────────────
-  PYR → PYR  (recurrent excitation)             w=  22.138  J=+0.1249  [STRONG    ]
-  PYR → SOM  (recruits dendritic inh.)          w=   5.455  J=+1.7537  [STRONG    ]
-  PYR → PV   (fast feedback inh.)               w=   1.436  J=+2.8084  [STRONG    ]
-  PYR → VIP  (recruits disinhibition)           w=   0.111  J=+0.0373  [moderate  ]
-  SOM → PYR  (dendritic inhibition)             w=   0.410  J=-0.0623  [moderate  ]
-  PV  → PYR  (perisomatic inhibition)           w=   0.654  J=-0.2247  [STRONG    ]
-  PV  → PV   (self-inhibition)                  w=   0.981  J=-5.7422  [STRONG    ]
-  SOM → PV   (cross-inhibition)                 w=   0.102  J=-0.5992  [STRONG    ]
-  VIP → SOM  (disinhibition pathway)            w=   0.453  J=-0.1458  [STRONG    ]
-  VIP → PV   (weak disinhibition)               w=   0.254  J=-0.4975  [STRONG    ]
+  PYR → PYR  (recurrent excitation)             w=   0.004  J=+0.4939  [STRONG    ]
+  PYR → SOM  (recruits dendritic inh.)          w=   0.008  J=+4.7724  [STRONG    ]
+  PYR → PV   (fast feedback inh.)               w=   0.006  J=+2.7030  [STRONG    ]
+  PYR → VIP  (recruits disinhibition)           w=   0.008  J=+4.8527  [STRONG    ]
+  SOM → PYR  (dendritic inhibition)             w=   0.003  J=-1.2631  [STRONG    ]
+  PV  → PYR  (perisomatic inhibition)           w=   0.042  J=-0.2775  [STRONG    ]
+  PV  → PV   (self-inhibition)                  w=   0.003  J=-2.8166  [STRONG    ]
+  SOM → PV   (cross-inhibition)                 w=   0.002  J=-1.7114  [STRONG    ]
+  VIP → SOM  (disinhibition pathway)            w=   0.006  J=-3.4909  [STRONG    ]
+  VIP → PV   (weak disinhibition)               w=   0.003  J=-1.4324  [STRONG    ]
   ──────────────────────────────────────────────────────────────────────────────
 
 ================================================================================

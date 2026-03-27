@@ -208,6 +208,11 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--freeze` | str | `""` | Comma-separated parameter names to freeze |
 | `--set` | str | `""` | Override values: `name=val,name=val` (e.g. `--set w_sp=0`) |
 | `--show_params` | flag | `False` | Show which parameters are free vs frozen |
+| `--no_adapt` | flag | `False` | Disable spike-frequency adaptation: sets `J_adapt_pyr=0` and `J_adapt_som=0` and freezes them. |
+| `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
+| `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
+| `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight (proxy for `w_pyr_pyr_inter` in single-node mode). |
+| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
 
 ### I/O Settings
 
@@ -328,16 +333,22 @@ python -m circuit_model ring-run [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--n_nodes` | int | from ring params JSON or `128` | Number of nodes on the ring |
-| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article_ko.json` (WT) and `WT_APP_1mo_article_ko.json` (APP). |
-| `--amplitude` | float | `30.0` | Stimulus amplitude as factor of I_ext_pyr baseline (20 = 20× baseline current) |
+| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article.json` (WT) and `WT_APP_1mo_article.json` (APP). |
+| `--amplitude` | float | `10.0` | Stimulus amplitude as factor of I_ext_pyr baseline (0.1 = 10% of baseline current) |
 | `--delay_ms` | float | `5000.0` | Delay period duration (ms) |
-| `--seed` | int | `42` | Random seed for reproducibility |
+| `--seed` | int | `442` | Random seed for reproducibility |
 | `--no_show` | flag | `False` | Don't display plots |
 | `--total_time_ms` | float | `None` | Total simulation time (overrides automatic timing) |
-| `--record_dt_ms` | float | `1.0` | Recording time step (ms). Only every record_dt_ms the state is stored. Lower values use more memory |
+| `--record_dt_ms` | float | `5.0` | Recording time step (ms). Only every record_dt_ms the state is stored. Lower values use more memory |
 | `--snapshot_anim_fps` | int | `30` | FPS for snapshot evolution animation |
 | `--snapshot_anim_step_ms` | float | `2.0` | Time step between animation frames (ms) |
 | `--quality_high` | flag | `False` | Use moderately higher-quality animation rendering (higher DPI + AV1 quality; up to ~2× slower encoding) |
+
+#### Noise Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--sigma_noise` | float | from params (default `0.3`) | Relative noise amplitude. The std of the current noise injected into each PYR node equals `sigma_noise × I_ext_pyr` (nA). Noise enters before the transfer function, so its effect on firing rate is naturally gated by the transfer function slope. Set to `0` to disable noise. |
 
 #### Connectivity Parameters
 
@@ -362,25 +373,32 @@ Ring connectivity parameters are loaded by default from `params/new/ring_firing_
 
 ### Outputs
 
-Generates in `figs/ring/<n_nodes>/<params_stem>/<conn_label>/amp<N>/<condition>/`:
+Generates in `figs/ring/run/cue/amp<N>/<condition>/`:
 - `dashboard.png` -- Activity heatmap, snapshots, firing rate traces
 - `snapshot_evolution.mp4` -- Ring snapshot animation (requires ffmpeg)
-- `bump_metrics.png` -- Four-panel figure: bump center, width, amplitude, and left/right asymmetry over time. The asymmetry panel uses a diverging colormap (blue = left-biased, black = symmetric, yellow = right-biased)
-- `connectome.png` -- PYR-PYR and PV-PYR connectivity matrices
+- `bump_metrics_over_time.png` -- Bump center, width, amplitude over time
+- `connectivity_matrices.png` -- PYR-PYR and PV-PYR connectivity matrices
+- `experiment_config.txt` -- Full parameter summary for reproducibility
 
-The `<conn_label>` encodes the connectivity: `gauss_w<w>_s<sigma>-pv_unif_<w_pv>` (e.g. `gauss_w4_s30-pv_unif_2`)
+`amp<N>` encodes the stimulus amplitude factor (e.g. `amp0.1` for `--amplitude 0.1`).
 
 ### Examples
 
 ```bash
-# Wild type, default amplitude (128 nodes)
+# Wild type, default amplitude
 python -m circuit_model ring-run --condition WT
 
-# Smaller network
-python -m circuit_model ring-run --condition WT --n_nodes 64
+# Smaller network, longer delay
+python -m circuit_model ring-run --condition WT --n_nodes 64 --delay_ms 8000
 
-# Alpha7 KO with higher amplitude (30× baseline)
-python -m circuit_model ring-run --condition a7_KO --amplitude 30 --delay_ms 5000
+# Alpha7 KO, amplitude 0.3×
+python -m circuit_model ring-run --condition a7_KO --amplitude 0.3 --delay_ms 5000
+
+# Disable noise
+python -m circuit_model ring-run --condition WT --sigma_noise 0
+
+# Stronger noise
+python -m circuit_model ring-run --condition WT --sigma_noise 0.5
 
 # With response transient
 python -m circuit_model ring-run --condition WT --response_onset_ms 500 --response_factor 0.3
@@ -1184,7 +1202,7 @@ python -m circuit_model ring-optimize [options]
 | `--plateau_patience` | int | `1000` | Stop if no improvement for this many steps (0 = disable) |
 | `--seed` | int | `0` | Random seed |
 | `--freeze` | str | `""` | Comma-separated `CircuitParams` field names to freeze |
-| `--set` | str | `""` | Override `CircuitParams` values before optimizing: `name=val,name=val` (e.g. `--set tau_s=20,g=1`). Combine with `--freeze` to pin biophysical constants. |
+| `--set` | str | `""` | Override `CircuitParams` values before optimizing: `name=val,name=val` (e.g. `--set tau_s=20,g_exc=0.16,g_inh=0.087`). Combine with `--freeze` to pin biophysical constants. |
 
 #### Ring simulation settings
 
@@ -1209,8 +1227,9 @@ python -m circuit_model ring-optimize [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--turing_weight` | float | `0.0` | Weight of Turing instability penalty (0 = disabled). Penalises solutions where `Φ'(I*_PYR) × w_pyr_pyr_inter < 1 + turing_margin`. |
-| `--turing_margin` | float | `0.1` | Safety margin above the Turing threshold (penalise if turing < 1 + margin). |
+| `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
+| `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
+| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point (matches the bump stimulus amplitude). |
 
 #### Mode 2 — bump quality (optional)
 
@@ -1251,7 +1270,7 @@ loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
 ```
 where `ring_rate_loss` = MSPE between node-averaged ring rates and `TargetRates`.
 
-The Turing penalty is zero once `Φ'(I*_PYR) × w_pyr_pyr_inter ≥ 1 + turing_margin`, i.e. the local circuit is in a regime that analytically supports bump formation.
+The Turing penalty has two terms: (1) zero when `Φ'(I*_rest) × w_pyr_pyr_inter ≤ 1 − turing_margin` (no spontaneous bump at rest); (2) zero when `Φ'(I*_cue) × w_pyr_pyr_inter ≥ 1 + turing_margin` (bump can form under cue). `I*_cue` is evaluated with `I0_pyr` scaled by `turing_cue_scale`.
 
 **Mode 2:**
 ```

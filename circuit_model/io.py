@@ -216,7 +216,7 @@ def save_fit_summary_txt(
     # ── Transfer function parameters ────────────────────────────────────────
     if params is not None:
         lines.append("  TRANSFER FUNCTION  Phi(I) = A · c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))")
-        lines.append(f"  Shared: g = {params.g:.4f}")
+        lines.append(f"  Curvature: g_exc (PYR) = {params.g_exc:.4f}   g_inh (SOM/PV/VIP) = {params.g_inh:.4f}")
         lines.append(SEP)
         lines.append(f"  {'':8}{'PYR':>10}{'SOM':>10}{'PV':>10}{'VIP':>10}")
         lines.append(SEP)
