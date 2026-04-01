@@ -4,8 +4,8 @@ Regenerate a .txt fit summary for an existing ring-optimize JSON output.
 Usage
 -----
 python scripts/ring_make_txt.py \
-    --circuit_json params/new/ring_firing_rate/WT_1mo_article.json \
-    --ring_json    params/new/ring_firing_rate/WT_1mo_article_ring.json \
+    --circuit_json params/new/ring_firing_rate/WT_1mo_article_ko.json \
+    --ring_json    params/new/ring_firing_rate/WT_1mo_article_ko_ring.json \
     --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051
 
 Optional KO targets (omit if not fitted):

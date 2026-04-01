@@ -1,0 +1,134 @@
+{
+  "_fit_metadata": {
+    "loss": 0.010482,
+    "comparison": {
+      "base": {
+        "PYR": {
+          "actual": 11.9725,
+          "target": 12.466,
+          "error_pct": -3.96
+        },
+        "SOM": {
+          "actual": 4.6274,
+          "target": 4.814,
+          "error_pct": -3.88
+        },
+        "PV": {
+          "actual": 4.3083,
+          "target": 4.241,
+          "error_pct": 1.59
+        },
+        "VIP": {
+          "actual": 5.6404,
+          "target": 5.551,
+          "error_pct": 1.61
+        }
+      },
+      "alpha7_ko": {
+        "PYR": {
+          "actual": 10.4138,
+          "target": null,
+          "error_pct": null,
+          "in_loss": false
+        }
+      },
+      "alpha5_ko": {
+        "PYR": {
+          "actual": 9.813,
+          "target": null,
+          "error_pct": null,
+          "in_loss": false
+        }
+      },
+      "beta2_ko": {
+        "PYR": {
+          "actual": 10.016,
+          "target": null,
+          "error_pct": null,
+          "in_loss": false
+        }
+      }
+    },
+    "jacobian": {
+      "_note": "J[row,col] = dr_row/dr_col: effect of col population on row population",
+      "PYR": {
+        "PYR": 0.124751,
+        "SOM": -0.742052,
+        "PV": -0.08818,
+        "VIP": 0.0
+      },
+      "SOM": {
+        "PYR": 1.480714,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": -1.276507
+      },
+      "PV": {
+        "PYR": 0.084344,
+        "SOM": -1.826038,
+        "PV": -3.703417,
+        "VIP": -1.010924
+      },
+      "VIP": {
+        "PYR": 0.942881,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": 0.0
+      }
+    },
+    "ring_params": {
+      "w_pyr_pyr_inter": 0.006139,
+      "w_pv_global": 0.008295,
+      "sigma_pyr_deg": 15.0,
+      "n_nodes": 64
+    }
+  },
+  "A_pv": 0.1156230515636356,
+  "A_pyr": 0.6009896990250846,
+  "A_som": 0.08146858916124908,
+  "A_vip": 0.12611935189759563,
+  "I0_pv": 0.3574160556126315,
+  "I0_pyr": 0.4271087818635123,
+  "I0_som": 0.34525887969605523,
+  "I0_vip": 0.3262440303770276,
+  "I_alpha5_vip": 0.013010483200750418,
+  "I_alpha7_pv": 0.041168778782355926,
+  "I_alpha7_som": 0.02208192409191799,
+  "I_beta2_som": 0.012837990053919772,
+  "J_adapt_pyr": 0.0011919324424648071,
+  "J_adapt_som": 0.003901849027835065,
+  "Theta_pv": 0.2878,
+  "Theta_pyr": 0.40323,
+  "Theta_som": 0.2878,
+  "Theta_vip": 0.2878,
+  "act_alpha5": 1.0,
+  "act_alpha7": 1.0,
+  "act_beta2": 1.0,
+  "alpha_pv": 615.0,
+  "alpha_pyr": 310.0,
+  "alpha_som": 615.0,
+  "alpha_vip": 615.0,
+  "g_alpha7": 0.14735102271587824,
+  "g_exc": 0.16,
+  "g_gaba_base": 1.3174583123560843,
+  "g_inh": 0.087,
+  "sigma_noise": 0.3,
+  "sigma_s": 0.0,
+  "tau_adapt_pyr": 600.0,
+  "tau_adapt_som": 105.582831768133,
+  "tau_s": 20.0,
+  "trans_duration_ms": 500.0,
+  "trans_enabled": false,
+  "trans_factor": 0.2,
+  "trans_start_ms": 1000.0,
+  "w_ee": 0.0011502758151608413,
+  "w_ep": 0.0001534597974596714,
+  "w_es": 0.0024413981079534075,
+  "w_ev": 0.0016412258887576036,
+  "w_pe": 0.05405489851576106,
+  "w_pp": 0.00460004450877518,
+  "w_se": 0.003482906955700355,
+  "w_sp": 0.002268136687204232,
+  "w_vp": 0.001839327635770774,
+  "w_vs": 0.0021047015697412776
+}

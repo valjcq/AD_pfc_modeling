@@ -6,45 +6,9 @@
 
 ---
 
-## Current State of the Project (as of 2026-03-20)
-
-### What exists and is valid
-
-| Resource | Status | Location | Notes |
-|---|---|---|---|
-| Spike rate data (direct Hz) | Available | `AD_data/AD_spikes/datafiles/firing_rate_data.csv` | 30 rows: genotype × timepoint; `per_neuron_mean` is the optimization target |
-| Data documentation | Written | `docs/data/fitting_roadmap.md` | Genotype mapping, target values, CLI commands |
-| Model simplification | Done | `docs/changes_removed_connections.md` | `w_vv` and `w_ps` removed; all JSON files updated silently |
-
-> **Model simplification**: Two biologically unsupported connections have been removed: `w_vv` (VIP→VIP self-inhibition) and `w_ps` (PV→SOM cross-inhibition). Both were absent from the reference circuit schematic. Old JSON files with these keys are silently ignored at load time.
-
-### Parameter file convention going forward
-
-All ring-level analyses use:
-- **WT circuit**: `params/new/WT_1mo_article.json`
-- **WT ring**: `params/new/WT_1mo_article_ring.json` *(w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg)*
-- **WT_APP circuit**: `params/new/WT_APP_1mo_article.json`
-- **WT_APP ring**: `params/new/WT_APP_1mo_article_ring.json`
-
-KO conditions (a7_KO, b2_KO, a5_KO) are simulated via zero-activation on the WT params (Option A). See Section 2.5 of `roadmap_article.md` for strategy discussion.
-
-### What is missing (ordered by priority)
-
-1. **WT and WT_APP 1mo optimization** — Starting from scratch with new spike rate targets
-2. **Ring calibration** — Blocked by optimization
-3. **All oscillation, asymmetry, diffusion, distractor analyses** — Blocked by calibration
-4. **KO conditions** — Simulated via zero-activation on WT params (Option A)
-5. **Parametric receptor-sensitivity sweep (optional, non-default)**
-6. **3mo/6mo fits**
-
----
-
-
 ## PHASE 0 — WT and WT_APP Parameter Optimization
 
 > **Goal**: Achieve converged parameter fits where all 4 populations match spike rate targets. This is the foundation for everything downstream.
->
-> **Status**: TODO — starting from scratch with direct spike rate data from `AD_data/AD_spikes/datafiles/firing_rate_data.csv`.
 
 ---
 
@@ -61,7 +25,7 @@ KO conditions (a7_KO, b2_KO, a5_KO) are simulated via zero-activation on the WT 
 | PV  | 4.073 | 4.241 | PV-Cre_control / PV-Cre_APP |
 | VIP | 6.051 | 5.551 | VIP-Cre_control / VIP-Cre_APP |
 
-**Optional KO PYR constraints** (add to constrain the KO populations simultaneously):
+**Optional KO PYR constraints** (add `--target_*_ko_pyr` flags to constrain KO populations simultaneously):
 
 | KO | WT background | WT_APP background | Source (CSV) |
 |---|---|---|---|
@@ -72,8 +36,6 @@ KO conditions (a7_KO, b2_KO, a5_KO) are simulated via zero-activation on the WT 
 † b2_KO_control: per-neuron data truncated in source CSV; value is `sampled_mean`.
 
 ---
-
-The optimization uses a single mode: **ring optimization, no adaptation, with the two-sided Turing bistability penalty** (see `docs/transfer_function.md`).
 
 ### Transfer function parameter convention
 
@@ -89,217 +51,228 @@ All transfer function shape parameters are fixed to the W&W 2006 values and **fr
 | SOM/PV/VIP curvature | `g_inh` | 0.087 s | W&W 2006 |
 | Synaptic time constant | `tau_s` | 20 ms | Beierlein 2003 |
 | Ring connectivity width | `sigma_pyr_deg` | 15° | fixed protocol |
+| PYR adaptation time constant | `tau_adapt_pyr` | 600 ms | Storm 1989; frozen to prevent optimizer from using slow adaptation as a substitute for genuine bistability |
 
 ---
 
-#### Variant A — 4-population fit only (WT)
+The optimization workflow follows a **two-stage approach** (decided 2026-03-31):
 
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 8.214 \
-  --target_som 4.295 \
-  --target_pv  4.073 \
-  --target_vip 6.051 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
-  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
-  --turing_weight 2.0 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ring.json \
-  --log_file figs/optim/1mo/ring_turing/log.jsonl
-```
+- **Stage A** — Single-node optimization (`circuit_model optimize`): fits CircuitParams only, no ring overhead.
+- **Stage B** — Ring calibration sweep (`circuit_model ring-calibrate`): sweeps RingParams only, with CircuitParams frozen from Stage A.
 
-#### Variant B — 4-population + KO PYR constraints (WT)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 8.214 \
-  --target_som 4.295 \
-  --target_pv  4.073 \
-  --target_vip 6.051 \
-  --target_alpha7_ko_pyr 17.539 \
-  --target_beta2_ko_pyr  17.965 \
-  --target_alpha5_ko_pyr 9.285 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
-  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
-  --turing_weight 2.0 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_1mo_article_ko.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_1mo_article_ko_ring.json \
-  --log_file figs/optim/1mo_ko/ring_turing/log.jsonl
-```
-
-#### Variant C — 4-population fit only (WT_APP)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 12.466 \
-  --target_som 4.814 \
-  --target_pv  4.241 \
-  --target_vip 5.551 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
-  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
-  --turing_weight 2.0 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ring.json \
-  --log_file figs/optim/1mo_APP/ring_turing/log.jsonl
-```
-
-#### Variant D — 4-population + KO_APP PYR constraints (WT_APP)
-
-```bash
-python -m circuit_model ring-optimize \
-  --target_pyr 12.466 \
-  --target_som 4.814 \
-  --target_pv  4.241 \
-  --target_vip 5.551 \
-  --target_alpha7_ko_pyr 13.599 \
-  --target_beta2_ko_pyr  19.109 \
-  --target_alpha5_ko_pyr 3.113 \
-  --optimizer chaining \
-  --n_samples 50000 \
-  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087" \
-  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh" \
-  --turing_weight 2.0 \
-  --save_best_circuit_json params/new/ring_firing_rate/WT_APP_1mo_article_ko.json \
-  --save_best_ring_json params/new/ring_firing_rate/WT_APP_1mo_article_ko_ring.json \
-  --log_file figs/optim/1mo_APP_ko/ring_turing/log.jsonl
-```
-
-**Recommended order**: A → B if KO coverage needed; C → D if KO_APP coverage needed.
+**Rationale**:
+- Single-node fitting is faster, cleaner, and decoupled from ring effects.
+- Ring calibration sweeps are more interpretable than joint optimization for finding bump formation/sustainment thresholds.
+- The Turing loss, while useful as a guide, cannot guarantee bump persistence — simulation-based calibration is the ground truth.
 
 ---
 
-### Task 0.3 — Validate WT fit
+### Stage A — Single-node optimization
 
-**What**: After optimization converges, validate the fitted parameters.
+#### WT — single-node fit (base rates only)
 
-**Validation steps**:
-1. **Single run visualization**:
-   ```bash
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition WT
+```bash
+python -m circuit_model optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --optimizer chaining --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_json params/new/single_node/WT_1mo_article.json \
+  --log_file figs/optim/1mo/single_node/log.jsonl
+```
 
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition WT_APP
+Optional (right after single-node): joint ring optimization with the same targets
 
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition a7_KO
-  
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition a7_KO_APP
-  
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition b2_KO
-  
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition b2_KO_APP
-  
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition a5_KO
-  
-   python -m circuit_model run \
-     --noise_type white --T_ms 5000 --burn_in_ms 2000 \
-     --condition a5_KO_APP
-   ```
-   Verify: all 4 populations fire at reasonable rates, no population is silent or saturating. Output figures are auto-saved in the default command-specific folders.
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --params_json params/new/single_node/WT_1mo_article.json \
+  --optimizer chaining --n_samples 50000 \
+  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 1.0 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_circuit_json params/new/ring_optimize/WT_1mo_article_ring_opt_circuit.json \
+  --save_best_ring_json params/new/ring_optimize/WT_1mo_article_ring_opt_ring.json \
+  --log_file figs/optim/1mo/ring_optimize/log.jsonl
+```
 
-2. **8-condition sanity check** (KO predictions on WT fit):
-   ```bash
-   python -m circuit_model study \
-     --n_runs 5000 --noise_type white --n_workers 8
-   ```
-  Verify: this command runs all 8 conditions (`WT`, `WT_APP`, `a7_KO`, `a7_KO_APP`, `b2_KO`, `b2_KO_APP`, `a5_KO`, `a5_KO_APP`). KO PYR rates should match targets within ~20% when run from the WT fit, and KO_APP trends should remain consistent with the WT_APP family.
+#### WT — single-node fit + KO constraints
 
-3. **Biological plausibility check**:
-   - PYR adaptation timescale should be ~100-1000 ms (biological range; frozen at 600 ms)
-   - Transfer function thresholds should be positive
-   - Synaptic weights should be positive
-   - All receptor currents should be positive
+```bash
+python -m circuit_model optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
+  --optimizer chaining --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_json params/new/single_node/WT_1mo_article_ko.json \
+  --log_file figs/optim/1mo_ko/single_node/log.jsonl
+```
+
+Optional (right after single-node): joint ring optimization with KO targets
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
+  --params_json params/new/single_node/WT_1mo_article_ko.json \
+  --optimizer chaining --n_samples 50000 \
+  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 1.0 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_circuit_json params/new/ring_optimize/WT_1mo_article_ko_ring_opt_circuit.json \
+  --save_best_ring_json params/new/ring_optimize/WT_1mo_article_ko_ring_opt_ring.json \
+  --log_file figs/optim/1mo_ko/ring_optimize/log.jsonl
+```
+
+#### WT_APP — single-node fit (base rates only)
+
+```bash
+python -m circuit_model optimize \
+  --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
+  --optimizer chaining --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_json params/new/single_node/WT_APP_1mo_article.json \
+  --log_file figs/optim/1mo_APP/single_node/log.jsonl
+```
+
+Optional (right after single-node): joint ring optimization with the same targets
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
+  --params_json params/new/single_node/WT_APP_1mo_article.json \
+  --optimizer chaining --n_samples 50000 \
+  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 1.0 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_circuit_json params/new/ring_optimize/WT_APP_1mo_article_ring_opt_circuit.json \
+  --save_best_ring_json params/new/ring_optimize/WT_APP_1mo_article_ring_opt_ring.json \
+  --log_file figs/optim/1mo_APP/ring_optimize/log.jsonl
+```
+
+#### WT_APP — single-node fit + KO constraints
+
+```bash
+python -m circuit_model optimize \
+  --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
+  --target_alpha7_ko_pyr 13.599 --target_beta2_ko_pyr 19.109 --target_alpha5_ko_pyr 3.113 \
+  --optimizer chaining --n_samples 50000 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_json params/new/single_node/WT_APP_1mo_article_ko.json \
+  --log_file figs/optim/1mo_APP_ko/single_node/log.jsonl
+```
+
+Optional (right after single-node): joint ring optimization with KO targets
+
+```bash
+python -m circuit_model ring-optimize \
+  --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
+  --target_alpha7_ko_pyr 13.599 --target_beta2_ko_pyr 19.109 --target_alpha5_ko_pyr 3.113 \
+  --params_json params/new/single_node/WT_APP_1mo_article_ko.json \
+  --optimizer chaining --n_samples 50000 \
+  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 1.0 \
+  --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
+  --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
+  --save_best_circuit_json params/new/ring_optimize/WT_APP_1mo_article_ko_ring_opt_circuit.json \
+  --save_best_ring_json params/new/ring_optimize/WT_APP_1mo_article_ko_ring_opt_ring.json \
+  --log_file figs/optim/1mo_APP_ko/ring_optimize/log.jsonl
+```
+
+**Stage A acceptance criteria (check before proceeding to Stage B):**
+- [ ] PYR, SOM, PV, VIP base rates within 10% of targets
+- [ ] alpha7_ko / alpha5_ko / beta2_ko PYR within 15% of targets (KO fits only)
+- [ ] No Jacobian entries above 5
+- [ ] w_pe >= 0.05 nA/Hz  (PYR→PV not collapsed)
+- [ ] w_se >= 0.003 nA/Hz (PYR→SOM not collapsed)
+- [ ] Neither w_pe nor w_se saturated at lower bound in [BOUNDS-FINAL]
+
+---
+
+### Stage B — Ring Calibration
+
+#### Step B1 — w_pyr_pyr_inter sweep (WT, base fit)
+
+`ring-calibrate` sweeps a 2D grid of (amplitudes × w_inter_values). Fix amplitude
+and provide an explicit list of w_inter values to sweep:
+
+```bash
+python -m circuit_model ring-calibrate \
+  --params_json params/new/single_node/WT_1mo_article.json \
+  --w_pv_global 0.017 \
+  --amplitudes 2.0 \
+  --w_inter_min 0.001 --w_inter_max 0.05 --n_inter 20 \
+  --n_nodes 64 \
+  --n_trials 50
+```
+
+Note: amplitudes=2.0 = +100% of baseline I0_pyr, consistent with Turing cue
+scale. w_pv_global=0.017 is the reference value from previous ring-optimize.
+
+#### Step B2 — w_pv_global sweep (WT, at bump-forming w_inter)
+
+`ring-calibrate` does not support sweeping w_pv_global directly. Run it
+repeatedly with different `--w_pv_global` values using a shell loop.
+Replace <W_INTER> with the minimum w_pyr_pyr_inter that produced a
+self-sustained bump in Step B1:
+
+```bash
+for wpv in 0.005 0.008 0.011 0.014 0.017 0.020 0.023 0.026 0.030 0.035 0.040 0.045 0.050; do
+  python -m circuit_model ring-calibrate \
+    --params_json params/new/single_node/WT_1mo_article.json \
+    --w_pv_global $wpv \
+    --w_inter_values <W_INTER> \
+    --amplitudes 2.0 \
+    --n_nodes 64 \
+    --n_trials 50
+done
+```
+
+Repeat Steps B1 and B2 for WT_APP using
+  --params_json params/new/single_node/WT_APP_1mo_article.json
+
+**Stage B acceptance criteria:**
+- [ ] Bump forms at the selected w_pyr_pyr_inter (non-zero amplitude post-cue)
+- [ ] Bump self-sustains for >= 2000 ms after cue offset
+- [ ] No spontaneous bump forms during burn-in
+- [ ] Node-averaged ring firing rates remain within 15% of single-node targets
+- [ ] No runaway to 200 Hz cap
+
+---
+
+### Task 0.3 — Validate fit
+
+**What**: After optimization converges, validate the fitted parameters on the ring.
+
+**Ring sanity check** (128 nodes, 2000 ms delay) — run for both KO and KO_APP conditions:
+
+```bash
+python -m circuit_model ring-run \
+  --condition WT --n_nodes 128 --delay_ms 2000 --amplitude 1.1
+
+python -m circuit_model ring-run \
+  --condition WT_APP --n_nodes 128 --delay_ms 2000 --amplitude 1.1
+```
+
+Verify: bump forms and is stable, all 4 populations fire at reasonable rates, no population is silent or saturating.
+
+**Biological plausibility check**:
+- Transfer function thresholds should be positive
+- Synaptic weights should be positive
+- All receptor currents should be positive
 
 **Metrics to extract and report** (for Fig 2):
 - Per-population firing rate comparison: simulated vs experimental (box plot or bar chart)
-- Per-condition (8 conditions): PYR rate comparison
+- Per-condition: PYR rate comparison
 - Relative error per population and per condition
 
 **Figure destination**: Fig 2 (fit validation panel)
-
----
-
-### Task 0.4 — Prepare KO parameter sets (Option A: zero-activation)
-
-**What**: Once WT is fitted, prepare KO conditions by zeroing the relevant receptor activation. No new optimization needed — the `--condition` flag handles this internally.
-
-| Condition | Parameter changes from WT (applied internally) |
-|---|---|
-| a7_KO | `act_alpha7 = 0`, `g_alpha7 = 0` |
-| b2_KO | `act_beta2 = 0` |
-| a5_KO | `act_alpha5 = 0` |
-| WT_APP | use WT_APP fitted parameter family (no receptor activation override) |
-
-**Verification**:
-- WT + KO conditions: Task 0.3 step 2.
-- WT_APP + KO_APP conditions: run the same `study` workflow from the WT_APP fitted parameter file.
-
----
-
-### Task 0.6 — Ring calibration (WT and WT_APP)
-
-**What**: Run calibration separately for each parameter set to find the (amplitude, w_pyr_pyr_inter, w_pv_global) triplet that produces a stable working memory bump. Because WT and WT_APP have different local circuit dynamics, they will have different operating regimes and must be calibrated independently.
-
-**Commands**:
-```bash
-# --- WT calibration ---
-python -m circuit_model ring-noise-floor \
-  --conditions WT WT_APP \
-  --w_inter_values 1 2 3 4 5 6 7 8 \
-  --w_pv_value 10 \
-  --n_baseline 100 --sigma_pyr_deg 15 --n_workers 8
-
-python -m circuit_model ring-calibrate \
-  --conditions WT \
-  --amplitudes 2 4 6 8 10 12 15 18 22 \
-  --w_inter_values 3 4 5 6 7 8 9 \
-  --n_trials 200 --sigma_pyr_deg 15 --n_workers 8
-```
-
-**Expected outputs** (one set per param file): Heatmaps of success rate, mean Â, peak PYR rate across the 2D grid. A `calibration_recommended.json` with the best (amplitude, w_inter) pair.
-
-**Selection criteria** (from existing calibration logic):
-- Success rate = 1.0 (bump always forms)
-- Peak PYR rate in [17.0, 18.5] Hz (physiological WM range)
-- Among candidates: highest mean Â
-
-**Result notation**: After this task, the following placeholders are defined and used in all subsequent commands:
-- `AMP_WT`, `W_INTER_WT`, `W_PV_WT` — from WT calibration (`params/new/WT_1mo_article.json`)
-- `AMP_APP`, `W_INTER_APP`, `W_PV_APP` — from WT_APP calibration (`params/new/WT_APP_1mo_article.json`)
-- `SIGMA` = 15 (shared, fixed)
-
----
-
-### Task 0.7 — Decision point: parameter strategy for KO ring simulations
-
-KO conditions (a7_KO, b2_KO, a5_KO) are simulated using Option A only: the WT parameter set (`params/new/WT_1mo_article.json`) with the relevant receptor activation zeroed, and the WT calibration values (AMP_WT, W_INTER_WT, W_PV_WT). This is the only viable approach because KO calcium imaging data provides PYR rates only — a full re-optimization would be underdetermined.
-
-WT_APP uses its own fitted parameter set (`params/new/WT_APP_1mo_article_ko.json`) with its own calibration values (AMP_APP, W_INTER_APP, W_PV_APP). The disease effect is captured entirely by the WT_APP parameter family (not by APP receptor desensitization sampling).
-
-In ring and study workflows, KO variants are implemented by setting the targeted receptor activation to 0:
-- `a7_KO`: `act_alpha7 = 0`, `g_alpha7 = 0`
-- `b2_KO`: `act_beta2 = 0`
-- `a5_KO`: `act_alpha5 = 0`
-
-KO_APP applies the same KO rule on the WT_APP parameter family.
 
 ---
 
@@ -307,7 +280,7 @@ KO_APP applies the same KO rule on the WT_APP parameter family.
 
 > **Goal**: Fully characterize both WT and WT_APP bumps side by side. This is the primary comparison of the paper — every analysis is run with both parameter sets to directly compare healthy vs disease circuit.
 >
-> **PREREQUISITE**: Task 0.6 complete — both calibrations done.
+> **PREREQUISITE**: Task 0.3 complete — fits validated.
 >
 > **Ring parameter convention**:
 > - WT commands: `--amplitude AMP_WT --w_pyr_pyr_inter W_INTER_WT --w_pv_global W_PV_WT --sigma_pyr_deg 15`
@@ -1026,7 +999,7 @@ python scripts/receptor_sensitivity_sweep.py \
 | **Fig 9** | KO comparison summary: directional matrix + bar plots | Task 2.6 | To do (needs Code 5.3) |
 | **Fig 10** | 8-condition ring study: KO×APP interaction matrix | Task 3.1 | To do |
 | **Fig 11** | Receptor-activation sweep: 2D heatmap (α7 × α5 → WM quality) | Tasks 4.1–4.3 | To do (needs Code 5.2) |
-| **Suppl. S1** | Calibration heatmaps: WT and WT_APP parameter spaces | Task 0.6 | To do |
+| **Suppl. S1** | Calibration heatmaps: WT and WT_APP parameter spaces | Task 0.6 (= Stage B of Task 0.2 — see Stage B commands in Task 0.2) | To do |
 | **Suppl. S2** | Rate-matched comparison | Task 3.2 | To do |
 | **Suppl. S3** | Bump decay study: WT vs WT_APP | Task 1.6 | To do |
 | **Suppl. S4** | WT vs WT_APP parameter comparison (post-fit) | Task 0.3 | To do |
@@ -1082,9 +1055,21 @@ These are investigative tasks that don't have a predetermined answer. The analys
 - Boxplot validates against article figure
 - Biologically unsupported connections (`w_vv`, `w_ps`) removed
 
-### Tier 0 — CURRENT BLOCKER
-1. **Task 0.6** → Ring calibration for both WT and WT_APP — **this is the #1 bottleneck**
-2. **Task 0.3** → Validate both fits on all conditions (ring-study)
+### Tier 0 — CURRENT BLOCKER (updated 2026-03-31)
+
+1. **Stage A** → Single-node optimization for WT and WT_APP (base + KO fits)
+   - Output: `params/new/single_node/WT_1mo_article*.json`
+   - Acceptance: rates within 10%, w_pe >= 0.05, w_se >= 0.003
+
+2. **Stage B** → Ring calibration sweeps for WT and WT_APP
+   - Output: w_inter and w_pv_global values for bump formation
+   - Acceptance: self-sustained bump >= 2000 ms, no spontaneous activity
+
+3. **Task 0.3** → Validate both fits on all conditions (ring-study) — after Stage B
+
+Note: ring-optimize with Turing penalty is no longer the primary workflow.
+It may still be used for exploratory runs but Stage A + Stage B is the
+canonical path to production parameter sets.
 
 ### Tier 1 — Critical path (after Tier 0)
 3. Tasks 1.1–1.5 → WT and WT_APP baseline characterization (Figs 3)

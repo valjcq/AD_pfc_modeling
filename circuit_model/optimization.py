@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, transfer_function_slope
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty, transfer_function_slope
 from .io import log_best_result, save_params_json
 
 
@@ -135,6 +135,7 @@ def _loss_from_results(
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
     turing_cue_scale: float = 5.0,
+    ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Compute total loss from a list of condition simulation results.
     
@@ -203,8 +204,11 @@ def _loss_from_results(
                 + max(0.0, 1.0 + turing_margin - slope_cue * w) ** 2)
         turing_loss = turing_weight * t_loss
 
-    total = fr_loss + ko_penalty + jac_loss + turing_loss
-    breakdown = LossBreakdown(firing_rate=fr_loss, ko_penalty=ko_penalty, 
+    # ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 should be ~35× α7 on SOM)
+    ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
+
+    total = fr_loss + ko_penalty + jac_loss + turing_loss + ach_loss
+    breakdown = LossBreakdown(firing_rate=fr_loss, ko_penalty=ko_penalty,
                                jacobian=jac_loss, turing=turing_loss, total=total)
 
     return total, base_means, ko_means, breakdown
@@ -222,6 +226,7 @@ def evaluate_params(
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
     turing_cue_scale: float = 5.0,
+    ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Evaluate a parameter set under baseline and knockout conditions.
     
@@ -233,7 +238,7 @@ def evaluate_params(
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale)
+    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
 
 
 def build_nevergrad_parametrization(
@@ -342,6 +347,7 @@ def nevergrad_optimize(
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
     turing_cue_scale: float = 5.0,
+    ach_ratio_weight: float = 2.0,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -399,7 +405,7 @@ def nevergrad_optimize(
         p = params_from_ng_dict(x.value, base)
         cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
 
-        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale)
+        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
         ng_optimizer.tell(x, L)
         
         # Update progress bar with loss breakdown

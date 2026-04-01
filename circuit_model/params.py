@@ -285,7 +285,7 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     # --- Time constants (ms) — tau_s fixed at 20 ms, not optimised ---
     # Tightened around working init: tau_adapt_pyr=600, tau_adapt_som=150.
     b["tau_adapt_pyr"] = ParamBound(300.0, 1200.0, mode="log")
-    b["tau_adapt_som"] = ParamBound(80.0, 300.0, mode="log")
+    b["tau_adapt_som"] = ParamBound(20.0, 300.0, mode="log")  # expanded: 80.0..300.0 -> 20.0..300.0 (bounds diagnostic)
 
     # --- Adaptation strengths (nA/Hz) ---
     # Tightened around working init: J_adapt_pyr=0.002, J_adapt_som=0.
@@ -307,8 +307,21 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
 
     # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
     # For meaningful shunting at r_pv ~ 4 Hz: g_gaba*w_pe*r_pv ~ 0.2–2  → w_pe ~ 0.05–0.5.
-    # Tightened around working init w_pe=0.05 while preserving room for stronger shunting.
-    b["w_pe"] = ParamBound(0.02, 0.20, mode="log")
+    # Tightened lower bound: biologically implausible below this value
+    # (Pfeffer et al. 2013); prevents optimizer from zeroing out inhibitory
+    # feedback needed for gain product bell shape.
+    b["w_pe"] = ParamBound(0.05, 0.20, mode="log")
+
+    # Tightened lower bound: biologically implausible below this value
+    # (Pfeffer et al. 2013); prevents optimizer from zeroing out inhibitory
+    # feedback needed for gain product bell shape.
+    b["w_se"] = ParamBound(0.003, 0.008, mode="log")
+
+    # w_ep: expanded lower bound to allow finer tuning
+    b["w_ep"] = ParamBound(0.0001, 0.008, mode="log")  # expanded: 0.001..0.008 -> 0.0001..0.008 (bounds diagnostic)
+
+    # w_pp: expanded upper bound for PV self-inhibition
+    b["w_pp"] = ParamBound(0.001, 0.02, mode="log")  # expanded: 0.001..0.008 -> 0.001..0.02 (saturated at upper, bounds diagnostic)
 
     # --- External tonic drives (nA) ---
     # Lower bounds are set ABOVE the W&W thresholds so I_syn > Theta_x at initialisation.
@@ -316,12 +329,12 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     # I0_pyr working init is 0.44 nA (W&W operating point at z≈1.2).
     # Lower bound > Theta_pyr=0.403 so PYR stays above threshold.
     b["I0_pyr"] = ParamBound(0.41, 0.65, mode="lin")
-    b["I0_pv"]  = ParamBound(0.30, 0.60, mode="lin")
+    b["I0_pv"]  = ParamBound(0.25, 0.60, mode="lin")  # expanded: 0.30..0.60 -> 0.25..0.60 (bounds diagnostic)
     b["I0_som"] = ParamBound(0.30, 0.60, mode="lin")
     b["I0_vip"] = ParamBound(0.30, 0.55, mode="lin")
 
     # Transient stimulus (dimensionless fraction of I0_pyr), centered near working init 0.2.
-    b["trans_factor"] = ParamBound(0.0, 0.5, mode="lin")
+    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # expanded: 0.0..0.5 -> 0.0..1.0 (bounds diagnostic)
 
     # --- nAChR cholinergic currents (nA) ---
     # These add to I0_x; should be comparable fraction of (I0_x - Theta_x).
@@ -336,7 +349,7 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     # A_pyr was raised from 0.31 to 0.76 because I0_pyr was lowered to 0.44 nA
     # (lower operating point → lower phi_core → higher A needed for same target rate).
     b["A_pyr"] = ParamBound(0.15, 1.50, mode="log")
-    b["A_pv"]  = ParamBound(0.06, 0.30, mode="log")
+    b["A_pv"]  = ParamBound(0.01, 0.30, mode="log")  # expanded: 0.06..0.30 -> 0.01..0.30 (bounds diagnostic)
     b["A_som"] = ParamBound(0.05, 0.30, mode="log")
     b["A_vip"] = ParamBound(0.08, 0.40, mode="log")
 

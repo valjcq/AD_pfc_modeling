@@ -120,7 +120,7 @@ def default_ring_bounds() -> "dict[str, ParamBound]":
     """
     from ..params import ParamBound
     return {
-        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=1.5e-2, mode="log"),
-        "w_pv_global":     ParamBound(lo=5e-4,  hi=3.0e-2, mode="log"),
+        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=1, mode="log"),  # expanded: 0.0005..0.015 -> 0.0005..0.05 (saturated at upper, bounds diagnostic)
+        "w_pv_global":     ParamBound(lo=5e-4,  hi=1, mode="log"),
         "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=60.0,   mode="lin"),
     }

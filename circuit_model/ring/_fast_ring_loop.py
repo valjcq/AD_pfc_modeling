@@ -154,15 +154,16 @@ def _ring_euler_loop(
                 + I_stim_arr[k, j]
                 + noise_scale * noise_arr[k, j]  # noise injected into PYR current
             )
-            I_som_j = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_arr[k]
+            I_som_j = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_arr[k] + noise_scale * noise_arr[k, j]
             I_pv_j = (
                 w_ep * r_pyr
                 - ggaba * w_pp * r_pv
                 - ggaba * w_sp * r_som
                 - w_vp * r_vip
                 + I_ext_pv_arr[k]
+                + noise_scale * noise_arr[k, j]
             )
-            I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k]
+            I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k] + noise_scale * noise_arr[k, j]
 
             phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g_exc, A_pyr)
             phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g_inh, A_som)

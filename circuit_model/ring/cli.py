@@ -25,6 +25,7 @@ import numpy as np
 from ..params import CircuitParams
 from ..io import load_params_json, save_params_json, save_fit_summary_txt, build_fit_comparison, output_dir as _output_dir
 from ..study import STUDY_CONDITIONS, CONDITION_ORDER, apply_condition as _study_apply_condition
+from ..defaults import DEFAULT_WT_PARAMS_PATH, DEFAULT_APP_PARAMS_PATH, DEFAULT_WT_RING_PARAMS_PATH, DEFAULT_APP_RING_PARAMS_PATH
 
 from .params import RingParams
 from .stimulus import RingStimulus
@@ -106,25 +107,20 @@ CAP_WARNING_FRACTION = 0.10
 
 BUMP_DECAY_REF_OFFSET_MS: float = 400.0  # ms after cue offset used as normalization reference
 
-DEFAULT_WT_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article.json")
-DEFAULT_APP_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article.json")
-DEFAULT_WT_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article_ring.json")
-DEFAULT_APP_RING_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article_ring.json")
-
 DEFAULT_FIT_INIT_KWARGS = {
-    "A_pv": 0.2813469553996421,
-    "A_pyr": 0.10622438622381115,
-    "A_som": 0.053626173859774605,
-    "A_vip": 0.7723361306933505,
-    "I0_pv": 0.6130979378060619,
-    "I0_pyr": 0.3821414536202422,
-    "I0_som": 0.11512854870837885,
-    "I0_vip": 0.12136730155398323,
-    "I_alpha5_vip": 0.09225916188797047,
-    "I_alpha7_pv": 0.020175772646610295,
-    "I_alpha7_som": 0.08177895911432663,
-    "I_beta2_som": 0.079151548590087,
-    "J_adapt_pyr": 0.0,
+    "A_pv": 0.12,
+    "A_pyr": 0.40,
+    "A_som": 0.11,
+    "A_vip": 0.16,
+    "I0_pv": 0.35,
+    "I0_pyr": 0.44,
+    "I0_som": 0.35,
+    "I0_vip": 0.33,
+    "I_alpha5_vip": 0.0,
+    "I_alpha7_pv": 0.0,
+    "I_alpha7_som": 0.0,
+    "I_beta2_som": 0.0,
+    "J_adapt_pyr": 0.002,
     "J_adapt_som": 0.0,
     "Theta_pv": 0.2878,
     "Theta_pyr": 0.40323,
@@ -137,28 +133,29 @@ DEFAULT_FIT_INIT_KWARGS = {
     "alpha_pyr": 310.0,
     "alpha_som": 615.0,
     "alpha_vip": 615.0,
-    "g_alpha7": 0.7213380324449714,
+    "g_alpha7": 0.0,
     "g_exc": 0.16,
-    "g_gaba_base": 2.5960505603954847,
+    "g_gaba_base": 1.0,
     "g_inh": 0.087,
-    "sigma_s": 3.126269167838911,
-    "tau_adapt_pyr": 313.0585187879324,
-    "tau_adapt_som": 137.7859489361114,
+    "sigma_noise": 0.3,
+    "sigma_s": 0.0,
+    "tau_adapt_pyr": 600.0,
+    "tau_adapt_som": 150.0,
     "tau_s": 20.0,
     "trans_duration_ms": 500.0,
     "trans_enabled": False,
-    "trans_factor": 0.8726352154216228,
+    "trans_factor": 0.2,
     "trans_start_ms": 1000.0,
-    "w_ee": 0.045891098339490385,
-    "w_ep": 0.028903939659089523,
-    "w_es": 0.029993026459236054,
-    "w_ev": 0.021899228366116387,
-    "w_pe": 0.015503689971303277,
-    "w_pp": 0.038493293925154694,
-    "w_se": 0.017018335007708562,
-    "w_sp": 0.005373346546445335,
-    "w_vp": 0.007492381010792029,
-    "w_vs": 0.04408816168444669,
+    "w_ee": 0.002,
+    "w_ep": 0.002,
+    "w_es": 0.002,
+    "w_ev": 0.002,
+    "w_pe": 0.05,
+    "w_pp": 0.002,
+    "w_se": 0.002,
+    "w_sp": 0.002,
+    "w_vp": 0.002,
+    "w_vs": 0.002,
 }
 
 
@@ -207,7 +204,9 @@ def _load_ring_params_json(path: str) -> RingParams:
 
 
 def _load_base_params_for_ring(
-    params_json: str, args=None
+    params_json: str,
+    args=None,
+    condition_key: str | None = None,
 ) -> tuple[CircuitParams, str]:
     """Load base params for ring experiments and configure APP-family context.
 
@@ -253,6 +252,28 @@ def _load_base_params_for_ring(
             msg += f"\nLoaded default ring parameters from: {DEFAULT_WT_RING_PARAMS_PATH}"
         if _ACTIVE_APP_RING_PARAMS is not None:
             msg += f"\nLoaded default WT_APP ring parameters from: {DEFAULT_APP_RING_PARAMS_PATH}"
+        result = base, msg
+    elif (
+        condition_key in STUDY_CONDITIONS
+        and STUDY_CONDITIONS[condition_key].is_app
+        and DEFAULT_APP_PARAMS_PATH.exists()
+    ):
+        # If WT defaults are unavailable but the requested condition is APP-family,
+        # use APP defaults directly instead of hardcoded fit-init values.
+        base = load_params_json(str(DEFAULT_APP_PARAMS_PATH))
+        _ACTIVE_APP_PARAMS = base
+        _ACTIVE_RING_PARAMS = (
+            _load_ring_params_json(str(DEFAULT_APP_RING_PARAMS_PATH))
+            if DEFAULT_APP_RING_PARAMS_PATH.exists()
+            else None
+        )
+        _ACTIVE_APP_RING_PARAMS = _ACTIVE_RING_PARAMS
+        msg = (
+            f"Loaded APP default parameters from: {DEFAULT_APP_PARAMS_PATH} "
+            f"(WT defaults not found at {DEFAULT_WT_PARAMS_PATH})"
+        )
+        if _ACTIVE_RING_PARAMS is not None:
+            msg += f"\nLoaded APP ring parameters from: {DEFAULT_APP_RING_PARAMS_PATH}"
         result = base, msg
     else:
         _ACTIVE_APP_PARAMS = None
@@ -338,9 +359,14 @@ def _build_common(args, amp_factor: float | None = None):
     ``amp_factor * base_params.I_ext_pyr()``.
 
     Returns:
-        (base_params, ring_params, T_ms, stimuli, amp_factor)
+        (base_params, ring_params, T_ms, stimuli, amp_factor, load_msg)
     """
-    base_params, _ = _load_base_params_for_ring(args.params_json, args)
+    cond_key = getattr(args, "condition", None)
+    base_params, load_msg = _load_base_params_for_ring(
+        args.params_json,
+        args,
+        condition_key=cond_key,
+    )
 
     ring_params = RingParams(
         n_nodes=args.n_nodes,
@@ -394,7 +420,7 @@ def _build_common(args, amp_factor: float | None = None):
             )
         )
 
-    return base_params, ring_params, T_ms, stimuli, factor
+    return base_params, ring_params, T_ms, stimuli, factor, load_msg
 
 
 def _apply_response_transient(params: CircuitParams, args, delay_end_ms: float) -> CircuitParams:
@@ -535,7 +561,9 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
 
 
 def _fmt(v: float) -> str:
-    """Format float for labels/paths: drop trailing zeros, keep at most 2 decimals."""
+    """Format float for labels/paths: drop trailing zeros, up to 4 decimals for small values."""
+    if abs(v) < 0.1:
+        return f"{v:.4f}".rstrip("0").rstrip(".")
     return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
@@ -3528,7 +3556,12 @@ def cmd_run(args: argparse.Namespace) -> None:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    base_params, ring_params, T_ms, stimuli, amp_factor = _build_common(args)
+    base_params, ring_params, T_ms, stimuli, amp_factor, load_msg = _build_common(args)
+    print(load_msg)
+
+    if getattr(args, 'no_adapt', False):
+        base_params = replace(base_params, J_adapt_pyr=0.0, J_adapt_som=0.0)
+        print("--no_adapt: J_adapt_pyr=0, J_adapt_som=0")
 
     if getattr(args, 'sigma_noise', None) is not None:
         base_params = replace(base_params, sigma_noise=args.sigma_noise)
@@ -3558,10 +3591,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Output directory (needed before _print_config for save_path)
     # ------------------------------------------------------------------
+    _amp_label = f"amp{_fmt(amp_factor)}"
+    if getattr(args, 'no_adapt', False):
+        _amp_label += "_no_adapt"
+    _conn_label = f"wpyr{_fmt(ring_params.w_pyr_pyr_inter)}_wpv{_fmt(ring_params.w_pv_global)}"
     out_dir_parts = [
         _output_dir("figs/ring/run", args.params_json),
         _run_type_label(args),
-        f"amp{_fmt(amp_factor)}",
+        _amp_label,
+        _conn_label,
     ]
     if _has_distractor(args):
         out_dir_parts.append(
@@ -3672,6 +3710,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
     plt.close(fig_mat)
 
+    from ..diagnostic import plot_turing_gain_timecourse
+    fig_turing = plot_turing_gain_timecourse(
+        result,
+        local_params,
+        ring_params,
+        t_offset=t_offset,
+        time_range=time_range,
+        save_path=os.path.join(out_dir, "turing_gain_timecourse.png"),
+        show=False,
+    )
+    plt.close(fig_turing)
+
     if not getattr(args, "no_snapshot_mp4", False):
         anim_quality_kwargs = _snapshot_animation_quality_kwargs(args)
         anim_path = os.path.join(out_dir, "snapshot_evolution.mp4")
@@ -3696,6 +3746,53 @@ def cmd_run(args: argparse.Namespace) -> None:
             traceback.print_exc()
 
     print(f"\nFigures saved to {out_dir}/")
+
+    # ── Numerical summary JSON ────────────────────────────────────────────────
+    import json as _json
+    from .analysis import compute_bump_metrics as _compute_bump_metrics
+
+    _bump_metrics = _compute_bump_metrics(result)
+
+    # Baseline PYR rate: mean across all nodes during burn-in (pre-cue)
+    _pyr = result.r[:, :, 0]
+    _burnin_mask = result.t_ms < result.stim_window[0]
+    _baseline_pyr = float(np.mean(_pyr[_burnin_mask])) if np.any(_burnin_mask) else float("nan")
+
+    # Peak PYR rate during cue
+    _cue_mask = (result.t_ms >= result.stim_window[0]) & (result.t_ms <= result.stim_window[1])
+    _peak_pyr_cue = float(np.max(_pyr[_cue_mask])) if np.any(_cue_mask) else float("nan")
+
+    # Delay-period mean PYR at bump center node vs opposite node
+    _delay_mask = result.t_ms > result.stim_window[1]
+    _stim_node = int(np.argmin(
+        np.abs(np.linspace(0, 360, result.r.shape[1], endpoint=False) - result.stim_angle_deg)
+    ))
+    _opp_node = (_stim_node + result.r.shape[1] // 2) % result.r.shape[1]
+    _delay_pyr_center = float(np.mean(_pyr[_delay_mask, _stim_node])) if np.any(_delay_mask) else float("nan")
+    _delay_pyr_opposite = float(np.mean(_pyr[_delay_mask, _opp_node])) if np.any(_delay_mask) else float("nan")
+
+    _summary = {
+        "params": {
+            "w_pyr_pyr_inter": ring_params.w_pyr_pyr_inter,
+            "w_pv_global": ring_params.w_pv_global,
+            "sigma_pyr_deg": ring_params.sigma_pyr_deg,
+            "n_nodes": ring_params.n_nodes,
+            "amplitude": amp_factor,
+            "condition": condition.name,
+        },
+        "steady_state": {
+            "baseline_pyr_hz": round(_baseline_pyr, 3),
+            "peak_pyr_cue_hz": round(_peak_pyr_cue, 3),
+            "delay_pyr_center_hz": round(_delay_pyr_center, 3),
+            "delay_pyr_opposite_hz": round(_delay_pyr_opposite, 3),
+        },
+        "bump_metrics": {k: (round(v, 4) if not np.isnan(v) else None)
+                         for k, v in _bump_metrics.items()},
+    }
+    _summary_path = os.path.join(out_dir, "run_metrics.json")
+    with open(_summary_path, "w") as _f:
+        _json.dump(_summary, _f, indent=2)
+    print(f"Metrics saved to {_summary_path}")
 
     if not args.no_show:
         plt.show()
@@ -3770,7 +3867,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     csv_path = os.path.join(out_dir, "study_metrics.csv")
 
     # Compute T_ms using first amplitude (timing is same for all amplitudes)
-    _, _, T_ms_full, _, _ = _build_common(args, amp_factor=args.amplitude[0])
+    _, _, T_ms_full, _, _, _ = _build_common(args, amp_factor=args.amplitude[0])
     stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
 
     _print_config(args, args.amplitude[0], base_params, T_ms_full, base_rp,
@@ -4511,7 +4608,7 @@ def cmd_diffusion(args: argparse.Namespace) -> None:
     n_trials = args.n_trials
     n_workers = _resolve_workers(args)
 
-    _, _, T_ms_full, _, amp_factor = _build_common(args)
+    _, _, T_ms_full, _, amp_factor, _ = _build_common(args)
 
     conn_label = _network_label(ring_params)
     amp_label = f"amp{_fmt(amp_factor)}"
@@ -5785,6 +5882,21 @@ def _asym_run_single(job: tuple) -> dict:
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Run 2D parameter calibration (amplitude x w_inter)."""
     _resolve_seed(args)
+
+    # If --w_pv_values given, run once per w_pv_global value
+    w_pv_values = getattr(args, 'w_pv_values', None)
+    if w_pv_values:
+        import copy
+        for wpv in w_pv_values:
+            args_copy = copy.copy(args)
+            args_copy.w_pv_global = float(wpv)
+            args_copy.w_pv_values = None  # prevent infinite recursion
+            print(f"\n{'='*60}")
+            print(f"  w_pv_global = {wpv}")
+            print(f"{'='*60}")
+            cmd_calibrate(args_copy)
+        return
+
     import json
     from tqdm import tqdm
     import matplotlib
@@ -5801,7 +5913,6 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
         w_pv_global=args.w_pv_global,
-
     )
 
     if args.conditions is None:
@@ -5818,7 +5929,16 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                     sys.exit(1)
 
     amplitudes = args.amplitudes
-    w_inter_values = args.w_inter_values
+    _w_min = getattr(args, 'w_inter_min', None)
+    _w_max = getattr(args, 'w_inter_max', None)
+    _n_inter = getattr(args, 'n_inter', None)
+    if args.w_inter_values is not None:
+        w_inter_values = args.w_inter_values
+    elif _w_min is not None and _w_max is not None and _n_inter is not None:
+        import numpy as np
+        w_inter_values = list(np.linspace(_w_min, _w_max, _n_inter))
+    else:
+        w_inter_values = [2.0, 3.0, 4.0, 5.0, 6.0]
     n_trials = args.n_trials
     noise_percentile = args.noise_percentile
     no_cache = getattr(args, 'no_cache', False)
@@ -5881,6 +6001,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     baseline_A_hat_data: dict[tuple[str, float], np.ndarray] = {}
     noise_thresholds: dict[tuple[str, float], float] = {}
     cap_hit_fraction_data: dict[tuple[str, float], float] = {}
+    burnin_rates: dict[tuple[str, float], dict] = {}  # steady-state pop rates
     grid_results: list[dict] = []
 
     if conditions_to_run:
@@ -5909,6 +6030,23 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                     seed=args.seed,
                 )
                 burnin_cache[(ck, w)] = (res.r[-1].copy(), res.I_adapt_final.copy())
+                # Mean rate across all nodes at end of burn-in (last recorded frame)
+                r_final = res.r[-1]  # shape (n_nodes, 4)
+                mean_pyr = float(np.mean(r_final[:, 0]))
+                burnin_rates[(ck, w)] = {
+                    'ss_pyr_hz': mean_pyr,
+                    'ss_som_hz': float(np.mean(r_final[:, 1])),
+                    'ss_pv_hz':  float(np.mean(r_final[:, 2])),
+                    'ss_vip_hz': float(np.mean(r_final[:, 3])),
+                    'ss_pyr_cv': float(np.std(r_final[:, 0]) / (mean_pyr + 1e-8)),
+                }
+
+        # Save burnin_rates so cached re-runs can reload them without re-simulating
+        _burnin_json_path = os.path.join(out_dir, "burnin_rates.json")
+        if burnin_rates:
+            _serialisable = {f"{ck}__{w}": v for (ck, w), v in burnin_rates.items()}
+            with open(_burnin_json_path, 'w') as _f:
+                json.dump(_serialisable, _f)
 
         # --- Trial seeds ---
         trial_seeds = _generate_trial_seeds(args.seed, n_trials)
@@ -6070,6 +6208,18 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 grid_results.append(_calibrate_run_single(job))
 
     # --- Load cached conditions ---
+    # Try to restore burnin_rates from JSON saved by a previous run (avoids NaN ss columns)
+    _burnin_json_path = os.path.join(out_dir, "burnin_rates.json")
+    if cached_conditions and os.path.exists(_burnin_json_path):
+        try:
+            with open(_burnin_json_path) as _f:
+                _loaded = json.load(_f)
+            for _key_str, _val in _loaded.items():
+                _ck, _w_str = _key_str.split("__", 1)
+                burnin_rates[(_ck, float(_w_str))] = _val
+        except Exception:
+            pass  # silently ignore; ss columns will be NaN
+
     if cached_conditions:
         print(f"\nLoading cached results for: {', '.join(sorted(cached_conditions))}")
     for ck in cached_conditions:
@@ -6123,12 +6273,18 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 peak_rates = np.array([r['peak_pyr_rate'] for r in trials])
                 errors = np.array([r['error_from_cue_deg'] for r in trials])
 
+                ss = burnin_rates.get((ck, w), {})
                 grid_data[(amp, w)] = {
                     'success_rate': success_rate,
                     'mean_A_hat': mean_A_hat,
                     'peak_pyr_rate': float(np.mean(peak_rates)),
                     'mean_error_deg': float(np.nanmean(errors)),
                     'n_trials': len(trials),
+                    'ss_pyr_hz': ss.get('ss_pyr_hz', float('nan')),
+                    'ss_som_hz': ss.get('ss_som_hz', float('nan')),
+                    'ss_pv_hz':  ss.get('ss_pv_hz',  float('nan')),
+                    'ss_vip_hz': ss.get('ss_vip_hz', float('nan')),
+                    'ss_pyr_cv': ss.get('ss_pyr_cv', float('nan')),
                 }
 
                 # Timecourse data is only available when a_hat_timecourse is in the CSV
@@ -6185,6 +6341,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 'condition_key', 'amplitude', 'w_inter', 'success_rate',
                 'mean_A_hat', 'peak_pyr_rate', 'mean_error_deg',
                 'noise_threshold', 'n_trials',
+                'ss_pyr_hz', 'ss_som_hz', 'ss_pv_hz', 'ss_vip_hz', 'ss_pyr_cv',
             ])
             writer.writeheader()
             for (amp, w), d in sorted(grid_data.items()):
@@ -6198,6 +6355,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                     'mean_error_deg': d['mean_error_deg'],
                     'noise_threshold': noise_thresholds.get((ck, w), 0.0),
                     'n_trials': d['n_trials'],
+                    'ss_pyr_hz': d.get('ss_pyr_hz', ''),
+                    'ss_som_hz': d.get('ss_som_hz', ''),
+                    'ss_pv_hz':  d.get('ss_pv_hz', ''),
+                    'ss_vip_hz': d.get('ss_vip_hz', ''),
+                    'ss_pyr_cv': d.get('ss_pyr_cv', ''),
                 })
 
         # --- Per-condition plots (in cond_dir) ---
@@ -6242,6 +6404,26 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             suptitle=f"Peak PYR Rate ({cond_label}, {n_trials} trials)",
         )
         plt.close()
+
+        # Steady-state heatmap: only has w_inter axis (ss independent of amplitude)
+        # Build a fake single-amplitude grid_data using first amplitude
+        _ss_grid = {(amplitudes[0], w): grid_data[(amplitudes[0], w)]
+                    for w in w_inter_values if (amplitudes[0], w) in grid_data}
+        if any(not np.isnan(d.get('ss_pyr_hz', float('nan'))) for d in _ss_grid.values()):
+            plot_calibration_heatmap(
+                _ss_grid, "ss_pyr_hz", [amplitudes[0]], w_inter_values,
+                cmap="coolwarm", vmin=0, vmax=30,
+                save_path=_unique_path(os.path.join(cond_dir, "heatmap_ss_pyr.png")),
+                suptitle=f"Steady-State PYR Rate Hz ({cond_label}) — target: 8–12 Hz",
+            )
+            plt.close()
+            plot_calibration_heatmap(
+                _ss_grid, "ss_pyr_cv", [amplitudes[0]], w_inter_values,
+                cmap="Reds", vmin=0, vmax=0.5,
+                save_path=_unique_path(os.path.join(cond_dir, "heatmap_ss_pyr_cv.png")),
+                suptitle=f"Resting-State PYR Spatial CV ({cond_label}) — low = uniform rest",
+            )
+            plt.close()
 
         if timecourse_data:
             tc_keys = sorted(
@@ -8747,8 +8929,8 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                              "chaining=DE->Nelder-Mead, auto=NGOpt (default: de)")
     parser.add_argument("--early_stop_loss", type=float, default=1e-4,
                         help="Stop early if loss falls below this value (default: 1e-4)")
-    parser.add_argument("--plateau_patience", type=int, default=1000,
-                        help="Stop if no improvement for this many steps (0=disable, default: 1000)")
+    parser.add_argument("--plateau_patience", type=int, default=500,
+                        help="Stop if no improvement for this many steps (0=disable, default: 500)")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed (default: 0)")
     parser.add_argument("--freeze", type=str, default="",
@@ -8758,8 +8940,8 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                              "(e.g. --set tau_s=20,g=1). Useful combined with --freeze.")
 
     # --- Ring fit config ---
-    parser.add_argument("--n_trials_ring", type=int, default=3,
-                        help="Ring simulations per candidate evaluation (default: 3)")
+    parser.add_argument("--n_trials_ring", type=int, default=5,
+                        help="Ring simulations per candidate evaluation (default: 5 for noise averaging)")
     parser.add_argument("--ko_on_ring", action="store_true",
                         help="Run KO conditions on ring (slower but fully consistent). "
                              "Default: KO conditions run on single-node.")
@@ -8769,12 +8951,14 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Ring simulation duration (ms, default: 2500)")
     parser.add_argument("--dt_ms", type=float, default=0.1,
                         help="Integration time step (ms, default: 0.1)")
-    parser.add_argument("--burn_in_ms", type=float, default=1800.0,
-                        help="Burn-in period to skip transients (ms, default: 1800)")
+    parser.add_argument("--burn_in_ms", type=float, default=1200.0,
+                        help="Burn-in period to skip transients (ms, default: 1200 — reduced for noise)")
     parser.add_argument("--window_ms", type=float, default=500.0,
                         help="Rate averaging window (ms, default: 500)")
-    parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="none",
-                        help="Noise type during optimization (default: none)")
+    parser.add_argument("--record_dt_ms", type=float, default=2.0,
+                        help="Recording interval (ms, default: 2.0 — matches FitConfig)")
+    parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="white",
+                        help="Noise type during optimization (default: white, matching ring-run)")
     parser.add_argument("--tau_noise_ms", type=float, default=5.0,
                         help="OU noise time constant (ms, default: 5.0)")
     parser.add_argument("--max_rate", type=float, default=200.0,
@@ -8812,13 +8996,21 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
 
     # --- Turing instability penalty ---
     parser.add_argument("--turing_weight", type=float, default=0.0,
-                        help="Weight of two-sided Turing bistability penalty (default: 0 = disabled). "
-                             "Penalises rest-state gain above 1-margin AND cue-state gain below 1+margin.")
+                        help="Weight of three-term Turing bistability penalty (default: 0 = disabled). "
+                             "Enforces three-regime attractor geometry: gain < 1 at rest, gain > 1 at bump, gain < 1 at cue.")
     parser.add_argument("--turing_margin", type=float, default=0.05,
                         help="Safety margin around the Turing threshold (default: 0.05)")
     parser.add_argument("--turing_cue_scale", type=float, default=5.0,
                         help="Multiplier applied to I0_pyr to approximate the cue operating point "
-                             "(default: 5.0, matching the bump stimulus amplitude)")
+                             "(default: 5.0, target ~50-60 Hz PYR, clamped to 80 Hz)")
+    parser.add_argument("--spatial_uniformity_weight", type=float, default=0.0,
+                        help="Weight of spatial uniformity penalty (default: 0 = disabled). "
+                             "Penalises std(r_pyr_nodes)/mean(r_pyr_nodes) at rest to prevent "
+                             "spontaneous bump formation in the resting state.")
+    parser.add_argument("--ach_ratio_weight", type=float, default=2.0,
+                        help="Weight of β2/α7 ACh current ratio penalty (default: 2.0, 0 = disabled). "
+                             "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
+                             "(Koukouli et al. 2025: β2-type currents ~35× stronger than α7 at 1.77 μM ACh).")
 
     # --- I/O settings ---
     parser.add_argument("--output_dir", type=str, default="",
@@ -8837,7 +9029,7 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
 
 def cmd_ring_optimize(args: argparse.Namespace) -> None:
     """Run joint ring + circuit parameter optimization."""
-    from dataclasses import fields
+    from dataclasses import fields, replace as _replace
     from ..params import default_bounds, ParamBound
     from ..loss import TargetRates, FitConfig
     from ..io import load_params_json, save_params_json
@@ -8856,8 +9048,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         print("Using hardcoded fit-init CircuitParams")
 
     # --- Apply --set overrides to base circuit params ---
+    set_overrides: dict[str, float] = {}
     if args.set_params:
-        from dataclasses import replace as _replace
         from ..params import CircuitParams as _CircuitParams
         def _parse_set(s):
             out = {}
@@ -8867,12 +9059,21 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
                     k, v = pair.split("=", 1)
                     out[k.strip()] = float(v.strip())
             return out
-        overrides = _parse_set(args.set_params)
+        set_overrides = _parse_set(args.set_params)
         allowed = {f.name for f in fields(_CircuitParams)}
-        clean = {k: v for k, v in overrides.items() if k in allowed}
+        clean = {k: v for k, v in set_overrides.items() if k in allowed}
         if clean:
             base_circuit = _replace(base_circuit, **clean)
             print(f"Overrides applied: {', '.join(f'{k}={v}' for k, v in clean.items())}")
+
+    # trans_factor is not part of the ring resting-rate objective; fix it before optimization.
+    if "trans_factor" in set_overrides:
+        fixed_trans_factor = float(set_overrides["trans_factor"])
+        print(f"trans_factor fixed from --set: {fixed_trans_factor}")
+    else:
+        fixed_trans_factor = 0.2
+        print(f"trans_factor fixed for ring-optimize: {fixed_trans_factor} (default)")
+    base_circuit = _replace(base_circuit, trans_factor=fixed_trans_factor)
 
     # --- --no_adapt: zero and freeze adaptation strengths ---
     if args.no_adapt:
@@ -8901,6 +9102,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
 
     # --- Build bounds ---
     circuit_bounds = default_bounds(base_circuit)
+    circuit_bounds.pop("trans_factor", None)
     ring_bounds = {
         "w_pyr_pyr_inter": ParamBound(args.w_pyr_pyr_inter_lo, args.w_pyr_pyr_inter_hi, mode="lin"),
         "w_pv_global":     ParamBound(args.w_pv_global_lo,     args.w_pv_global_hi,     mode="lin"),
@@ -8909,6 +9111,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
 
     # --- Parse frozen parameters ---
     freeze: set[str] = {s.strip() for s in args.freeze.split(",") if s.strip()} if args.freeze else set()
+    freeze.add("trans_factor")
+    freeze.add("tau_adapt_pyr")  # Freeze at biological value (600 ms, Storm 1989)
     if args.no_adapt:
         freeze |= {"J_adapt_pyr", "J_adapt_som"}
 
@@ -8918,6 +9122,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         dt_ms=args.dt_ms,
         burn_in_ms=args.burn_in_ms,
         window_ms=args.window_ms,
+        record_dt_ms=args.record_dt_ms,
         n_trials=args.n_trials_ring,
         noise_type=args.noise_type,
         tau_noise_ms=args.tau_noise_ms,
@@ -8973,6 +9178,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_cue_scale=args.turing_cue_scale,
+        spatial_uniformity_weight=args.spatial_uniformity_weight,
+        ach_ratio_weight=args.ach_ratio_weight,
     )
     _print_ring_init_summary(base_circuit, base_ring, init_ring_means, init_loss)
     print()
@@ -8999,6 +9206,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_cue_scale=args.turing_cue_scale,
+        spatial_uniformity_weight=args.spatial_uniformity_weight,
+        ach_ratio_weight=args.ach_ratio_weight,
     )
 
     if not best:

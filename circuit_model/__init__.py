@@ -34,7 +34,7 @@ Usage:
 from .params import CircuitParams, ParamBound, default_bounds
 from .transfer import phi_wong_wang
 from .simulation import SimulationResult, simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, ach_ratio_penalty
 from .optimization import (
     KOMeans,
     Candidate,
@@ -85,6 +85,7 @@ __all__ = [
     "FitConfig",
     "loss_from_means",
     "loss_from_ko_pyr",
+    "ach_ratio_penalty",
     # Optimization
     "KOMeans",
     "Candidate",

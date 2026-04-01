@@ -285,15 +285,15 @@ Multiple stimuli are summed: $I_{\text{stim},i}(t) = \sum_k I_{\text{stim},i}^{(
 
 ## 7. Noise
 
-Noise is injected as a stochastic current perturbation into the **PYR input current only**, at each node independently. This models the variability in excitatory synaptic drive (diffusion approximation of Poisson spike trains).
+Noise is injected as a shared stochastic current perturbation into **all four populations** (PYR, SOM, PV, VIP) at each node independently. The same noise factor is applied to each population, ensuring correlated variability across populations at each node. This models the variability in synaptic drive (diffusion approximation of Poisson spike trains).
 
 ### Noise equation
 
-The noisy PYR current at node $i$ is:
+The noisy input current for each population $X \in \{\text{PYR, SOM, PV, VIP}\}$ at node $i$ is:
 
-$$I_i^{\text{PYR}}(t) = I_i^{\text{PYR,det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
+$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
 
-where $I_i^{\text{PYR,det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the noise process (see below). The noise scale is proportional to the baseline PYR drive $I_{\text{ext}}^{\text{PYR}}$, so it automatically adjusts across experimental conditions with different drive levels.
+where $I_i^{X,\text{det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the shared noise process (see below). Note that the noise scale is proportional to the baseline PYR drive $I_{\text{ext}}^{\text{PYR}}$ but applied equally to all populations, ensuring that noise amplitudes scale together across all population types. This automatically adjusts across experimental conditions with different drive levels.
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
@@ -446,33 +446,76 @@ KO conditions (alpha7, alpha5, beta2) are run on single-node by default or on th
 
 #### Turing instability penalty (optional, `--turing_weight`)
 
-For a ring network to support cue-triggered bump states without generating spontaneous bumps at rest, the network must satisfy two conditions simultaneously. These conditions correspond to the two sides of a **bistability requirement**: the homogeneous (uniform) state must be stable at rest, so that no bump appears spontaneously before the cue; and the same state must become unstable under cue-level drive, so that a bump can nucleate and persist during the delay.
+For a ring network to support cue-triggered bump states without generating spontaneous bumps at rest, the network must satisfy a **three-regime bistable attractor condition**. This ensures that:
+- The uniform state is stable at rest (no spontaneous bump nucleation);
+- A stable self-sustained bump fixed point exists in the intermediate firing-rate regime (~20–40 Hz PYR);
+- The transfer function self-limits at cue-driven rates, preventing runaway growth to saturation.
 
-Both conditions are expressed via the **Turing instability criterion** for a ring network. In a simplified one-population ring model, the uniform state is linearly unstable to spatially non-uniform perturbations when:
+These three conditions define the full bistable attractor geometry and are expressed via the **corrected Turing instability criterion** for the full 4-population ring network.
 
-$$\Phi'(I^*_\text{PYR}) \cdot w_\text{pyr}^\text{inter} > 1$$
+**Step 1 — W&W transfer-function derivative.** The Wong-Wang transfer function for population $x$ is:
 
-where $\Phi'(I^*_\text{PYR}) = A_\text{PYR} \cdot \phi'(I^*_\text{PYR})$ is the full transfer-function derivative evaluated at the PYR operating-point current $I^*_\text{PYR}$, and $w_\text{pyr}^\text{inter}$ is the total inter-node PYR→PYR coupling (row-sum). Below this threshold any spatial perturbation decays and no bump can exist. Above it, the uniform state destabilizes and a bump forms spontaneously.
+$$\Phi^x(I) = A_x \cdot \frac{u}{1 - e^{-g_x u}}, \qquad u = c_x (I - \Theta_x)$$
 
-The desired working memory regime therefore requires:
+Its derivative with respect to $I$ is:
 
-$$\Phi'(I^*_\text{rest}) \cdot w_\text{pyr}^\text{inter} < 1 \qquad \text{(stable at rest — no spontaneous bump)}$$
+$${\Phi^x}'(I) = A_x \cdot c_x \cdot \frac{1 - e^{-g_x u}(1 + g_x u)}{(1 - e^{-g_x u})^2}$$
 
-$$\Phi'(I^*_\text{cue}) \cdot w_\text{pyr}^\text{inter} > 1 \qquad \text{(unstable under cue — bump can form and persist)}$$
+evaluated at the steady-state input current $I^*_x$ recovered from the circuit equations at the operating point. The shape parameters $c_x$, $\Theta_x$, $g_x$ are the fixed W&W 2006 constants ($c_e$, $\Theta_e$, $g_e$ for PYR; $c_i$, $\Theta_i$, $g_i$ for PV/SOM/VIP).
 
-**Computing the two operating points.** The rest operating point $I^*_\text{rest}$ is recovered directly from the circuit equations at the fitted baseline firing rates, exactly as in the standard rate-loss evaluation. The cue operating point $I^*_\text{cue}$ is obtained by scaling the PYR external drive by a factor of 5 (`--turing_cue_scale`, default 5.0):
+**Step 2 — Effective PYR gain.** The divisive PV→PYR inhibition in the PYR input equation reduces the effective PYR gain. Accounting for this local feedback loop:
 
-$$I^*_\text{cue} = I^*_\text{rest}\big|_{I_0^\text{PYR} \,\to\, 5 \cdot I_0^\text{PYR}}$$
+$$G_\text{eff}(I^*) = \frac{{\Phi'}_\text{PYR}(I^*_\text{PYR})}{1 + g_\text{GABA} \cdot w_{pe} \cdot {\Phi'}_\text{PV}(I^*_\text{PV}) \cdot w_{ep} \cdot {\Phi'}_\text{PYR}(I^*_\text{PYR})}$$
 
-This factor is grounded in the stimulus protocol: the cue is delivered as a current injection to PYR nodes with a peak amplitude calibrated to approximately $5 \times I_0^\text{PYR}$ (see §6.3), so this operating point directly reflects the input level a cued node experiences during stimulus presentation. No additional simulation is required — both operating points and their transfer-function derivatives are computed analytically from the current parameter set.
+where $w_{pe}$ is the PV→PYR divisive weight, $w_{ep}$ is the PYR→PV weight, and $g_\text{GABA}$ is the GABA scaling factor.
 
-**Penalty.** The two conditions are enforced as a combined soft penalty with safety margin $m$ (default 0.05, `--turing_margin`):
+**Step 3 — Corrected Turing gain product.** The uniform state is linearly unstable to spatial (bump-mode, $k=1$) perturbations when:
 
-$$\mathcal{L}_\text{Turing} = \underbrace{\max\!\left(0,\; \Phi'(I^*_\text{rest}) \cdot w_\text{pyr}^\text{inter} - (1 - m)\right)^2}_{\text{penalise spontaneous bumps at rest}} + \underbrace{\max\!\left(0,\; 1 + m - \Phi'(I^*_\text{cue}) \cdot w_\text{pyr}^\text{inter}\right)^2}_{\text{penalise failure to form bump under cue}}$$
+$$G_\text{eff}(I^*) \cdot w^\text{inter}_\text{pyr} > 1$$
 
-The first term is zero when the network is safely below the Turing threshold at rest; it activates as soon as the gain product approaches 1, pushing the optimizer away from parameter regions that produce spontaneous bumps. The second term is zero when the network is safely above threshold under cue-level drive; it activates when the cue-driven gain is insufficient to destabilize the uniform state, pushing the optimizer toward parameter regions where the cue can reliably trigger and sustain a bump.
+where $w^\text{inter}_\text{pyr}$ is the PYR→PYR inter-node spatial excitation (Mexican-hat Gaussian profile).
 
-Note that satisfying this penalty guarantees the correct **geometry** for bistability — the rest and cue operating points straddle the Turing threshold — but does not guarantee bump persistence through the full delay period, which additionally depends on adaptation dynamics and noise. Bump persistence is verified empirically via simulation.
+The global all-to-all PV→PYR inter-node inhibition does not appear because uniform kernels (zero spatial structure) have zero Fourier coefficient at all spatial modes $k \geq 1$. This kernel only affects the $k=0$ homogeneous mode, which is not part of the Turing criterion for bump formation. Thus the spatial drive is simply $w^\text{inter}_\text{pyr}$.
+
+**Role of SOM and VIP.** SOM and VIP are local-only populations — they have no inter-node connections and therefore do not add new terms to the spatial Jacobian. They are consequently absent from the criterion above. However, they do influence the operating-point currents $I^*_\text{PYR}$ and $I^*_\text{PV}$ through the full 4-population circuit equations. This effect is already correctly accounted for: both $I^*_\text{PYR}$ and $I^*_\text{PV}$ are recovered via the full 4-population fixed-point computation at the fitted firing rates, so SOM and VIP contributions are implicitly included in the derivatives ${\Phi'}_\text{PYR}$ and ${\Phi'}_\text{PV}$.
+
+The desired working-memory regime therefore requires three gain-product crossings:
+
+$$G_\text{eff}(I^*_\text{rest}) \cdot w^\text{inter}_\text{pyr} < 1 \qquad \text{(stable at rest — no spontaneous bump)}$$
+
+$$G_\text{eff}(I^*_\text{bump}) \cdot w^\text{inter}_\text{pyr} > 1 \qquad \text{(bump fixed point exists — self-sustained)}$$
+
+$$G_\text{eff}(I^*_\text{cue}) \cdot w^\text{inter}_\text{pyr} < 1 \qquad \text{(self-limiting at cue — no runaway)}$$
+
+**Computing the three operating points.** The rest operating point $I^*_\text{rest}$ is recovered directly from the circuit equations at the fitted baseline firing rates (~8 Hz PYR, consistent with Koukouli et al. 2025). The bump operating point is **fixed at $r_\text{PYR} = 40$ Hz**, consistent with self-sustained WM delay activity in rodent PFC. $I^*_\text{bump}$ is found by numerically inverting the PYR transfer function:
+
+$$\Phi_\text{PYR}(I^*_\text{bump}) = 40 \text{ Hz} \quad \text{(bisection)}$$
+
+The PV input $I^*_\text{PV}^\text{bump}$ is then derived from the full circuit equations at $r_\text{PYR} = 40$ Hz (other populations held at rest values). This approach directly targets a biologically motivated operating point rather than depending on a scale factor. The cue operating point $I^*_\text{cue}$ is obtained by scaling the PYR external drive by `--turing_cue_scale` (default 5.0):
+
+$$I_0^\text{PYR} \to 5 \cdot I_0^\text{PYR}$$
+
+This produces PYR firing rates at the cue-driven level (~50–60 Hz, clamped to 80 Hz max; required by inhibitory feedback, Pfeffer et al. 2013). For the cue operating point, the elevated PYR firing increases the input to PV via the recurrent connection $w_{ep}$, so $I^*_\text{PV}^\text{cue} > I^*_\text{PV}^\text{rest}$. All operating-point currents ($I^*_\text{PYR}$, $I^*_\text{PV}$) must be recomputed for each regime before evaluating ${\Phi'}_\text{PYR}$ and ${\Phi'}_\text{PV}$.
+
+These operating points are grounded in the dynamics of the system: rest corresponds to baseline activity in quiet wakefulness; bump corresponds to the target self-sustained bump rate during the working-memory delay; and cue corresponds to the stimulus-driven activity that initiates and drives the bump. No additional simulation is required — all three operating points and their transfer-function derivatives are computed analytically from the current parameter set.
+
+**Penalty.** The three conditions are enforced as a combined soft penalty with safety margin $m$ (default 0.05, `--turing_margin`):
+
+$$\mathcal{L}_\text{rest} = \max\!\left(0,\; G_\text{eff}(I^*_\text{rest}) \cdot w^\text{inter}_\text{pyr} - (1 - m)\right)^2 \qquad \text{(penalise spontaneous bumps at rest)}$$
+
+$$\mathcal{L}_\text{bump} = \max\!\left(0,\; 1 + m - G_\text{eff}(I^*_\text{bump}) \cdot w^\text{inter}_\text{pyr}\right)^2 \qquad \text{(penalise missing bump fixed point at 40 Hz)}$$
+
+$$\mathcal{L}_\text{above} = \max\!\left(0,\; G_\text{eff}(I^*_\text{cue}) \cdot w^\text{inter}_\text{pyr} - (1 - m)\right)^2 \qquad \text{(penalise runaway at cue — ceiling, same form as } \mathcal{L}_\text{rest}\text{)}$$
+
+$$\mathcal{L}_\text{Turing} = \mathcal{L}_\text{rest} + \mathcal{L}_\text{bump} + \mathcal{L}_\text{above}$$
+
+$\mathcal{L}_\text{rest}$ is zero when the network is safely below the Turing threshold at rest; it activates as soon as the gain product approaches 1, pushing the optimizer away from parameter regions that produce spontaneous bumps. $\mathcal{L}_\text{bump}$ is zero when the network is safely above threshold at the self-sustained bump rate (fixed at 40 Hz, Koukouli et al. 2025); it activates when the bump-driven gain is below the threshold, penalising parameter regions where no stable bump fixed point exists. $\mathcal{L}_\text{above}$ is zero when the network is safely below threshold at cue-driven rates (same ceiling form as $\mathcal{L}_\text{rest}$); it activates when the cue-driven gain exceeds the threshold, penalising runaway growth to saturation (Pfeffer et al. 2013).
+
+Diagnostic log line format: `[TURING] gp_rest=X gp_bump=X gp_cue=X L_rest=X L_bump=X L_above=X L_turing=X L_rate=X`
+
+Together, these three terms enforce the full bistable attractor geometry: gain product must cross 1 three times (rest → bump threshold → bump fixed point → cue threshold), creating a self-sustaining but bounded bump state.
+
+Note that satisfying this penalty guarantees the correct **geometry** for bistability — the three operating points properly straddle the Turing threshold — but does not guarantee bump persistence through the full delay period, which additionally depends on adaptation dynamics and noise. Bump persistence is verified empirically via simulation. The corrected three-term criterion properly accounts for PV feedback in the divisive inhibition (via $G_\text{eff}$) and enforces all three regime crossings, making it a more accurate proxy for the true bistable attractor dynamics of the 4-population ring.
 
 #### Adaptation (`--no_adapt`)
 

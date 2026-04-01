@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {plot-transfer,run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
+python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
 ```
 
 ---
@@ -11,21 +11,22 @@ python -m circuit_model {plot-transfer,run,optimize,study,ring-run,ring-study,ri
 ## Table of Contents
 
 1. [plot-transfer](#plot-transfer) -- Plot transfer functions for all 4 populations
-2. [run](#run) -- Single-circuit simulation with plotting
-3. [optimize](#optimize) -- Nevergrad parameter optimization
-4. [study](#study) -- Batch study across 8 experimental conditions
-5. [ring-run](#ring-run) -- Ring attractor single-condition simulation
-6. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
-7. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
-8. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
-9. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
-10. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-11. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
-12. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
-13. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
-14. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
-15. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
-16. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
+2. [diagnostic](#diagnostic) -- Analytical diagnostic plots (Turing gain + transfer functions)
+3. [run](#run) -- Single-circuit simulation with plotting
+4. [optimize](#optimize) -- Nevergrad parameter optimization
+5. [study](#study) -- Batch study across 8 experimental conditions
+6. [ring-run](#ring-run) -- Ring attractor single-condition simulation
+7. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
+8. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
+9. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
+10. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
+11. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
+12. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
+13. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
+14. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
+15. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
+16. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
+17. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
 
 ---
 
@@ -52,7 +53,7 @@ python -m circuit_model plot-transfer [options]
 ### Output path
 
 If `--save_plot` is not given, the figure is saved automatically:
-- With `--params_json params/new/WT_1mo_article.json` → `figs/optim/transfer_functions_WT_1mo_article.png`
+- With `--params_json params/new/ring_firing_rate/WT_1mo_article_ko.json` → `figs/optim/transfer_functions_WT_1mo_article_ko.png`
 - With `--condition WT_APP` → `figs/optim/transfer_functions_WT_APP.png`
 - Without `--params_json` / `--condition` → `figs/optim/transfer_functions.png`
 
@@ -63,7 +64,7 @@ If `--save_plot` is not given, the figure is saved automatically:
 python -m circuit_model plot-transfer
 
 # From a fitted parameter file (auto-saved with filename suffix)
-python -m circuit_model plot-transfer --params_json params/new/WT_1mo_article.json
+python -m circuit_model plot-transfer --params_json params/new/ring_firing_rate/WT_1mo_article_ko.json
 
 # Switch directly by condition preset (uses project default fitted files)
 python -m circuit_model plot-transfer --condition WT_APP
@@ -77,6 +78,109 @@ python -m circuit_model plot-transfer --set "g=0.5,A_pyr=3"
 # Save to explicit path without displaying
 python -m circuit_model plot-transfer --save_plot figs/my_transfer.png --no_show
 ```
+
+---
+
+## `diagnostic`
+
+Generate analytical (no-simulation) diagnostic plots for a given parameter set: **(1)** Turing gain product vs PYR firing rate with marked operating points, and **(2)** transfer functions for all four populations with operating point overlays.
+
+```bash
+python -m circuit_model diagnostic [options]
+```
+
+### Purpose
+
+This command provides fast analytical diagnostics without running simulations. It uses the same default parameters as `ring-run` for consistency across the CLI. Features:
+- Computes the Turing gain product G_eff × w_pyr_inter across a fine grid of PYR firing rates (0–80 Hz)
+- Overlays three operating points (rest, bump, cue) to visualize the Turing threshold crossing
+- Plots transfer functions for all four populations with operating point markers
+- Outputs gain product values at the three operating points to the console
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--params_json` | str | `params/new/ring_firing_rate/WT_1mo_article_ko.json` | Path to circuit parameters JSON file (auto-loaded if available) |
+| `--ring_params_json` | str | `params/new/ring_firing_rate/WT_1mo_article_ko_ring.json` | Path to ring parameters JSON file (auto-loaded if available) |
+| `--target_pyr` | float | `8.0` | Rest PYR firing rate for operating point marker (Hz) |
+| `--turing_bump_hz` | float | `40.0` | Target PYR firing rate (Hz) for the bump operating point marker |
+| `--turing_cue_scale` | float | `2.0` | Multiplier for I0_pyr to compute cue operating point |
+| `--out_dir` | str | `figs/diagnostic` | Output directory for PNG files |
+| `--no_show` | flag | `False` | Don't display plots (useful for batch processing) |
+
+### Output
+
+Two PNG files are saved to the output directory:
+
+1. **turing_gain_product.png**
+   - X-axis: PYR firing rate (0–80 Hz, ~500 points)
+   - Y-axis: Turing gain product (G_eff × w_pyr_inter)
+   - Horizontal dashed line at gain = 1 (Turing instability threshold)
+   - Shaded regions: green for gain > 1 (network-driven), red for gain < 1 (stable)
+   - Three marked operating points:
+     - **Blue**: Rest (target_pyr, default 8 Hz)
+     - **Green**: Bump (fixed at turing_bump_hz, default 40 Hz)
+     - **Orange**: Cue (turing_cue_scale × I0_pyr)
+   - Annotated gain values at each operating point
+
+2. **transfer_functions.png**
+   - 2×2 grid of subplots (PYR, SOM, PV, VIP)
+   - Each shows Φ(I) curve over input current range [0, 1.5 nA]
+   - Population-specific amplitude factors A_x displayed in titles
+   - Operating point markers (blue dashed line at rest I_star, green/orange markers for bump/cue)
+   - Annotated with current and firing rate at each operating point
+
+### Console Output
+
+A table of gain product values at the three operating points:
+
+```
+[TURING GAIN PRODUCT ANALYSIS]
+=================================================================
+Rest operating point:  r_pyr =   8.00 Hz  →  G = 0.2490
+Bump operating point:  r_pyr =   9.60 Hz  →  G = 0.2546
+Cue operating point:   r_pyr =  16.00 Hz  →  G = 0.2611
+=================================================================
+```
+
+### Examples
+
+```bash
+# Default parameters (loads WT_1mo_article params and ring params automatically)
+python -m circuit_model diagnostic
+
+# With custom operating point scales
+python -m circuit_model diagnostic \
+  --target_pyr 8.5 \
+  --turing_bump_hz 40.0 \
+  --turing_cue_scale 3.0
+
+# Explicit parameters (override defaults)
+python -m circuit_model diagnostic \
+  --params_json best_circuit_params.json \
+  --ring_params_json best_ring_params.json
+
+# Batch processing without GUI
+python -m circuit_model diagnostic \
+  --out_dir figs/diagnostic/batch_run \
+  --no_show
+
+# Compare conditions
+for condition in WT WT_APP a7_KO; do
+  python -m circuit_model diagnostic \
+    --params_json "params/new/ring_firing_rate/${condition}_1mo_article.json" \
+    --ring_params_json "params/new/ring_firing_rate/${condition}_1mo_article_ring.json" \
+    --out_dir "figs/diagnostic/${condition}" \
+    --no_show
+done
+```
+
+### Notes
+
+- **Analytical slice approximation**: The Turing gain computation uses an analytical approximation where other populations (SOM, VIP) are held at their rest steady-state values. For more accurate predictions, use the full ring simulation with `ring-optimize` mode 2 (bump target).
+- **A-scaling**: Transfer function derivatives include the population-specific amplitude factors (A_pyr, A_pv, A_som, A_vip) to match the effective neuronal gain.
+- **No simulation required**: Plots are generated instantaneously from analytical formulas; no numerical integration is needed.
 
 ---
 
@@ -213,6 +317,7 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
 | `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight (proxy for `w_pyr_pyr_inter` in single-node mode). |
 | `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
+| `--ach_ratio_weight` | float | `2.0` | Weight of β2/α7 ACh current ratio penalty (0 = disabled). Penalises `I_beta2_som / I_alpha7_som` deviating from 35 (Koukouli et al. 2025). |
 
 ### I/O Settings
 
@@ -333,7 +438,7 @@ python -m circuit_model ring-run [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--n_nodes` | int | from ring params JSON or `128` | Number of nodes on the ring |
-| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article.json` (WT) and `WT_APP_1mo_article.json` (APP). |
+| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article_ko.json` (WT) and `params/new/ring_firing_rate/WT_APP_1mo_article_ko.json` (APP). |
 | `--amplitude` | float | `10.0` | Stimulus amplitude as factor of I_ext_pyr baseline (0.1 = 10% of baseline current) |
 | `--delay_ms` | float | `5000.0` | Delay period duration (ms) |
 | `--seed` | int | `442` | Random seed for reproducibility |
@@ -1227,9 +1332,15 @@ python -m circuit_model ring-optimize [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
-| `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
-| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point (matches the bump stimulus amplitude). |
+| `--turing_weight` | float | `0.0` | Weight of three-term Turing bistability penalty (0 = disabled). Penalises: gain > 1−m at rest (spontaneous bump), gain < 1+m at 40 Hz bump (no fixed point), gain > 1−m at cue (runaway). |
+| `--turing_margin` | float | `0.05` | Safety margin `m` around the Turing threshold. |
+| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
+
+#### ACh receptor ratio penalty (optional)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--ach_ratio_weight` | float | `2.0` | Weight of β2/α7 ACh current ratio penalty (0 = disabled). Penalises `I_beta2_som / I_alpha7_som` deviating from 35 (Koukouli et al. 2025). |
 
 #### Mode 2 — bump quality (optional)
 
@@ -1266,16 +1377,23 @@ ring_optim_output/
 **Mode 1:**
 ```
 loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
-     [+ turing_weight × max(0, 1 + turing_margin − Φ'(I*_PYR)·w_pyr_pyr_inter)²  if turing_weight > 0]
+     [+ turing_weight × L_turing       if turing_weight > 0]
+     [+ ach_ratio_weight × L_ach_ratio  if ach_ratio_weight > 0]
 ```
 where `ring_rate_loss` = MSPE between node-averaged ring rates and `TargetRates`.
 
-The Turing penalty has two terms: (1) zero when `Φ'(I*_rest) × w_pyr_pyr_inter ≤ 1 − turing_margin` (no spontaneous bump at rest); (2) zero when `Φ'(I*_cue) × w_pyr_pyr_inter ≥ 1 + turing_margin` (bump can form under cue). `I*_cue` is evaluated with `I0_pyr` scaled by `turing_cue_scale`.
+The Turing penalty has three terms:
+- `L_rest`:  zero when gain product ≤ 1−m at rest (no spontaneous bump)
+- `L_bump`:  zero when gain product ≥ 1+m at 40 Hz (self-sustained bump fixed point exists); the 40 Hz bump operating point is found by numerically inverting the PYR transfer function (bisection), fixed independently of `I0_pyr`
+- `L_above`: zero when gain product ≤ 1−m at cue rate (no runaway); `I*_cue` evaluated with `I0_pyr` scaled by `turing_cue_scale`
+
+Diagnostic log format: `[TURING] gp_rest=X gp_bump=X gp_cue=X L_rest=X L_bump=X L_above=X L_turing=X L_rate=X`
 
 **Mode 2:**
 ```
 loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
-     [+ turing_weight × turing_loss  if turing_weight > 0]
+     [+ turing_weight × turing_loss        if turing_weight > 0]
+     [+ ach_ratio_weight × L_ach_ratio      if ach_ratio_weight > 0]
      + bump_loss_weight × max(0, min_amplitude − mean_amplitude)²
 ```
 Bump loss is zero once the bump amplitude exceeds `min_amplitude`.

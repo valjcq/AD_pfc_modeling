@@ -26,18 +26,16 @@ from .io import load_params_json, save_params_json, save_fit_summary_txt, format
 from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBreakdown
 from .simulation import simulate_circuit
 from .jacobian import print_sanity_check, compute_jacobian
-
-DEFAULT_WT_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_1mo_article.json")
-DEFAULT_APP_PARAMS_PATH = Path("params/new/ring_firing_rate/WT_APP_1mo_article.json")
+from .defaults import DEFAULT_WT_PARAMS_PATH, DEFAULT_APP_PARAMS_PATH, DEFAULT_WT_RING_PARAMS_PATH, DEFAULT_APP_RING_PARAMS_PATH
 
 # Hardcoded fallback initialization used when params/fit_init.json is unavailable.
 DEFAULT_FIT_INIT_KWARGS = {
     "A_pv": 0.12,
-    "A_pyr": 0.31,
+    "A_pyr": 0.40,
     "A_som": 0.11,
     "A_vip": 0.16,
     "I0_pv": 0.35,
-    "I0_pyr": 0.51,
+    "I0_pyr": 0.44,
     "I0_som": 0.35,
     "I0_vip": 0.33,
     "I_alpha5_vip": 0.0,
@@ -61,6 +59,7 @@ DEFAULT_FIT_INIT_KWARGS = {
     "g_exc": 0.16,
     "g_gaba_base": 1.0,
     "g_inh": 0.087,
+    "sigma_noise": 0.3,
     "sigma_s": 0.0,
     "tau_adapt_pyr": 600.0,
     "tau_adapt_som": 150.0,
@@ -326,6 +325,71 @@ def cmd_plot_transfer(args: argparse.Namespace) -> None:
         save_path=save_path,
         show=not args.no_show,
     )
+
+
+def cmd_diagnostic(args: argparse.Namespace) -> None:
+    """Plot Turing gain product and transfer functions (analytical, no simulation)."""
+    import json
+    from .io import load_params_json
+    from .ring.params import RingParams
+    from .diagnostic import plot_turing_gain_product, plot_transfer_functions_diagnostic
+
+    # Load circuit parameters
+    if args.params_json:
+        circuit_params = load_params_json(args.params_json)
+        print(f"Loaded circuit parameters from: {args.params_json}")
+    elif DEFAULT_WT_PARAMS_PATH.exists():
+        circuit_params = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
+        print(f"Loaded default circuit parameters from: {DEFAULT_WT_PARAMS_PATH}")
+    else:
+        print("ERROR: --params_json is required or default params file not found at", DEFAULT_WT_PARAMS_PATH)
+        sys.exit(1)
+
+    # Load ring parameters
+    if args.ring_params_json:
+        with open(args.ring_params_json) as f:
+            ring_dict = json.load(f)
+        ring_params = RingParams(**ring_dict)
+        print(f"Loaded ring parameters from: {args.ring_params_json}")
+    elif DEFAULT_WT_RING_PARAMS_PATH.exists():
+        with open(DEFAULT_WT_RING_PARAMS_PATH) as f:
+            ring_dict = json.load(f)
+        ring_params = RingParams(**ring_dict)
+        print(f"Loaded default ring parameters from: {DEFAULT_WT_RING_PARAMS_PATH}")
+    else:
+        print("ERROR: --ring_params_json is required or default ring params file not found at", DEFAULT_WT_RING_PARAMS_PATH)
+        sys.exit(1)
+
+    # Create output directory
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Plot 1: Turing gain product
+    save_path_1 = out_dir / "turing_gain_product.png"
+    print(f"\nGenerating Turing gain product plot...")
+    plot_turing_gain_product(
+        circuit_params,
+        ring_params,
+        target_pyr=args.target_pyr,
+        turing_bump_hz=args.turing_bump_hz,
+        turing_cue_hz=args.turing_cue_hz,
+        save_path=str(save_path_1),
+        show=not args.no_show,
+    )
+
+    # Plot 2: Transfer functions
+    save_path_2 = out_dir / "transfer_functions.png"
+    print(f"Generating transfer function plots...")
+    plot_transfer_functions_diagnostic(
+        circuit_params,
+        target_pyr=args.target_pyr,
+        turing_bump_hz=args.turing_bump_hz,
+        turing_cue_hz=args.turing_cue_hz,
+        save_path=str(save_path_2),
+        show=not args.no_show,
+    )
+
+    print(f"\nDiagnostic plots saved to: {out_dir}/")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -650,6 +714,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         turing_margin=args.turing_margin,
         turing_w_inter_ref=args.turing_w_inter_ref,
         turing_cue_scale=args.turing_cue_scale,
+        ach_ratio_weight=args.ach_ratio_weight,
     )
     _print_opt_init_summary(base, init_means, init_breakdown)
     print()
@@ -677,6 +742,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         turing_margin=args.turing_margin,
         turing_w_inter_ref=args.turing_w_inter_ref,
         turing_cue_scale=args.turing_cue_scale,
+        ach_ratio_weight=args.ach_ratio_weight,
     )
 
     if not best:
@@ -889,6 +955,10 @@ Examples:
     opt_parser.add_argument("--turing_cue_scale", type=float, default=5.0,
                             help="Multiplier applied to I0_pyr to approximate the cue operating point "
                                  "(default: 5.0, matching the bump stimulus amplitude)")
+    opt_parser.add_argument("--ach_ratio_weight", type=float, default=2.0,
+                            help="Weight of β2/α7 ACh current ratio penalty (default: 2.0, 0 = disabled). "
+                                 "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
+                                 "(Koukouli et al. 2025: β2-type currents ~35× stronger than α7 at 1.77 μM ACh).")
 
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
@@ -930,6 +1000,37 @@ Examples:
                            help="Save plot to file (e.g., 'transfer_functions.png')")
     tf_parser.add_argument("--no_show", action="store_true",
                            help="Don't display the plot")
+
+    # =========================================================================
+    # DIAGNOSTIC subcommand
+    # =========================================================================
+    diag_parser = subparsers.add_parser(
+        "diagnostic",
+        help="Analytical diagnostic plots (Turing gain product + transfer functions)",
+        description=(
+            "Generate analytical (no-simulation) diagnostic plots:\n"
+            "  1. Turing gain product vs PYR firing rate\n"
+            "  2. Transfer functions for all 4 populations with operating point markers\n"
+            "\n"
+            "If --params_json and --ring_params_json are omitted, defaults are loaded from:\n"
+            "  - params/new/ring_firing_rate/WT_1mo_article_ko.json\n"
+            "  - params/new/ring_firing_rate/WT_1mo_article_ko_ring.json"
+        ),
+    )
+    diag_parser.add_argument("--params_json", type=str, default="",
+                            help="Path to circuit parameters JSON file (default: auto-load if available)")
+    diag_parser.add_argument("--ring_params_json", type=str, default="",
+                            help="Path to ring parameters JSON file (default: auto-load if available)")
+    diag_parser.add_argument("--target_pyr", type=float, default=8.0,
+                            help="Rest PYR firing rate for operating point marker (Hz, default: 8.0)")
+    diag_parser.add_argument("--turing_bump_hz", type=float, default=40.0,
+                            help="PYR firing rate for the bump operating point marker (Hz, default: 40.0)")
+    diag_parser.add_argument("--turing_cue_hz", type=float, default=60.0,
+                            help="PYR firing rate for the cue operating point marker (Hz, default: 60.0)")
+    diag_parser.add_argument("--out_dir", type=str, default="figs/diagnostic",
+                            help="Output directory for figures (default: figs/diagnostic)")
+    diag_parser.add_argument("--no_show", action="store_true",
+                            help="Don't display the plots")
 
     # =========================================================================
     # STUDY subcommand
@@ -1015,6 +1116,10 @@ Examples:
         "--delay2_ms", type=float, default=5000.0,
         help="Delay after distractor offset in ms (default: 5000). "
              "Only used when the distractor is enabled.",
+    )
+    ring_run_parser.add_argument(
+        "--no_adapt", action="store_true",
+        help="Disable spike-frequency adaptation: set J_adapt_pyr=0 and J_adapt_som=0.",
     )
 
     # =========================================================================
@@ -1346,8 +1451,27 @@ Examples:
     )
     ring_cal_parser.add_argument(
         "--w_inter_values", type=float, nargs="+",
-        default=[2.0, 3.0, 4, 5.0, 6.0],
-        help="w_pyr_pyr_inter values to sweep (default: 2.0 3.0 4 5.0 6.0)",
+        default=None,
+        help="w_pyr_pyr_inter values to sweep (explicit list). "
+             "Mutually exclusive with --w_inter_min/--w_inter_max/--n_inter. "
+             "Default when none specified: 2.0 3.0 4.0 5.0 6.0",
+    )
+    ring_cal_parser.add_argument(
+        "--w_inter_min", type=float, default=None,
+        help="Minimum w_pyr_pyr_inter for linspace sweep (requires --w_inter_max and --n_inter).",
+    )
+    ring_cal_parser.add_argument(
+        "--w_inter_max", type=float, default=None,
+        help="Maximum w_pyr_pyr_inter for linspace sweep (requires --w_inter_min and --n_inter).",
+    )
+    ring_cal_parser.add_argument(
+        "--n_inter", type=int, default=None,
+        help="Number of w_pyr_pyr_inter steps for linspace sweep (requires --w_inter_min and --w_inter_max).",
+    )
+    ring_cal_parser.add_argument(
+        "--w_pv_values", type=float, nargs="+", default=None,
+        help="w_pv_global values to sweep. If provided, runs one calibration per value "
+             "and saves a 2D summary across (w_inter, w_pv_global).",
     )
     ring_cal_parser.add_argument(
         "--n_trials", type=int, default=50,
@@ -1657,13 +1781,16 @@ Examples:
 
     if args.command is None:
         parser.print_help()
-        print("\nNo command specified. Use 'run', 'optimize', 'study', "
+        print("\nNo command specified. Use 'run', 'optimize', 'study', 'diagnostic', "
+              "'plot-transfer', "
               "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
               "'ring-osc-phase-distractor', "
               "'ring-diffusion', 'ring-noise-floor', "
               "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
               "'ring-pre-cue-power-study', or 'ring-optimize'.")
         sys.exit(1)
+    elif args.command == "diagnostic":
+        cmd_diagnostic(args)
     elif args.command == "plot-transfer":
         cmd_plot_transfer(args)
     elif args.command == "run":

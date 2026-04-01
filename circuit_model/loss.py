@@ -7,6 +7,7 @@ This module contains:
 - loss_from_means: Loss for base condition
 - loss_from_ko_pyr: Loss for knockout conditions
 - jacobian_connectivity_penalty: Penalty for degenerate (near-zero effective gain) connections
+- ach_ratio_penalty: Penalty for β2/α7 cholinergic current ratio deviating from ~35
 """
 
 from __future__ import annotations
@@ -47,13 +48,14 @@ class FitConfig:
     """Configuration for simulation and optimization."""
     T_ms: float = 2500.0          # Simulation duration
     dt_ms: float = 0.1            # Time step
-    burn_in_ms: float = 1800.0    # Burn-in period (skip transients)
+    burn_in_ms: float = 1200.0    # Burn-in period (skip transients) — reduced for faster convergence with noise
     window_ms: float = 500.0      # Averaging window
+    record_dt_ms: float = 2.0     # Recording interval (ms) — 2ms resolution sufficient for ring dynamics
 
     n_trials: int = 8             # Number of trials per parameter set
     init_rate_scale: float = 0.2  # Scale for random initial conditions
 
-    noise_type: NoiseType = "white"
+    noise_type: NoiseType = "white"  # Always white noise for optimization (sigma_noise handles amplitude)
     tau_noise_ms: float = 5.0
 
     max_rate: float = 200.0       # Maximum allowed rate (stability check)
@@ -185,6 +187,44 @@ _REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
     (2, 2),  # PV  → PV  (self-inhibition)
     (1, 3),  # VIP → SOM
 ]
+
+
+def ach_ratio_penalty(
+    params: CircuitParams,
+    *,
+    target_ratio: float = 35.0,
+    weight: float = 2.0,
+    min_current: float = 0.001,
+) -> float:
+    """Penalize solutions where the β2/α7 cholinergic current ratio on SOM
+    deviates from the pharmacologically expected value of ~35.
+
+    At physiological ACh (1.77 μM), β2-type currents (including α5α4β2) should be
+    35× stronger than α7 currents (Koukouli et al. 2025). SOM is the only population
+    that expresses both subtypes (I_alpha7_som and I_beta2_som), so the constraint is:
+
+        I_beta2_som / I_alpha7_som ≈ 35
+
+    The penalty is quadratic in the normalised deviation:
+
+        penalty = weight * ((ratio - target_ratio) / target_ratio)²
+
+    This is skipped when both currents are below `min_current` (i.e. in a pure
+    baseline scenario where ACh receptor parameters have not been fitted yet).
+    Set `weight=0.0` to deactivate entirely.
+    """
+    if weight == 0.0:
+        return 0.0
+
+    alpha7 = params.I_alpha7_som
+    beta2 = params.I_beta2_som
+
+    # Skip in pure-baseline scenarios where neither current has been set
+    if max(alpha7, beta2) < min_current:
+        return 0.0
+
+    ratio = beta2 / max(alpha7, min_current)
+    return weight * ((ratio - target_ratio) / target_ratio) ** 2
 
 
 def jacobian_connectivity_penalty(
