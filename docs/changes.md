@@ -1,33 +1,35 @@
 # Model Changes and Refinements
 
-**Date:** 2026-03-19
+**Date:** 2026-03-19 — Updated 2026-04-01
 
-This document summarizes three major modifications to the model:
-1. **Removal of biologically unsupported local connections** (VIP → VIP, PV → SOM)
-2. **Stochastic noise architecture redesign** (from rate-space to current-space injection)
-3. **Transfer function parameterization** (W&W-grounded approach with explicit shape parameters)
+This document summarizes four major refinements to the model:
+1. **Anatomical accuracy** — Removing unjustified local connections (VIP → VIP, PV → SOM)
+2. **Noise architecture** — Shifting from rate-space to current-space injection with drive-dependent scaling
+3. **Transfer function grounding** — W&W 2006 parameterisation with explicit shape parameters and population-specific thresholds
+4. **Parameter simplification** — Eliminating redundant output scaling factors $A_x$
 
 ---
 
 ## Table of Contents
 
-- [Part 1: Removal of Biologically Unsupported Local Connections](#part-1-removal-of-biologically-unsupported-local-connections)
+- [1. Anatomical Accuracy: Circuit Pruning](#1-anatomical-accuracy-circuit-pruning)
   - [VIP → VIP Self-Inhibition](#vip--vip-self-inhibition-w_vv)
   - [PV → SOM Cross-Inhibition](#pv--som-cross-inhibition-w_ps)
-- [Part 2: Stochastic Noise Architecture](#part-2-stochastic-noise-architecture-shift-from-rate-space-to-current-space)
-- [Part 3: Transfer Function W&W-Grounded Parameterisation](#part-3-transfer-function-ww-grounded-parameterisation)
+- [2. Stochasticity by Design: Noise Architecture](#2-stochasticity-by-design-noise-architecture)
+- [3. Grounding the Transfer Function: W&W 2006](#3-grounding-the-transfer-function-ww-2006)
   - [Background: The Provenance Problem](#background-the-provenance-problem)
   - [Transfer Function Definition](#transfer-function-definition)
   - [Parameter Values and Units](#parameter-values-and-units)
   - [Unit Consistency Check](#unit-consistency-check)
   - [Comparison with Koukouli et al. 2025](#comparison-with-koukouli-et-al-2025)
   - [References](#references)
+- [4. Parameter Simplification: Eliminating Redundancy](#4-parameter-simplification-eliminating-redundancy)
 
 ---
 
-# Part 1: Removal of Biologically Unsupported Local Connections
+# 1. Anatomical Accuracy: Circuit Pruning
 
-Two synaptic connections have been removed from the model because they are not supported by the biological literature on PFC microcircuit anatomy: the VIP → VIP self-inhibitory connection (`w_vv`) and the PV → SOM cross-inhibitory connection (`w_ps`). Both had been flagged in the original code comments as absent from the reference schematic diagram.
+Removal of two unjustified synaptic connections from the model based on biological literature and the reference schematic. Both had been flagged in the original code comments as absent from canonical PFC microcircuit anatomy.
 
 ---
 
@@ -36,6 +38,7 @@ Two synaptic connections have been removed from the model because they are not s
 ### Biological Motivation
 
 VIP interneurons implement the canonical disinhibitory motif by inhibiting SOM (and weakly PV) cells. However, **local VIP → VIP autoinhibition is not an established connection in the PFC microcircuit literature**. The previous implementation included it as a pragmatic stabilization device (preventing VIP runaway under strong external drive), but this was at odds with the schematic connectivity the model is meant to represent.
+Previous value of `w_vv = 24.79` nA/Hz was quite high, making it a significant circuit element.
 
 ### Equation Change
 
@@ -71,7 +74,7 @@ The cross-inhibitory term $-g_\text{GABA}\,w_{ps}\,r_\text{PV}$ is removed.
 
 ---
 
-# Part 2: Stochastic Noise Architecture: Shift from Rate-Space to Current-Space
+# 2. Stochasticity by Design: Noise Architecture
 
 ## Biological Motivation
 
@@ -101,17 +104,17 @@ where $\sigma_s$ (in Hz) was a **noise amplitude in rate space** applied uniform
 
 Noise is injected **into all four populations** (PYR, SOM, PV, VIP), at the input current level, using a **shared noise factor** at each node:
 
-$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t) \quad \text{for } X \in \{\text{PYR}, \text{SOM}, \text{PV}, \text{VIP}\}$$
+$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{X} \cdot \xi_i(t) \quad \text{for } X \in \{\text{PYR}, \text{SOM}, \text{PV}, \text{VIP}\}$$
 
 where:
 - $I_i^{X,\text{det}}$ is the deterministic input (all synaptic terms, adaptation, stimulus)
 - $\sigma_{\text{noise}}$ is a dimensionless amplitude (default: 0.3)
-- $I_{\text{ext}}^{\text{PYR}}$ is the baseline external drive to PYR (in nA) — used as the scaling reference for all populations
+- $I_{\text{ext}}^{X}$ is the baseline external drive to population $X$ (in nA) — each population is scaled by its own baseline, so relative noise amplitudes are consistent across populations
 - $\xi_i(t)$ is the shared stochastic process (white noise, OU, or zero) applied equally to all populations at node $i$
 
 The rate equation for each population becomes:
 
-$$\tau_s \frac{dr_i^{X}}{dt} = -r_i^{X} + \Phi^{X}\bigl(I_i^{X,\text{det}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)\bigr) \quad \text{for } X \in \{\text{PYR}, \text{SOM}, \text{PV}, \text{VIP}\}$$
+$$\tau_s \frac{dr_i^{X}}{dt} = -r_i^{X} + \Phi^{X}\bigl(I_i^{X,\text{det}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{X} \cdot \xi_i(t)\bigr) \quad \text{for } X \in \{\text{PYR}, \text{SOM}, \text{PV}, \text{VIP}\}$$
 
 **Key difference from the previous approach:**
 - All four populations receive the same instantaneous noise perturbation $\xi_i(t)$ at each node, ensuring **correlated stochasticity** across populations.
@@ -131,9 +134,9 @@ $$\tau_s \frac{dr_i^{X}}{dt} = -r_i^{X} + \Phi^{X}\bigl(I_i^{X,\text{det}} + \si
 
 ---
 
-# Part 3: Transfer Function: W&W-Grounded Parameterisation
+# 3. Grounding the Transfer Function: W&W 2006
 
-This part records the rationale and exact parameter choices for the transfer function used in
+This section records the rationale and exact parameter choices for the transfer function used in
 this model, following a redesign away from the Koukouli et al. 2025 convention toward a cleaner,
 more directly W&W-grounded approach.
 
@@ -458,3 +461,52 @@ to the original W&W derivation.
   neocortex. *J. Neurophysiol.* 90(5):2987–3000.
 - Wang, X.-J. (2002). Probabilistic decision making by slow reverberation in cortical circuits.
   *Neuron* 36(5):955–968.
+
+---
+
+# 4. Parameter Simplification: Eliminating Redundancy
+
+**Date:** 2026-04-01
+
+Removal of per-population output scaling factors $A_\text{PYR}$, $A_\text{PV}$, $A_\text{SOM}$, $A_\text{VIP}$ from the transfer function. These factors are now fixed to 1.0 (i.e., eliminated entirely).
+
+## Rationale
+
+1. **No unit mismatch to absorb.** In the W&W 2006 physical-unit convention used here, the synaptic input $I_{syn}$ is in nA and the transfer function $\Phi^x$ already outputs firing rates in Hz directly. There is no scale mismatch between the input and output domains that $A_x$ would need to bridge.
+
+2. **Sufficient degrees of freedom without $A_x$.** The tonic drives $I_0^x$ (nA) and synaptic weights $\omega_{xj}$ (nA/Hz) already provide sufficient freedom to place each population's operating point at the desired firing rate target by controlling where on the transfer function curve $I_{syn}$ lands.
+
+3. **KO conditions are correctly modelled without $A_x$.** Knockout conditions are modelled by zeroing the relevant cholinergic current (e.g. $I_{\alpha7} = 0$ for α7-KO). The resulting rate change propagates through the existing circuit weights with no need for $A_x$.
+
+4. **No biological interpretation.** $A_x$ has no biological meaning in this unit convention. It was inherited from Koukouli et al.'s dimensionless parameterisation where it bridged a unit scale mismatch that does not exist here.
+
+## Equation Changes
+
+**Before:**
+$$\Phi^x(I) = A_x \cdot \frac{c_x I - I_{0,x}}{1 - \exp[-g_x(c_x I - I_{0,x})]}$$
+
+**After:**
+$$\Phi^x(I) = \frac{c_x I - I_{0,x}}{1 - \exp[-g_x(c_x I - I_{0,x})]}$$
+
+The Jacobian derivative of $\Phi^x$ with respect to $I$ simplifies correspondingly:
+
+**Before:** $\frac{d\Phi^x}{dI} = A_x \cdot \Phi'_\text{core}(I)$
+
+**After:** $\frac{d\Phi^x}{dI} = \Phi'_\text{core}(I)$
+
+where $\Phi'_\text{core}$ is the derivative of the core W&W expression.
+
+## Parameter Changes
+
+| Parameter | Status | Impact |
+|---|---|---|
+| `A_pyr` | **Removed** | Fixed to 1.0 (eliminated) |
+| `A_pv` | **Removed** | Fixed to 1.0 (eliminated) |
+| `A_som` | **Removed** | Fixed to 1.0 (eliminated) |
+| `A_vip` | **Removed** | Fixed to 1.0 (eliminated) |
+
+**Total free parameters reduced by 4.**
+
+## What the Optimizer Uses Instead
+
+The optimizer continues to fit the tonic drives $I_0^x$ and synaptic weights $\omega_{xj}$ to match firing rate targets. These parameters determine where on the transfer function curve each population operates, giving full control over steady-state firing rates. The shape of the curve (set by $c_x$, $I_{0,x}$, $g_x$ from W&W 2006) remains unchanged.

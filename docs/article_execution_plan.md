@@ -75,6 +75,7 @@ The optimization workflow follows a **two-stage approach** (decided 2026-03-31):
 python -m circuit_model optimize \
   --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
   --optimizer chaining --n_samples 50000 \
+  --skip-jacobian \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_json params/new/single_node/WT_1mo_article.json \
@@ -88,8 +89,10 @@ python -m circuit_model ring-optimize \
   --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
   --params_json params/new/single_node/WT_1mo_article.json \
   --optimizer chaining --n_samples 50000 \
-  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
-  --spatial_uniformity_weight 1.0 \
+  --skip-jacobian \
+  --turing_weight 0.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 0.0 \
+  --ach_ratio_weight 0.0 \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_circuit_json params/new/ring_optimize/WT_1mo_article_ring_opt_circuit.json \
@@ -104,6 +107,7 @@ python -m circuit_model optimize \
   --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
   --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
   --optimizer chaining --n_samples 50000 \
+  --skip-jacobian \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_json params/new/single_node/WT_1mo_article_ko.json \
@@ -118,8 +122,10 @@ python -m circuit_model ring-optimize \
   --target_alpha7_ko_pyr 17.539 --target_beta2_ko_pyr 17.965 --target_alpha5_ko_pyr 9.285 \
   --params_json params/new/single_node/WT_1mo_article_ko.json \
   --optimizer chaining --n_samples 50000 \
-  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
-  --spatial_uniformity_weight 1.0 \
+  --skip-jacobian \
+  --turing_weight 0.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 0.0 \
+  --ach_ratio_weight 0.0 \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_circuit_json params/new/ring_optimize/WT_1mo_article_ko_ring_opt_circuit.json \
@@ -133,6 +139,7 @@ python -m circuit_model ring-optimize \
 python -m circuit_model optimize \
   --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
   --optimizer chaining --n_samples 50000 \
+  --skip-jacobian \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_json params/new/single_node/WT_APP_1mo_article.json \
@@ -146,8 +153,10 @@ python -m circuit_model ring-optimize \
   --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
   --params_json params/new/single_node/WT_APP_1mo_article.json \
   --optimizer chaining --n_samples 50000 \
-  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
-  --spatial_uniformity_weight 1.0 \
+  --skip-jacobian \
+  --turing_weight 0.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 0.0 \
+  --ach_ratio_weight 0.0 \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_circuit_json params/new/ring_optimize/WT_APP_1mo_article_ring_opt_circuit.json \
@@ -162,6 +171,7 @@ python -m circuit_model optimize \
   --target_pyr 12.466 --target_som 4.814 --target_pv 4.241 --target_vip 5.551 \
   --target_alpha7_ko_pyr 13.599 --target_beta2_ko_pyr 19.109 --target_alpha5_ko_pyr 3.113 \
   --optimizer chaining --n_samples 50000 \
+  --skip-jacobian \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_json params/new/single_node/WT_APP_1mo_article_ko.json \
@@ -176,8 +186,10 @@ python -m circuit_model ring-optimize \
   --target_alpha7_ko_pyr 13.599 --target_beta2_ko_pyr 19.109 --target_alpha5_ko_pyr 3.113 \
   --params_json params/new/single_node/WT_APP_1mo_article_ko.json \
   --optimizer chaining --n_samples 50000 \
-  --turing_weight 1.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
-  --spatial_uniformity_weight 1.0 \
+  --skip-jacobian \
+  --turing_weight 0.0 --turing_margin 0.05 --turing_cue_scale 1.4 \
+  --spatial_uniformity_weight 0.0 \
+  --ach_ratio_weight 0.0 \
   --set "tau_s=20,sigma_pyr_deg=15,alpha_pyr=310,alpha_pv=615,alpha_som=615,alpha_vip=615,Theta_pyr=0.40323,Theta_pv=0.28780,Theta_som=0.28780,Theta_vip=0.28780,g_exc=0.16,g_inh=0.087,tau_adapt_pyr=600" \
   --freeze "tau_s,sigma_pyr_deg,alpha_pyr,alpha_pv,alpha_som,alpha_vip,Theta_pyr,Theta_pv,Theta_som,Theta_vip,g_exc,g_inh,tau_adapt_pyr" \
   --save_best_circuit_json params/new/ring_optimize/WT_APP_1mo_article_ko_ring_opt_circuit.json \

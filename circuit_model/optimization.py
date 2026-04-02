@@ -44,6 +44,7 @@ class Candidate:
     means: np.ndarray
     ko_means: KOMeans
     params: CircuitParams
+    breakdown: Optional["LossBreakdown"] = None
 
 
 # Type alias for condition results
@@ -54,13 +55,13 @@ ConditionResult = tuple[str, bool, np.ndarray]  # (name, ok, means)
 class LossBreakdown:
     """Breakdown of loss components."""
     firing_rate: float
-    ko_penalty: float
+    ko_firing_rate: float
     jacobian: float
     turing: float
     total: float
 
     def __str__(self) -> str:
-        return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_penalty:.3g}, "
+        return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_firing_rate:.3g}, "
                 f"jac={self.jacobian:.3g}, turing={self.turing:.3g}, "
                 f"total={self.total:.3g}]")
 
@@ -131,6 +132,7 @@ def _loss_from_results(
     params: CircuitParams,
     *,
     squared_loss: bool = True,
+    jacobian_weight: float = 1.0,
     turing_weight: float = 0.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
@@ -187,10 +189,10 @@ def _loss_from_results(
         n_ko += 1
 
     # Normalise KO loss by number of KO conditions
-    ko_penalty = ko_loss / n_ko if n_ko > 0 else 0.0
+    ko_firing_rate = ko_loss / n_ko if n_ko > 0 else 0.0
 
     # Jacobian connectivity penalty
-    jac_loss = jacobian_connectivity_penalty(params, base_means)
+    jac_loss = jacobian_connectivity_penalty(params, base_means) * jacobian_weight
 
     # Turing instability penalty
     turing_loss = 0.0
@@ -207,8 +209,8 @@ def _loss_from_results(
     # ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 should be ~35× α7 on SOM)
     ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
 
-    total = fr_loss + ko_penalty + jac_loss + turing_loss + ach_loss
-    breakdown = LossBreakdown(firing_rate=fr_loss, ko_penalty=ko_penalty,
+    total = fr_loss + ko_firing_rate + jac_loss + turing_loss + ach_loss
+    breakdown = LossBreakdown(firing_rate=fr_loss, ko_firing_rate=ko_firing_rate,
                                jacobian=jac_loss, turing=turing_loss, total=total)
 
     return total, base_means, ko_means, breakdown
@@ -222,6 +224,7 @@ def evaluate_params(
     rng: np.random.Generator,
     executor: Optional[ProcessPoolExecutor] = None,
     squared_loss: bool = True,
+    jacobian_weight: float = 1.0,
     turing_weight: float = 0.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
@@ -238,7 +241,7 @@ def evaluate_params(
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
+    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
 
 
 def build_nevergrad_parametrization(
@@ -343,6 +346,7 @@ def nevergrad_optimize(
     step_offset: int = 0,
     append_log: bool = False,
     squared_loss: bool = True,
+    jacobian_weight: float = 1.0,
     turing_weight: float = 0.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
@@ -405,14 +409,14 @@ def nevergrad_optimize(
         p = params_from_ng_dict(x.value, base)
         cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
 
-        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
+        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
         ng_optimizer.tell(x, L)
         
         # Update progress bar with loss breakdown
         pbar.set_postfix_str(str(breakdown))
 
         prev_best_loss = best[0].loss if best else float("inf")
-        cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)
+        cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p, breakdown=breakdown)
         if len(best) < top_k:
             best.append(cand)
             best.sort(key=lambda c: c.loss)
@@ -425,36 +429,83 @@ def nevergrad_optimize(
         elif step >= plateau_start_step:
             steps_since_improvement += 1
 
-        pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", step=step, plateau=steps_since_improvement)
+        pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", pyr=f"{best[0].means[0]:.2f}" if best else "N/A", step=step, plateau=steps_since_improvement)
 
         if save_best_json and best and best[0].loss < prev_best_loss:
             save_params_json(save_best_json, best[0].params)
 
         if log_file and step % log_interval == 0 and best:
-            _log_candidate(log_file, step + step_offset, best[0], target)
+            _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
+            # Generate loss evolution plots every log_interval steps
+            try:
+                _generate_loss_plots(log_file)
+            except Exception as e:
+                # Don't break optimization if plotting fails
+                pass
 
         if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
             if log_file:
-                _log_candidate(log_file, step + step_offset, best[0], target)
+                _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
+                try:
+                    _generate_loss_plots(log_file)
+                except Exception:
+                    pass
             stopped_early = True
             break
 
         if plateau_patience > 0 and steps_since_improvement >= plateau_patience:
             print(f"\nEarly stop: no improvement for {plateau_patience} steps.")
             if log_file and best:
-                _log_candidate(log_file, step + step_offset, best[0], target)
+                _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
+                try:
+                    _generate_loss_plots(log_file)
+                except Exception:
+                    pass
             stopped_early = True
             break
 
     pbar.close()
 
     if log_file and best and (not stopped_early) and last_step % log_interval != 0:
-        _log_candidate(log_file, last_step + step_offset, best[0], target)
+        _log_candidate(log_file, last_step + step_offset, best[0], target, best[0].breakdown)
+        try:
+            _generate_loss_plots(log_file)
+        except Exception:
+            pass
 
     return best
 
 
-def _log_candidate(path: str, step: int, cand: Candidate, target: TargetRates) -> None:
+def _generate_loss_plots(log_file: str) -> None:
+    """Generate loss evolution plots from the current log file.
+    
+    Called periodically during optimization to update live visualizations.
+    Saves plots to the same directory as the log file.
+    """
+    try:
+        from .loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
+        
+        log_path = Path(log_file)
+        output_dir = str(log_path.parent)
+        
+        # Generate both plots
+        plot_loss_evolution(log_file, output_dir=output_dir, dpi=72)
+        plot_loss_evolution_ratios(log_file, output_dir=output_dir, dpi=72)
+    except ImportError:
+        # Matplotlib or plotting module not available
+        pass
+    except Exception:
+        # Silently fail - don't interrupt optimization
+        pass
+
+
+def _log_candidate(
+    path: str, 
+    step: int, 
+    cand: Candidate, 
+    target: TargetRates,
+    breakdown: Optional[LossBreakdown] = None,
+) -> None:
     """Helper to log a candidate result."""
     means_dict = {
         "pyr": float(cand.means[0]),
@@ -467,4 +518,13 @@ def _log_candidate(path: str, step: int, cand: Candidate, target: TargetRates) -
         "alpha5_ko": cand.ko_means.alpha5_ko.tolist() if cand.ko_means.alpha5_ko is not None else None,
         "beta2_ko": cand.ko_means.beta2_ko.tolist() if cand.ko_means.beta2_ko is not None else None,
     }
-    log_best_result(path, step, cand.loss, means_dict, ko_means_dict, cand.params, target)
+    breakdown_dict = None
+    if breakdown is not None:
+        breakdown_dict = {
+            "firing_rate": float(breakdown.firing_rate),
+            "ko_firing_rate": float(breakdown.ko_firing_rate),
+            "jacobian": float(breakdown.jacobian),
+            "turing": float(breakdown.turing),
+            "total": float(breakdown.total),
+        }
+    log_best_result(path, step, cand.loss, means_dict, ko_means_dict, cand.params, target, breakdown_dict)

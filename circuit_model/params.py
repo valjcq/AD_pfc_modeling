@@ -145,8 +145,8 @@ class CircuitParams:
     # =========================================================================
     # TRANSFER FUNCTION PARAMETERS (Wong-Wang 2006, exact values)
     # =========================================================================
-    # Form: Phi(I) = A * alpha * (I - Theta) / (1 - exp(-g * alpha * (I - Theta)))
-    # which is equivalent to the W&W form  A * (c*I - I0) / (1 - exp(-g*(c*I - I0)))
+    # Form: Phi(I) = alpha * (I - Theta) / (1 - exp(-g * alpha * (I - Theta)))
+    # which is equivalent to the W&W form  (c*I - I0) / (1 - exp(-g*(c*I - I0)))
     # with  alpha = c_x (Hz/nA),  Theta = I0_x / c_x (nA),  g = g_x (s).
     #
     # These six constants are FIXED from W&W 2006 and are NOT optimised.
@@ -169,21 +169,6 @@ class CircuitParams:
     Theta_vip: float = 177.0 / 615.0
 
     g_inh: float = 0.087              # g_i  (s)     — W&W 2006
-
-    # Output scaling factors (dimensionless) — the ONLY free TF parameter per population.
-    # A_x is calibrated so that the NOISY mean rate (sigma_noise=0.3) matches targets.
-    # Targets: PYR ~8.5 Hz, PV ~4.0 Hz, SST ~4.5 Hz, VIP ~6.0 Hz.
-    #
-    # With I0_pyr=0.44 nA (z≈1.2), the W&W TF is convex → noise boosts mean rate
-    # (Jensen's inequality). The deterministic rate at A_pyr=0.40 is ~4.4 Hz, but
-    # with sigma_noise=0.3 the noisy mean is ~8.6 Hz (correct operating point).
-    #
-    # IMPORTANT: deterministic simulations will show ~4-5 Hz for PYR, which is
-    # expected. The optimizer always runs with noise_type='white'.
-    A_pyr: float = 0.40   # PYR: noisy mean ≈ 8.6 Hz; det ≈ 4.4 Hz at I_syn = 0.428 nA
-    A_pv:  float = 0.12   # PV:  core ≈ 33.1 Hz at I_syn = 0.338 nA
-    A_som: float = 0.11   # SST: core ≈ 42.5 Hz at I_syn = 0.355 nA
-    A_vip: float = 0.16   # VIP: core ≈ 38.0 Hz at I_syn = 0.347 nA
 
     def g_gaba(self) -> float:
         """Total GABA scaling factor."""
@@ -265,7 +250,6 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     - Synaptic weights:        nA/Hz  (weight × rate → nA input current)
     - External / nAChR drives: nA     (enter I_syn directly)
     - Adaptation strengths:    nA/Hz  (J_adapt × rate → nA adaptation current)
-    - Output scalers A_x:      dimensionless
     - GABA modulation:         dimensionless
     Note: sigma_noise is fixed (not optimized); noise enters optimization via n_trials averaging.
 
@@ -289,18 +273,18 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
 
     # --- Adaptation strengths (nA/Hz) ---
     # Tightened around working init: J_adapt_pyr=0.002, J_adapt_som=0.
-    b["J_adapt_pyr"] = ParamBound(0.001, 0.004, mode="log")
-    b["J_adapt_som"] = ParamBound(0.0, 0.005, mode="lin")   # lin: can be exactly 0 (off)
+    b["J_adapt_pyr"] = ParamBound(0.001, 1, mode="log")
+    b["J_adapt_som"] = ParamBound(0.001, 1, mode="lin")
 
     # --- GABA modulation (dimensionless) ---
     # Tightened around working init: g_gaba_base=1.0, g_alpha7=0.0.
-    b["g_gaba_base"] = ParamBound(0.5, 2.0, mode="lin")
-    b["g_alpha7"]    = ParamBound(0.0, 1.0, mode="lin")
+    b["g_gaba_base"] = ParamBound(0.5, 10, mode="lin")
+    b["g_alpha7"]    = ParamBound(0.0, 10, mode="lin")
 
     # --- Synaptic weights (nA/Hz) ---
     # Additive connections centered near working init 0.002 nA/Hz.
-    _W_LO = 0.001
-    _W_HI = 0.008
+    _W_LO = 0
+    _W_HI = 10
 
     for name in ["w_ee", "w_ep", "w_pp", "w_se", "w_es", "w_vs", "w_ev", "w_sp", "w_vp"]:
         b[name] = ParamBound(_W_LO, _W_HI, mode="log")
@@ -310,47 +294,32 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     # Tightened lower bound: biologically implausible below this value
     # (Pfeffer et al. 2013); prevents optimizer from zeroing out inhibitory
     # feedback needed for gain product bell shape.
-    b["w_pe"] = ParamBound(0.05, 0.20, mode="log")
+    b["w_pe"] = ParamBound(0, 1, mode="log")
 
     # Tightened lower bound: biologically implausible below this value
-    # (Pfeffer et al. 2013); prevents optimizer from zeroing out inhibitory
-    # feedback needed for gain product bell shape.
-    b["w_se"] = ParamBound(0.003, 0.008, mode="log")
+    b["w_se"] = ParamBound(0, 1, mode="log")
 
     # w_ep: expanded lower bound to allow finer tuning
-    b["w_ep"] = ParamBound(0.0001, 0.008, mode="log")  # expanded: 0.001..0.008 -> 0.0001..0.008 (bounds diagnostic)
+    b["w_ep"] = ParamBound(0, 1, mode="log")  # expanded: 0.001..0.008 -> 0.0001..0.008 (bounds diagnostic)
 
     # w_pp: expanded upper bound for PV self-inhibition
-    b["w_pp"] = ParamBound(0.001, 0.02, mode="log")  # expanded: 0.001..0.008 -> 0.001..0.02 (saturated at upper, bounds diagnostic)
+    b["w_pp"] = ParamBound(0, 1, mode="log")  # expanded: 0.001..0.008 -> 0.001..0.02 (saturated at upper, bounds diagnostic)
 
     # --- External tonic drives (nA) ---
-    # Lower bounds are set ABOVE the W&W thresholds so I_syn > Theta_x at initialisation.
-    # Tightened around working init (still safely above threshold).
-    # I0_pyr working init is 0.44 nA (W&W operating point at z≈1.2).
-    # Lower bound > Theta_pyr=0.403 so PYR stays above threshold.
-    b["I0_pyr"] = ParamBound(0.41, 0.65, mode="lin")
-    b["I0_pv"]  = ParamBound(0.25, 0.60, mode="lin")  # expanded: 0.30..0.60 -> 0.25..0.60 (bounds diagnostic)
-    b["I0_som"] = ParamBound(0.30, 0.60, mode="lin")
-    b["I0_vip"] = ParamBound(0.30, 0.55, mode="lin")
+    b["I0_pyr"] = ParamBound(0.01, 0.9, mode="lin")
+    b["I0_pv"]  = ParamBound(0.01, 0.9, mode="lin")
+    b["I0_som"] = ParamBound(0.01, 0.9, mode="lin")
+    b["I0_vip"] = ParamBound(0.01, 0.9, mode="lin")
 
     # Transient stimulus (dimensionless fraction of I0_pyr), centered near working init 0.2.
-    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # expanded: 0.0..0.5 -> 0.0..1.0 (bounds diagnostic)
+    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # TODO: Remove from optimization (not a circuit parameter, but a stimulus parameter used for testing transient response)
 
     # --- nAChR cholinergic currents (nA) ---
     # These add to I0_x; should be comparable fraction of (I0_x - Theta_x).
     # Working init is 0 for all receptor-mediated currents; keep moderate headroom.
-    b["I_alpha7_pv"]  = ParamBound(0.0, 0.15, mode="lin")
-    b["I_alpha7_som"] = ParamBound(0.0, 0.15, mode="lin")
-    b["I_beta2_som"]  = ParamBound(0.0, 0.15, mode="lin")
-    b["I_alpha5_vip"] = ParamBound(0.0, 0.15, mode="lin")
-
-    # --- Output scaling factors (dimensionless) ---
-    # Working init: A_pyr=0.76, A_pv=0.12, A_som=0.11, A_vip=0.16.
-    # A_pyr was raised from 0.31 to 0.76 because I0_pyr was lowered to 0.44 nA
-    # (lower operating point → lower phi_core → higher A needed for same target rate).
-    b["A_pyr"] = ParamBound(0.15, 1.50, mode="log")
-    b["A_pv"]  = ParamBound(0.01, 0.30, mode="log")  # expanded: 0.06..0.30 -> 0.01..0.30 (bounds diagnostic)
-    b["A_som"] = ParamBound(0.05, 0.30, mode="log")
-    b["A_vip"] = ParamBound(0.08, 0.40, mode="log")
+    b["I_alpha7_pv"]  = ParamBound(0.0, 0.5, mode="lin")
+    b["I_alpha7_som"] = ParamBound(0.0, 0.5, mode="lin")
+    b["I_beta2_som"]  = ParamBound(0.0, 0.5, mode="lin")
+    b["I_alpha5_vip"] = ParamBound(0.0, 0.5, mode="lin")
 
     return b

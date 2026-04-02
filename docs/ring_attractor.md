@@ -109,7 +109,7 @@ Each node follows rate dynamics governed by:
 
 $$\tau_s \frac{dr_i^X}{dt} = -r_i^X + \Phi^X(I_i^X)$$
 
-where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, and $I_i^X$ is the total input current. Noise is injected into the PYR input current (see [Section 7](#7-noise)).
+where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, and $I_i^X$ is the total input current. Noise is injected into the input current of all populations, each scaled by its own baseline drive (see [Section 7](#7-noise)).
 
 Firing rates are clamped to $r_i^X \in [0,\, 200]$ Hz at each integration step. The upper bound acts as a safety net against numerical overflow in large networks while remaining well above physiological firing rates.
 
@@ -125,15 +125,15 @@ The noise term $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \x
 
 **SOM** (local connections only):
 
-$$I_i^{\text{SOM}} = w_{es} \, r_i^{\text{PYR}} - w_{vs} \, r_i^{\text{VIP}} - I_{\text{adapt},i}^{\text{SOM}} + I_{\text{ext}}^{\text{SOM}}$$
+$$I_i^{\text{SOM}} = w_{es} \, r_i^{\text{PYR}} - w_{vs} \, r_i^{\text{VIP}} - I_{\text{adapt},i}^{\text{SOM}} + I_{\text{ext}}^{\text{SOM}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{SOM}} \cdot \xi_i(t)$$
 
 **PV** (local connections only; PV's global effect is on PYR, not on other PV):
 
-$$I_i^{\text{PV}} = w_{ep} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{pp} \, r_i^{\text{PV}} - g_{\text{GABA}} \, w_{sp} \, r_i^{\text{SOM}} - w_{vp} \, r_i^{\text{VIP}} + I_{\text{ext}}^{\text{PV}}$$
+$$I_i^{\text{PV}} = w_{ep} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{pp} \, r_i^{\text{PV}} - g_{\text{GABA}} \, w_{sp} \, r_i^{\text{SOM}} - w_{vp} \, r_i^{\text{VIP}} + I_{\text{ext}}^{\text{PV}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PV}} \cdot \xi_i(t)$$
 
 **VIP** (local connections only):
 
-$$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}}$$
+$$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{VIP}} \cdot \xi_i(t)$$
 
 ### 3.2 Weight Notation
 
@@ -285,19 +285,19 @@ Multiple stimuli are summed: $I_{\text{stim},i}(t) = \sum_k I_{\text{stim},i}^{(
 
 ## 7. Noise
 
-Noise is injected as a shared stochastic current perturbation into **all four populations** (PYR, SOM, PV, VIP) at each node independently. The same noise factor is applied to each population, ensuring correlated variability across populations at each node. This models the variability in synaptic drive (diffusion approximation of Poisson spike trains).
+Noise is injected as a shared stochastic current perturbation into **all four populations** (PYR, SOM, PV, VIP) at each node independently. All populations share the same noise process $\xi_i(t)$ at each node, but each population's noise amplitude is proportional to its own baseline external drive. This ensures correlated variability across populations while keeping the relative noise level consistent for each population. This models the variability in synaptic drive (diffusion approximation of Poisson spike trains).
 
 ### Noise equation
 
 The noisy input current for each population $X \in \{\text{PYR, SOM, PV, VIP}\}$ at node $i$ is:
 
-$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
+$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{X}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
 
-where $I_i^{X,\text{det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the shared noise process (see below). Note that the noise scale is proportional to the baseline PYR drive $I_{\text{ext}}^{\text{PYR}}$ but applied equally to all populations, ensuring that noise amplitudes scale together across all population types. This automatically adjusts across experimental conditions with different drive levels.
+where $I_i^{X,\text{det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the shared noise process (see below). Each population's noise scale is proportional to its own baseline drive $I_{\text{ext}}^{X}$, so the dimensionless noise amplitude $\sigma_{\text{noise}}$ has the same meaning across all populations.
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| `sigma_noise` | $\sigma_{\text{noise}}$ | `0.3` | Dimensionless noise amplitude. Noise current std = `sigma_noise × I_ext_pyr` (nA) |
+| `sigma_noise` | $\sigma_{\text{noise}}$ | `0.3` | Dimensionless noise amplitude. Noise current std for population $X$ = `sigma_noise × I_ext_X` (nA) |
 
 ### Noise processes
 
@@ -330,7 +330,7 @@ a diffusion approximation to Poisson spike emission:
 $$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad
 \langle\eta_i(t)\,\eta_j(t')\rangle = \delta(t-t')\,\delta_{ij}$$
 
-(their p. 24, lines immediately before Eq. 20). Our model injects current-space noise into PYR with amplitude $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}}$, which after passing through the transfer function slope $\Phi'$ produces effective rate noise consistent with this formulation. The $\sqrt{\phi_{0,i}}$ amplitude scaling of the original is absorbed into $\sigma_{\text{noise}}$.
+(their p. 24, lines immediately before Eq. 20). Our model injects current-space noise into each population $X$ with amplitude $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{X}$, which after passing through the transfer function slope $\Phi'$ produces effective rate noise consistent with this formulation. The $\sqrt{\phi_{0,i}}$ amplitude scaling of the original is absorbed into $\sigma_{\text{noise}}$.
 
 **OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside
 the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion

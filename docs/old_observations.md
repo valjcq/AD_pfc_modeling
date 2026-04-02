@@ -207,3 +207,22 @@ We need to analyze more in depth the impact of the distractor on the bump stabil
 
 ---
 
+### Mechanistic Summary of Previous Network State (Oscillation Origin)
+
+In the previous parameter state, the oscillatory behavior seems to have been driven mainly by the adaptation timescales and strengths, especially in SOM neurons:
+
+- `tau_adapt_som = 2320.51 ms` with `J_adapt_som = 27.2356` (very strong and very slow adaptation)
+- `tau_adapt_pyr = 186.602 ms` with `J_adapt_pyr = 0.270443` (much weaker and faster adaptation)
+
+Given that SOM was the dominant inhibitory population in these runs (while VIP activity looked weakly coupled to PYR and mostly noisy, not correlated to the network activity), this configuration likely produced a long SOM adaptation current that effectively reduced SOM inhibition for extended periods. That prolonged SOM fatigue creates windows of PYR disinhibition, which can sustain or amplify oscillatory population dynamics.
+
+So, the previous oscillations were probably not only a generic network property, but strongly tied to this adaptation imbalance: very strong/slow SOM adaptation combined with weak/fast PYR adaptation.
+
+**Biological caveat**:
+- This adaptation hierarchy is likely inverted relative to biology.
+- PYR adaptation is generally reported as longer (roughly 600 ms to 2 s).
+- SOM adaptation is shorter (around ~150 ms), and is less consistently characterized in many models.
+
+Because of that mismatch, this mechanism can explain the old oscillations in the model, but it also weakens the biological interpretation of those previous observations. In practice, these adaptation settings can largely overwrite earlier conclusions about oscillation origin.
+
+

@@ -155,8 +155,7 @@ def transfer_function_slope(
     """Return Φ'(I*) — the full transfer-function derivative at the operating point.
 
     Uses ``_total_inputs`` to recover the steady-state input current I* from the
-    steady-state rates ``r_ss``, then evaluates the Wong-Wang derivative (including
-    the population-specific amplitude scale A).
+    steady-state rates ``r_ss``, then evaluates the Wong-Wang derivative.
 
     Parameters
     ----------
@@ -166,13 +165,13 @@ def transfer_function_slope(
     """
     I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
     if population == "PYR":
-        return params.A_pyr * _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc)
+        return _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc)
     if population == "SOM":
-        return params.A_som * _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh)
+        return _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh)
     if population == "PV":
-        return params.A_pv * _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh)
+        return _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh)
     if population == "VIP":
-        return params.A_vip * _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh)
+        return _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh)
     raise ValueError(f"Unknown population: {population!r}")
 
 

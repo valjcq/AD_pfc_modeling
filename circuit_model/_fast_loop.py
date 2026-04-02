@@ -52,20 +52,19 @@ except ImportError:
 
 
 @_njit(cache=True)
-def _phi_scalar(I: float, theta: float, c: float, g: float, A: float = 1.0) -> float:
+def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
     """Wong-Wang transfer function on a single scalar value.
 
     Identical to phi_wong_wang() in transfer.py but avoids all NumPy overhead.
     Uses math.expm1 which is compiled to a single CPU instruction by Numba.
-    A is the per-population output scaling factor (Koukouli et al. 2025).
     """
     u = c * (I - theta)
     z = g * u
     if abs(z) < 1e-8:
         # Taylor limit: avoids 0/0 at z=0
-        return max(0.0, A * (1.0 / g + u * 0.5))
+        return max(0.0, 1.0 / g + u * 0.5)
     denom = -math.expm1(min(-z, 700.0))  # stable: 1 - exp(-z)
-    return max(0.0, A * u / denom)
+    return max(0.0, u / denom)
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +99,6 @@ def _euler_loop(
     Theta_som: float, alpha_som: float,
     Theta_pv: float,  alpha_pv: float,
     Theta_vip: float, alpha_vip: float,
-    # Output scaling factors
-    A_pyr: float, A_pv: float, A_som: float, A_vip: float,
 ) -> None:
     """Core Euler integration loop — writes into r_out and I_adapt_out in-place.
 
@@ -135,10 +132,10 @@ def _euler_loop(
         I_vip = w_ev * r_pyr + I_ext_vip
 
         # Transfer function (scalar, zero overhead)
-        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_exc, A_pyr)
-        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g_inh, A_som)
-        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g_inh, A_pv)
-        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g_inh, A_vip)
+        phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_exc)
+        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g_inh)
+        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g_inh)
+        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g_inh)
 
         # Euler update: firing rates
         # Operation order matches reference exactly: dt_ms * (sum / tau_s)

@@ -21,14 +21,14 @@ except ImportError:
 
 
 @_njit(cache=True)
-def _phi_scalar(I: float, theta: float, c: float, g: float, A: float = 1.0) -> float:
+def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
     """Wong-Wang transfer function on a scalar value."""
     u = c * (I - theta)
     z = g * u
     if abs(z) < 1e-8:
-        return max(0.0, A * (1.0 / g + u * 0.5))
+        return max(0.0, 1.0 / g + u * 0.5)
     denom = -math.expm1(min(-z, 700.0))
-    return max(0.0, A * u / denom)
+    return max(0.0, u / denom)
 
 
 @_njit(cache=True)
@@ -37,7 +37,7 @@ def _ring_euler_loop(
     i_adapt_stored: np.ndarray,    # (n_recorded, n_nodes, 2) — first slot=initial adaptation
     r_final: np.ndarray,           # (n_nodes, 4) — OUTPUT: final state after loop
     i_adapt_final: np.ndarray,     # (n_nodes, 2) — OUTPUT: final adaptation after loop
-    noise_arr: np.ndarray,         # (n_steps-1, n_nodes) — PYR input-current noise samples
+    noise_arr: np.ndarray,         # (n_steps-1, n_nodes) — shared noise samples, or zeros
     I_stim_arr: np.ndarray,
     I_ext_pyr_arr: np.ndarray,
     I_ext_som_arr: np.ndarray,
@@ -49,7 +49,10 @@ def _ring_euler_loop(
     n_nodes: int,
     record_step: int,
     dt_ms: float,
-    noise_scale: float,            # = sigma_noise * I_ext_pyr_baseline (nA)
+    noise_scale_pyr: float,        # = sigma_noise * I_ext_pyr (nA)
+    noise_scale_som: float,        # = sigma_noise * I_ext_som (nA)
+    noise_scale_pv: float,         # = sigma_noise * I_ext_pv (nA)
+    noise_scale_vip: float,        # = sigma_noise * I_ext_vip (nA)
     tau_s: float,
     ggaba: float,
     w_ee: float,
@@ -76,10 +79,6 @@ def _ring_euler_loop(
     alpha_pv: float,
     Theta_vip: float,
     alpha_vip: float,
-    A_pyr: float,
-    A_pv: float,
-    A_som: float,
-    A_vip: float,
 ) -> None:
     """Core Euler integration loop for ring simulations.
 
@@ -99,10 +98,11 @@ def _ring_euler_loop(
     i_adapt_final : (n_nodes, 2) — always overwritten with the adaptation after the
         last step.
     noise_arr : (n_steps-1, n_nodes) — pre-drawn N(0,1) samples. Injected as an
-        additive current perturbation into PYR: I_pyr += noise_scale * noise_arr[k, j].
+        additive current perturbation into each population: I_X += noise_scale_X * noise_arr[k, j].
+        The same xi sample is shared across populations at each node; only the scale differs.
         Pass an all-zeros array to disable noise.
-    noise_scale : scalar (nA) = sigma_noise * I_ext_pyr_baseline. Scales noise_arr
-        so that noise std equals sigma_noise * baseline PYR drive.
+    noise_scale_pyr/som/pv/vip : scalar (nA) = sigma_noise * I_ext_X. Each population's
+        noise amplitude is proportional to its own baseline external drive.
     record_step : write a recording every record_step integration steps (>= 1).
     n_steps : total number of time points including t=0 (loop runs n_steps-1 steps).
     """
@@ -144,6 +144,7 @@ def _ring_euler_loop(
 
             denom = 1.0 + ggaba * w_pe * r_pv
 
+            xi_j = noise_arr[k, j]  # shared noise sample at this node/step
             I_pyr_j = (
                 (w_ee * r_pyr) / denom
                 + I_pyr_inter[j]
@@ -152,23 +153,23 @@ def _ring_euler_loop(
                 - Iap
                 + I_ext_pyr_arr[k]
                 + I_stim_arr[k, j]
-                + noise_scale * noise_arr[k, j]  # noise injected into PYR current
+                + noise_scale_pyr * xi_j
             )
-            I_som_j = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_arr[k] + noise_scale * noise_arr[k, j]
+            I_som_j = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_arr[k] + noise_scale_som * xi_j
             I_pv_j = (
                 w_ep * r_pyr
                 - ggaba * w_pp * r_pv
                 - ggaba * w_sp * r_som
                 - w_vp * r_vip
                 + I_ext_pv_arr[k]
-                + noise_scale * noise_arr[k, j]
+                + noise_scale_pv * xi_j
             )
-            I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k] + noise_scale * noise_arr[k, j]
+            I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k] + noise_scale_vip * xi_j
 
-            phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g_exc, A_pyr)
-            phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g_inh, A_som)
-            phi_pv  = _phi_scalar(I_pv_j,  Theta_pv,  alpha_pv,  g_inh, A_pv)
-            phi_vip = _phi_scalar(I_vip_j, Theta_vip, alpha_vip, g_inh, A_vip)
+            phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g_exc)
+            phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g_inh)
+            phi_pv  = _phi_scalar(I_pv_j,  Theta_pv,  alpha_pv,  g_inh)
+            phi_vip = _phi_scalar(I_vip_j, Theta_vip, alpha_vip, g_inh)
 
             dr_pyr = (-r_pyr + phi_pyr) / tau_s
             dr_som = (-r_som + phi_som) / tau_s

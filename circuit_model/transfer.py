@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 
-def phi_wong_wang(I: Any, *, theta: float, c: float, g: float, A: float = 1.0) -> np.ndarray:
+def phi_wong_wang(I: Any, *, theta: float, c: float, g: float) -> np.ndarray:
     """
     Wong-Wang transfer function: converts synaptic input current to firing rate.
 
@@ -21,16 +21,13 @@ def phi_wong_wang(I: Any, *, theta: float, c: float, g: float, A: float = 1.0) -
     output firing rate with biologically realistic saturation properties.
 
     Mathematical form:
-        Phi(I) = A * u / (1 - exp(-g*u))  where u = c*(I - theta)
+        Phi(I) = u / (1 - exp(-g*u))  where u = c*(I - theta)
 
     Parameters:
         I: Input current (can be array)
         theta: Threshold current - input below this produces near-zero output
         c: Gain parameter - controls slope/sensitivity of the response
         g: Curvature parameter - controls saturation behavior
-        A: Output scaling factor - sets the maximum reachable firing rate for
-           this population (Koukouli et al. 2025, Table 1). Default: 1.0
-           (backward-compatible, no scaling). Must be > 0.
 
     Properties:
         - Monotonically increasing
@@ -44,8 +41,6 @@ def phi_wong_wang(I: Any, *, theta: float, c: float, g: float, A: float = 1.0) -
         raise ValueError("g must be > 0")
     if c < 0:
         raise ValueError("c must be >= 0")
-    if A <= 0:
-        raise ValueError("A must be > 0")
 
     I = np.asarray(I, dtype=float)
     u = c * (I - theta)  # Shifted and scaled input
@@ -58,4 +53,4 @@ def phi_wong_wang(I: Any, *, theta: float, c: float, g: float, A: float = 1.0) -
     # Near z=0, use Taylor expansion: u/(1-exp(-gu)) approx 1/g + u/2
     eps = 1e-8
     out = np.where(np.abs(z) < eps, 1.0 / g + u / 2.0, u / denom)
-    return np.maximum(A * out, 0.0)  # Firing rates must be non-negative
+    return np.maximum(out, 0.0)  # Firing rates must be non-negative

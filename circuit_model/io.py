@@ -215,12 +215,11 @@ def save_fit_summary_txt(
 
     # ── Transfer function parameters ────────────────────────────────────────
     if params is not None:
-        lines.append("  TRANSFER FUNCTION  Phi(I) = A · c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))")
+        lines.append("  TRANSFER FUNCTION  Phi(I) = c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))")
         lines.append(f"  Curvature: g_exc (PYR) = {params.g_exc:.4f}   g_inh (SOM/PV/VIP) = {params.g_inh:.4f}")
         lines.append(SEP)
         lines.append(f"  {'':8}{'PYR':>10}{'SOM':>10}{'PV':>10}{'VIP':>10}")
         lines.append(SEP)
-        lines.append(f"  {'A':8}{params.A_pyr:>10.3f}{params.A_som:>10.3f}{params.A_pv:>10.3f}{params.A_vip:>10.3f}")
         lines.append(f"  {'Theta':8}{params.Theta_pyr:>10.3f}{params.Theta_som:>10.3f}{params.Theta_pv:>10.3f}{params.Theta_vip:>10.3f}")
         lines.append(f"  {'alpha':8}{params.alpha_pyr:>10.4f}{params.alpha_som:>10.4f}{params.alpha_pv:>10.4f}{params.alpha_vip:>10.4f}")
         lines.append(SEP)
@@ -308,11 +307,15 @@ def log_best_result(
     ko_means: "dict",
     params: "CircuitParams",
     target: "TargetRates",
+    breakdown: Optional["dict"] = None,
 ) -> None:
     """
     Log optimization result to a JSONL file.
 
-    Each line is a JSON object with step, loss, target, means, ko_means, and params.
+    Each line is a JSON object with step, loss, target, means, ko_means, params, and optionally breakdown.
+    
+    Args:
+        breakdown: Optional dict with loss component breakdown {firing_rate, ko_firing_rate, jacobian, turing, ach_ratio, total}
     """
     entry = {
         "step": step,
@@ -322,5 +325,7 @@ def log_best_result(
         "ko_means": ko_means,
         "params": asdict(params),
     }
+    if breakdown is not None:
+        entry["breakdown"] = breakdown
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")

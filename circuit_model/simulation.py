@@ -134,8 +134,6 @@ def simulate_circuit(
             float(params.Theta_som), float(params.alpha_som),
             float(params.Theta_pv),  float(params.alpha_pv),
             float(params.Theta_vip), float(params.alpha_vip),
-            float(params.A_pyr), float(params.A_pv),
-            float(params.A_som), float(params.A_vip),
         )
 
     else:
@@ -203,10 +201,10 @@ def simulate_circuit(
             # TRANSFER FUNCTION
             Phi = np.array(
                 [
-                    phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc, A=params.A_pyr).item(),
-                    phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh, A=params.A_som).item(),
-                    phi_wong_wang(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh, A=params.A_pv).item(),
-                    phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh, A=params.A_vip).item(),
+                    phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
+                    phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
+                    phi_wong_wang(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh).item(),
+                    phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
                 ],
                 dtype=float,
             )
@@ -273,10 +271,10 @@ def validate_fast_loop(
         I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv()
         I_vip = params.w_ev * r_pyr + params.I_ext_vip()
         Phi = np.array([
-            phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc, A=params.A_pyr).item(),
-            phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh, A=params.A_som).item(),
-            phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh, A=params.A_pv).item(),
-            phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh, A=params.A_vip).item(),
+            phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
+            phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
+            phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
+            phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
         ])
         dr = (-r_ref[k] + Phi) / params.tau_s  # noise already in I_pyr
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
@@ -310,8 +308,6 @@ def validate_fast_loop(
         float(params.Theta_som), float(params.alpha_som),
         float(params.Theta_pv),  float(params.alpha_pv),
         float(params.Theta_vip), float(params.alpha_vip),
-        float(params.A_pyr), float(params.A_pv),
-        float(params.A_som), float(params.A_vip),
     )
 
     if not np.array_equal(r_fast, r_ref):

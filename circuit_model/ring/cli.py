@@ -108,10 +108,6 @@ CAP_WARNING_FRACTION = 0.10
 BUMP_DECAY_REF_OFFSET_MS: float = 400.0  # ms after cue offset used as normalization reference
 
 DEFAULT_FIT_INIT_KWARGS = {
-    "A_pv": 0.12,
-    "A_pyr": 0.40,
-    "A_som": 0.11,
-    "A_vip": 0.16,
     "I0_pv": 0.35,
     "I0_pyr": 0.44,
     "I0_som": 0.35,
@@ -9007,6 +9003,11 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Weight of spatial uniformity penalty (default: 0 = disabled). "
                              "Penalises std(r_pyr_nodes)/mean(r_pyr_nodes) at rest to prevent "
                              "spontaneous bump formation in the resting state.")
+    parser.add_argument("--skip-jacobian", action="store_true",
+                        help="Skip the Jacobian connectivity penalty during optimization.")
+    parser.add_argument("--jacobian_weight", type=float, default=1.0,
+                        help="Weight of the Jacobian connectivity penalty (default: 1.0, 0 = disabled). "
+                             "Controls the strength of connectivity constraints during optimization.")
     parser.add_argument("--ach_ratio_weight", type=float, default=2.0,
                         help="Weight of β2/α7 ACh current ratio penalty (default: 2.0, 0 = disabled). "
                              "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
@@ -9168,13 +9169,15 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     print()
 
     init_rng = np.random.default_rng(args.seed if args.seed is not None else 0)
-    init_loss, init_ring_means, _ = evaluate_ring_params(
+    jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
+    init_loss, init_ring_means, _, _ = evaluate_ring_params(
         base_circuit,
         base_ring,
         target,
         ring_cfg,
         bump_target,
         init_rng,
+        jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_cue_scale=args.turing_cue_scale,
@@ -9203,6 +9206,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         log_file=args.log_file or None,
         log_interval=args.log_interval,
         save_output_dir=args.output_dir or None,
+        jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_cue_scale=args.turing_cue_scale,

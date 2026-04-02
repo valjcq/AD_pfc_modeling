@@ -30,10 +30,6 @@ from .defaults import DEFAULT_WT_PARAMS_PATH, DEFAULT_APP_PARAMS_PATH, DEFAULT_W
 
 # Hardcoded fallback initialization used when params/fit_init.json is unavailable.
 DEFAULT_FIT_INIT_KWARGS = {
-    "A_pv": 0.12,
-    "A_pyr": 0.40,
-    "A_som": 0.11,
-    "A_vip": 0.16,
     "I0_pv": 0.35,
     "I0_pyr": 0.44,
     "I0_som": 0.35,
@@ -224,7 +220,6 @@ def print_parameter_status(
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g"],
-        "Output scaling": ["A_pyr", "A_pv", "A_som", "A_vip"],
         "Receptor activation": ["act_alpha7", "act_beta2", "act_alpha5"],
     }
 
@@ -253,7 +248,6 @@ def _print_opt_init_summary(params: CircuitParams, means: np.ndarray, breakdown:
     """Print effective optimization initialization and its predicted rates."""
     print("Initial condition (effective after --set/--no_adapt):")
     print(f"  I0: pyr={params.I0_pyr:.6g}, som={params.I0_som:.6g}, pv={params.I0_pv:.6g}, vip={params.I0_vip:.6g}")
-    print(f"  A:  pyr={params.A_pyr:.6g}, som={params.A_som:.6g}, pv={params.A_pv:.6g}, vip={params.A_vip:.6g}")
     print(f"  W:  w_ee={params.w_ee:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
     print(f"      w_pe={params.w_pe:.6g}, w_pp={params.w_pp:.6g}, w_se={params.w_se:.6g}, w_sp={params.w_sp:.6g}, w_vp={params.w_vp:.6g}, w_vs={params.w_vs:.6g}")
     print(f"  Transfer: tau_s={params.tau_s:.6g}, alpha_pyr={params.alpha_pyr:.6g}, alpha_som={params.alpha_som:.6g}, alpha_pv={params.alpha_pv:.6g}, alpha_vip={params.alpha_vip:.6g}")
@@ -704,12 +698,14 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     init_seed = args.seed if args.seed is not None else 0
     init_rng = np.random.default_rng(init_seed)
+    jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
     init_loss, init_means, _, init_breakdown = evaluate_params(
         base,
         target,
         fit_cfg,
         rng=init_rng,
         squared_loss=args.squared_loss,
+        jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_w_inter_ref=args.turing_w_inter_ref,
@@ -738,6 +734,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         step_offset=step_offset,
         append_log=append_log,
         squared_loss=args.squared_loss,
+        jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
         turing_w_inter_ref=args.turing_w_inter_ref,
@@ -784,6 +781,16 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         save_params_json(args.save_best_json, best[0].params, fit_meta=fit_meta)
         save_fit_summary_txt(args.save_best_json, fit_meta, params=best[0].params)
         print(f"Best params saved to: {args.save_best_json}")
+    
+    # Generate loss evolution plots
+    if args.log_file:
+        try:
+            from .loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
+            log_dir = Path(args.log_file).parent
+            plot_loss_evolution(args.log_file, output_dir=str(log_dir))
+            plot_loss_evolution_ratios(args.log_file, output_dir=str(log_dir))
+        except Exception as e:
+            print(f"Warning: could not generate loss evolution plots: {e}")
 
 
 def main() -> None:
@@ -955,6 +962,11 @@ Examples:
     opt_parser.add_argument("--turing_cue_scale", type=float, default=5.0,
                             help="Multiplier applied to I0_pyr to approximate the cue operating point "
                                  "(default: 5.0, matching the bump stimulus amplitude)")
+    opt_parser.add_argument("--skip-jacobian", action="store_true",
+                            help="Skip the Jacobian connectivity penalty during optimization.")
+    opt_parser.add_argument("--jacobian_weight", type=float, default=1.0,
+                            help="Weight of the Jacobian connectivity penalty (default: 1.0, 0 = disabled). "
+                                 "Controls the strength of connectivity constraints during optimization.")
     opt_parser.add_argument("--ach_ratio_weight", type=float, default=2.0,
                             help="Weight of β2/α7 ACh current ratio penalty (default: 2.0, 0 = disabled). "
                                  "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
@@ -976,7 +988,7 @@ Examples:
     tf_parser = subparsers.add_parser(
         "plot-transfer",
         help="Plot transfer functions for all 4 populations",
-        description="Plot Phi(I) = A * u / (1 - exp(-g*u)) for each population on a single axis."
+        description="Plot Phi(I) = u / (1 - exp(-g*u)) for each population on a single axis."
     )
     tf_parser.add_argument("--params_json", type=str, default="",
                            help="Load parameters from JSON file (default: use built-in defaults)")

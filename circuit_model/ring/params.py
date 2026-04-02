@@ -106,10 +106,8 @@ def default_ring_bounds() -> "dict[str, ParamBound]":
     - w_pv_global     = 8e-3 nA/Hz
     - sigma_pyr_deg   = 15°
 
-    These values are based on the corrected W&W transfer function (A_pyr=0.76,
-    I0_pyr=0.44 nA). The old bounds (hi=0.001) were derived from a buggy
-    simulation that omitted the A scaler — with A correctly applied, rates are
-    ~2.5× lower so weights must be ~2.5× larger.
+    These values are based on the W&W transfer function with A_x=1 (fixed),
+    I0_pyr=0.44 nA.
 
     Turing window (analytical, 10× cue): [4.2e-3, 6.1e-3] nA/Hz for w_inter.
     Global PV effectively raises the practical upper bound for w_inter, so
@@ -120,7 +118,7 @@ def default_ring_bounds() -> "dict[str, ParamBound]":
     """
     from ..params import ParamBound
     return {
-        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=1, mode="log"),  # expanded: 0.0005..0.015 -> 0.0005..0.05 (saturated at upper, bounds diagnostic)
-        "w_pv_global":     ParamBound(lo=5e-4,  hi=1, mode="log"),
+        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=5, mode="log"),
+        "w_pv_global":     ParamBound(lo=5e-4,  hi=5, mode="log"),
         "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=60.0,   mode="lin"),
     }

@@ -43,18 +43,18 @@ def _invert_transfer_function(
     I_star : Input current such that Phi(I_star) = target_rate (nA)
     """
     if population == "PYR":
-        A, theta, c, g = params.A_pyr, params.Theta_pyr, params.alpha_pyr, params.g_exc
+        theta, c, g = params.Theta_pyr, params.alpha_pyr, params.g_exc
     elif population == "SOM":
-        A, theta, c, g = params.A_som, params.Theta_som, params.alpha_som, params.g_inh
+        theta, c, g = params.Theta_som, params.alpha_som, params.g_inh
     elif population == "PV":
-        A, theta, c, g = params.A_pv, params.Theta_pv, params.alpha_pv, params.g_inh
+        theta, c, g = params.Theta_pv, params.alpha_pv, params.g_inh
     elif population == "VIP":
-        A, theta, c, g = params.A_vip, params.Theta_vip, params.alpha_vip, params.g_inh
+        theta, c, g = params.Theta_vip, params.alpha_vip, params.g_inh
     else:
         raise ValueError(f"Unknown population: {population}")
 
     def objective(I):
-        rate = phi_wong_wang(I, theta=theta, c=c, g=g, A=A)
+        rate = phi_wong_wang(I, theta=theta, c=c, g=g)
         return float(rate) - target_rate
 
     # Check bounds
@@ -93,7 +93,7 @@ def _solve_full_fixed_point(params: CircuitParams) -> Optional[float]:
         I_pyr, _, _, _ = _total_inputs(params, r_ss)
         r_pred = float(phi_wong_wang(
             I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr,
-            g=params.g_exc, A=params.A_pyr,
+            g=params.g_exc,
         ))
         return r_pred - r_pyr
 
@@ -189,12 +189,12 @@ def _solve_constrained_steady_state(
     # VIP: I_vip = w_ev * r_pyr + I0_vip  (no feedback from other pops)
     I_vip = params.w_ev * r_pyr + params.I_ext_vip()
     r_vip = float(phi_wong_wang(I_vip, theta=params.Theta_vip,
-                                 c=params.alpha_vip, g=params.g_inh, A=params.A_vip))
+                                 c=params.alpha_vip, g=params.g_inh))
 
     # SOM: I_som = w_es * r_pyr - w_vs * r_vip + I0_som
     I_som = params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som()
     r_som = float(phi_wong_wang(I_som, theta=params.Theta_som,
-                                 c=params.alpha_som, g=params.g_inh, A=params.A_som))
+                                 c=params.alpha_som, g=params.g_inh))
 
     # PV: implicit via self-inhibition
     # r_pv = Phi_pv(w_ep*r_pyr - g*w_pp*r_pv - g*w_sp*r_som - w_vp*r_vip + I0_pv)
@@ -207,7 +207,7 @@ def _solve_constrained_steady_state(
                 - params.w_vp * r_vip
                 + params.I_ext_pv())
         return float(phi_wong_wang(I_pv, theta=params.Theta_pv,
-                                    c=params.alpha_pv, g=params.g_inh, A=params.A_pv)) - r_pv
+                                    c=params.alpha_pv, g=params.g_inh)) - r_pv
 
     # The residual is guaranteed to cross zero: at r_pv=0 it is positive (drive > 0),
     # and at large r_pv it is negative (self-inhibition dominates).
@@ -224,10 +224,10 @@ def _turing_gain_at_ss(
     """Compute Turing gain product at a given steady-state rate vector."""
     I_pyr, _, I_pv, _ = _total_inputs(params, r_ss)
     ggaba = params.g_gaba()
-    phi_prime_pyr = params.A_pyr * _phi_derivative(
+    phi_prime_pyr = _phi_derivative(
         I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc,
     )
-    phi_prime_pv = params.A_pv * _phi_derivative(
+    phi_prime_pv = _phi_derivative(
         I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh,
     )
     denom = 1.0 + ggaba * params.w_pe * phi_prime_pv * params.w_ep * phi_prime_pyr
@@ -474,13 +474,13 @@ def plot_transfer_functions_diagnostic(
 
         # Population-specific TF parameters
         if pop == "PYR":
-            A, theta, c, g = circuit_params.A_pyr, circuit_params.Theta_pyr, circuit_params.alpha_pyr, circuit_params.g_exc
+            theta, c, g = circuit_params.Theta_pyr, circuit_params.alpha_pyr, circuit_params.g_exc
         elif pop == "SOM":
-            A, theta, c, g = circuit_params.A_som, circuit_params.Theta_som, circuit_params.alpha_som, circuit_params.g_inh
+            theta, c, g = circuit_params.Theta_som, circuit_params.alpha_som, circuit_params.g_inh
         elif pop == "PV":
-            A, theta, c, g = circuit_params.A_pv, circuit_params.Theta_pv, circuit_params.alpha_pv, circuit_params.g_inh
+            theta, c, g = circuit_params.Theta_pv, circuit_params.alpha_pv, circuit_params.g_inh
         else:  # VIP
-            A, theta, c, g = circuit_params.A_vip, circuit_params.Theta_vip, circuit_params.alpha_vip, circuit_params.g_inh
+            theta, c, g = circuit_params.Theta_vip, circuit_params.alpha_vip, circuit_params.g_inh
 
         # Resolve I_star for each operating point
         rates = {"rest": r_rest_all[idx], "bump": r_bump_all[idx], "cue": r_cue_all[idx]}
@@ -507,7 +507,7 @@ def plot_transfer_functions_diagnostic(
 
         # Plot transfer function over the adaptive range
         I_grid = np.linspace(x_lo, x_hi, 500)
-        phi = phi_wong_wang(I_grid, theta=theta, c=c, g=g, A=A)
+        phi = phi_wong_wang(I_grid, theta=theta, c=c, g=g)
         ax.plot(I_grid, phi, linewidth=2.5, color="#1f77b4")
 
         # Adaptive y range: 0 to max of (curve in range, highest operating point) + 20%
@@ -530,7 +530,7 @@ def plot_transfer_functions_diagnostic(
 
         ax.set_xlabel("Input Current (nA)", fontsize=11)
         ax.set_ylabel("Firing Rate (Hz)", fontsize=11)
-        ax.set_title(f"{pop}  (A={A:.3f})", fontsize=12, fontweight="bold")
+        ax.set_title(f"{pop}", fontsize=12, fontweight="bold")
         ax.set_xlim(x_lo, x_hi)
         ax.grid(True, alpha=0.3)
 

@@ -80,16 +80,15 @@ class RingSimulationResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _phi_numpy(I, theta, c, g, A=1.0):
+def _phi_numpy(I, theta, c, g):
     """
     Vectorized Wong-Wang transfer function. Works on arrays of any shape.
     Handles the z→0 limit analytically to avoid division by zero.
-    A is the per-population output scaling factor.
     """
     u = c * (I - theta)
     z = g * u
     denom = -np.expm1(np.minimum(-z, 700.0))
-    out = np.where(np.abs(z) < 1e-8, A * (1.0 / g + u / 2.0), A * u / denom)
+    out = np.where(np.abs(z) < 1e-8, 1.0 / g + u / 2.0, u / denom)
     return np.maximum(out, 0.0)
 
 
@@ -244,14 +243,18 @@ def simulate_ring(
     p = local_params  # Shorthand
     node_angles = ring_params.node_angles_rad
 
-    # noise_scale (nA): std of the current perturbation added to each PYR node each step.
-    # Proportional to the baseline PYR drive so noise automatically scales with condition.
-    noise_scale = p.sigma_noise * p.I_ext_pyr()
+    # Per-population noise scales (nA): each population's noise is proportional to its
+    # own baseline external drive, so relative variability is consistent across populations.
+    noise_scale_pyr = p.sigma_noise * p.I_ext_pyr()
+    noise_scale_som = p.sigma_noise * p.I_ext_som()
+    noise_scale_pv  = p.sigma_noise * p.I_ext_pv()
+    noise_scale_vip = p.sigma_noise * p.I_ext_vip()
+    any_noise = p.sigma_noise != 0.0
 
-    if noise_scale != 0.0 and noise_type == "white":
+    if any_noise and noise_type == "white":
         noise_arr = rng.standard_normal((n_steps - 1, n_nodes))  # N(0,1) per node per step
         wiener_arr = None
-    elif noise_scale != 0.0 and noise_type == "ou":
+    elif any_noise and noise_type == "ou":
         noise_arr = None
         wiener_arr = rng.standard_normal((n_steps - 1, n_nodes))  # Wiener increments for OU
     else:
@@ -267,7 +270,7 @@ def simulate_ring(
     if RING_NUMBA_AVAILABLE and noise_type in ("white", "none"):
         noise_nb = (
             noise_arr
-            if (noise_arr is not None and noise_scale != 0.0)
+            if (noise_arr is not None and any_noise)
             else np.zeros((n_steps - 1, n_nodes), dtype=float)
         )
 
@@ -298,7 +301,10 @@ def simulate_ring(
             n_nodes,
             record_step,
             dt_ms,
-            float(noise_scale),
+            float(noise_scale_pyr),
+            float(noise_scale_som),
+            float(noise_scale_pv),
+            float(noise_scale_vip),
             float(p.tau_s),
             float(ggaba),
             float(p.w_ee),
@@ -325,10 +331,6 @@ def simulate_ring(
             float(p.alpha_pv),
             float(p.Theta_vip),
             float(p.alpha_vip),
-            float(p.A_pyr),
-            float(p.A_pv),
-            float(p.A_som),
-            float(p.A_vip),
         )
 
         # Fill time vector analytically — no Python loop needed.
@@ -363,12 +365,12 @@ def simulate_ring(
             # === STIMULUS CURRENT ===
             I_stim = I_stim_arr[k]
 
-            # === NOISE (current-space, PYR only) ===
-            # xi_pyr ~ N(0,1) per node; injected into I_pyr as noise_scale * xi_pyr
-            if noise_scale == 0.0 or noise_type == "none":
-                xi_pyr = np.zeros(n_nodes)
+            # === NOISE (current-space, all populations, shared xi per node) ===
+            # xi ~ N(0,1) per node; each population scales by its own baseline drive
+            if not any_noise or noise_type == "none":
+                xi = np.zeros(n_nodes)
             elif noise_type == "white":
-                xi_pyr = noise_arr[k] if noise_arr is not None else np.zeros(n_nodes)
+                xi = noise_arr[k] if noise_arr is not None else np.zeros(n_nodes)
             elif noise_type == "ou":
                 if tau_noise_ms <= 0:
                     raise ValueError("tau_noise_ms must be > 0 for OU noise")
@@ -379,7 +381,7 @@ def simulate_ring(
                 xi_state += (-xi_state / tau_noise_ms) * dt_ms + np.sqrt(
                     2.0 * dt_ms / tau_noise_ms,
                 ) * w_step
-                xi_pyr = xi_state
+                xi = xi_state
             else:
                 raise ValueError(f"Unknown noise_type: {noise_type!r}")
 
@@ -396,7 +398,7 @@ def simulate_ring(
                 - Iap_curr  # Spike-frequency adaptation
                 + I_ext_pyr_arr[k]  # External input
                 + I_stim  # Stimulus current
-                + noise_scale * xi_pyr  # Current noise proportional to baseline PYR drive
+                + noise_scale_pyr * xi  # Current noise proportional to baseline PYR drive
             )
 
             # SOM: local only (no inter-node connections)
@@ -405,6 +407,7 @@ def simulate_ring(
                 - p.w_vs * r_vip  # Inhibition from VIP (disinhibition pathway)
                 - Ias_curr  # Spike-frequency adaptation
                 + I_ext_som_arr[k]  # External input
+                + noise_scale_som * xi  # Current noise proportional to baseline SOM drive
             )
 
             # PV: local only (inter-node PV effect is on PYR, not PV)
@@ -414,16 +417,17 @@ def simulate_ring(
                 - ggaba * p.w_sp * r_som  # Weak inhibition from SOM
                 - p.w_vp * r_vip  # Weak inhibition from VIP
                 + I_ext_pv_arr[k]  # External input
+                + noise_scale_pv * xi  # Current noise proportional to baseline PV drive
             )
 
             # VIP: local only (no inter-node connections)
-            I_vip = p.w_ev * r_pyr + I_ext_vip_arr[k]
+            I_vip = p.w_ev * r_pyr + I_ext_vip_arr[k] + noise_scale_vip * xi
 
             # === TRANSFER FUNCTION (vectorized) ===
-            Phi_pyr = phi_wong_wang(I_pyr, theta=p.Theta_pyr, c=p.alpha_pyr, g=p.g_exc, A=p.A_pyr)
-            Phi_som = phi_wong_wang(I_som, theta=p.Theta_som, c=p.alpha_som, g=p.g_inh, A=p.A_som)
-            Phi_pv = phi_wong_wang(I_pv_curr, theta=p.Theta_pv, c=p.alpha_pv, g=p.g_inh, A=p.A_pv)
-            Phi_vip = phi_wong_wang(I_vip, theta=p.Theta_vip, c=p.alpha_vip, g=p.g_inh, A=p.A_vip)
+            Phi_pyr = phi_wong_wang(I_pyr, theta=p.Theta_pyr, c=p.alpha_pyr, g=p.g_exc)
+            Phi_som = phi_wong_wang(I_som, theta=p.Theta_som, c=p.alpha_som, g=p.g_inh)
+            Phi_pv = phi_wong_wang(I_pv_curr, theta=p.Theta_pv, c=p.alpha_pv, g=p.g_inh)
+            Phi_vip = phi_wong_wang(I_vip, theta=p.Theta_vip, c=p.alpha_vip, g=p.g_inh)
 
             Phi = np.stack([Phi_pyr, Phi_som, Phi_pv, Phi_vip], axis=1)
 
@@ -577,14 +581,12 @@ def simulate_ring_batch(
     Theta_vip = _arr(lambda p: p.Theta_vip);  alpha_vip = _arr(lambda p: p.alpha_vip)
     g_exc = _arr(lambda p: p.g_exc)
     g_inh = _arr(lambda p: p.g_inh)
-    A_pyr = _arr(lambda p: p.A_pyr)
-    A_pv  = _arr(lambda p: p.A_pv)
-    A_som = _arr(lambda p: p.A_som)
-    A_vip = _arr(lambda p: p.A_vip)
-
-    # noise_scale_batch: (n_batch, 1) broadcasts against (n_batch, n_nodes)
+    # Per-population noise scales: (n_batch, 1) broadcasts against (n_batch, n_nodes)
     # tau_s: (n_batch, 1, 1) broadcasts against (n_batch, n_nodes, 4)
-    noise_scale_batch = np.array([float(p.sigma_noise * p.I_ext_pyr()) for p in local_params_list])[:, None]
+    noise_scale_pyr_batch = np.array([float(p.sigma_noise * p.I_ext_pyr()) for p in local_params_list])[:, None]
+    noise_scale_som_batch = np.array([float(p.sigma_noise * p.I_ext_som()) for p in local_params_list])[:, None]
+    noise_scale_pv_batch  = np.array([float(p.sigma_noise * p.I_ext_pv())  for p in local_params_list])[:, None]
+    noise_scale_vip_batch = np.array([float(p.sigma_noise * p.I_ext_vip()) for p in local_params_list])[:, None]
     tau_s   = np.array([float(p.tau_s)   for p in local_params_list])[:, None, None]
 
     # Initial state: (n_batch, n_nodes, 4)
@@ -601,8 +603,8 @@ def simulate_ring_batch(
         Iap = np.tile(I_adapt0_np[:, 0], (n_batch, 1))
         Ias = np.tile(I_adapt0_np[:, 1], (n_batch, 1))
 
-    # Noise: one shared RNG — generates (n_batch, n_nodes) per step (PYR only)
-    use_noise = noise_type == "white" and np.any(noise_scale_batch != 0.0)
+    # Noise: one shared RNG — generates (n_batch, n_nodes) per step (all populations)
+    use_noise = noise_type == "white" and any(p.sigma_noise != 0.0 for p in local_params_list)
     rng = np.random.default_rng(seeds[0] if seeds else 0) if use_noise else None
 
     # Main Euler loop — preallocate output (n_batch, n_recorded, n_nodes, 4)
@@ -635,17 +637,20 @@ def simulate_ring_batch(
                  - w_vp * r_vip + I_ext_pv_k
         I_vip  = w_ev * r_pyr + I_ext_vip_k
 
+        if use_noise:
+            xi = rng.standard_normal((n_batch, n_nodes))  # shared xi per node, (n_batch, n_nodes)
+            I_pyr  = I_pyr  + noise_scale_pyr_batch * xi
+            I_som  = I_som  + noise_scale_som_batch * xi
+            I_pv_c = I_pv_c + noise_scale_pv_batch  * xi
+            I_vip  = I_vip  + noise_scale_vip_batch * xi
+
         Phi = np.stack([
-            _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g_exc, A_pyr),
-            _phi_numpy(I_som,  Theta_som, alpha_som, g_inh, A_som),
-            _phi_numpy(I_pv_c, Theta_pv,  alpha_pv,  g_inh, A_pv),
-            _phi_numpy(I_vip,  Theta_vip, alpha_vip, g_inh, A_vip),
+            _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g_exc),
+            _phi_numpy(I_som,  Theta_som, alpha_som, g_inh),
+            _phi_numpy(I_pv_c, Theta_pv,  alpha_pv,  g_inh),
+            _phi_numpy(I_vip,  Theta_vip, alpha_vip, g_inh),
         ], axis=-1)  # (n_batch, n_nodes, 4)
 
-        if use_noise:
-            xi_pyr = rng.standard_normal((n_batch, n_nodes))  # (n_batch, n_nodes)
-            I_pyr = I_pyr + noise_scale_batch * xi_pyr        # inject noise into PYR current
-            Phi[:, :, 0] = _phi_numpy(I_pyr, Theta_pyr, alpha_pyr, g_exc, A_pyr)  # recompute PYR Phi
         dr = (-r + Phi) / tau_s
 
         r = np.clip(r + dt_ms * dr, 0.0, 200.0)

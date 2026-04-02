@@ -99,6 +99,26 @@ class RingCandidate:
     ko_means: KOMeans        # KO condition results (single-node or ring)
     params: CircuitParams
     ring_params: RingParams
+    breakdown: Optional["RingLossBreakdown"] = None
+
+
+@dataclass(frozen=True)
+class RingLossBreakdown:
+    """Breakdown of ring loss components."""
+    ring_rate: float
+    ko_penalty: float
+    jacobian: float
+    ack_ratio: float
+    turing: float
+    spatial_uniformity: float
+    bump: float
+    total: float
+
+    def __str__(self) -> str:
+        return (f"loss=[ring_rate={self.ring_rate:.3g}, ko={self.ko_penalty:.3g}, "
+                f"jac={self.jacobian:.3g}, tur={self.turing:.3g}, "
+                f"sp_unif={self.spatial_uniformity:.3g}, bump={self.bump:.3g}, "
+                f"total={self.total:.3g}]")
 
 
 # ---------------------------------------------------------------------------
@@ -240,14 +260,14 @@ def run_bump_trial(
 #                     required by the inhibitory feedback described in Pfeffer et al. 2013
 
 def _phi_pyr_rate(p: CircuitParams, I: float) -> float:
-    """Evaluate the PYR transfer function Φ_pyr(I) = A_pyr · u/(1−exp(−g·u)), u=c·(I−θ)."""
+    """Evaluate the PYR transfer function Φ_pyr(I) = u/(1−exp(−g·u)), u=c·(I−θ)."""
     u = p.alpha_pyr * (I - p.Theta_pyr)
     if u <= 0.0:
         return 0.0
     z = p.g_exc * u
     if abs(z) < 1e-8:
-        return p.A_pyr * u / 2.0
-    return p.A_pyr * u / (1.0 - np.exp(-z))
+        return u / 2.0
+    return u / (1.0 - np.exp(-z))
 
 
 def _find_I_star_pyr(p: CircuitParams, target_rate: float = 40.0) -> float:
@@ -344,13 +364,13 @@ def turing_instability_loss(
     # I_star_pyr is found by numerically inverting the PYR transfer function.
     # I_star_pv is derived from the full circuit equations at r_pyr = 40 Hz.
     I_star_pyr = _find_I_star_pyr(params, target_rate=40.0)
-    phi_pyr_bump = params.A_pyr * _phi_derivative(
+    phi_pyr_bump = _phi_derivative(
         I_star_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc
     )
     r_ss_bump = r_ss.copy()
     r_ss_bump[0] = 40.0
     _, _, I_pv_bump, _ = _total_inputs_func(params, r_ss_bump)
-    phi_pv_bump = params.A_pv * _phi_derivative(
+    phi_pv_bump = _phi_derivative(
         I_pv_bump, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh
     )
     ggaba = params.g_gaba()
@@ -394,12 +414,13 @@ def evaluate_ring_params(
     cfg: RingFitConfig,
     bump_target: Optional[BumpTarget],
     rng: np.random.Generator,
+    jacobian_weight: float = 1.0,
     turing_weight: float = 0.0,
     turing_margin: float = 0.05,
     turing_cue_scale: float = 5.0,
     spatial_uniformity_weight: float = 0.0,
     ach_ratio_weight: float = 2.0,
-) -> tuple[float, np.ndarray, KOMeans]:
+) -> tuple[float, np.ndarray, KOMeans, "RingLossBreakdown"]:
     """
     Evaluate a (CircuitParams, RingParams) pair.
 
@@ -414,7 +435,7 @@ def evaluate_ring_params(
     5. (Mode 2) Run bump trial → bump loss
 
     Returns:
-        (total_loss, ring_means, ko_means)
+        (total_loss, ring_means, ko_means, breakdown)
     """
     # Pre-compute connectivity once for all ring simulations in this evaluation
     connectivity = RingConnectivity.from_params(ring_params)
@@ -422,7 +443,8 @@ def evaluate_ring_params(
     # --- Step 1: Ring baseline ---
     ok, ring_means, spatial_cv = run_ring_trials(params, ring_params, cfg, rng, connectivity=connectivity)
     if not ok:
-        return 1e9, ring_means, KOMeans()
+        bd = RingLossBreakdown(ring_rate=1e9, ko_penalty=0., jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
+        return 1e9, ring_means, KOMeans(), bd
 
     ring_rate_loss = loss_from_means(ring_means, target)
 
@@ -441,7 +463,8 @@ def evaluate_ring_params(
         for ko_name, ko_params in ko_conditions:
             ko_ok, ko_m, _ = run_ring_trials(ko_params, ring_params, cfg, rng, connectivity=connectivity)
             if not ko_ok:
-                return 1e9, ring_means, ko_means
+                bd = RingLossBreakdown(ring_rate=ring_rate_loss, ko_penalty=1e9, jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
+                return 1e9, ring_means, ko_means, bd
             if ko_name == "alpha7_ko":
                 ko_means.alpha7_ko = ko_m
             elif ko_name == "alpha5_ko":
@@ -454,7 +477,8 @@ def evaluate_ring_params(
         ko_conditions_sn = _build_conditions(params, target, fit_cfg, rng)
         for name, ok_sn, means_sn in [run_condition(c) for c in ko_conditions_sn]:
             if not ok_sn:
-                return 1e9, ring_means, ko_means
+                bd = RingLossBreakdown(ring_rate=ring_rate_loss, ko_penalty=1e9, jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
+                return 1e9, ring_means, ko_means, bd
             if name == "alpha7_ko":
                 ko_means.alpha7_ko = means_sn
             elif name == "alpha5_ko":
@@ -488,32 +512,46 @@ def evaluate_ring_params(
         )
         n_ko += 1
 
-    total = ring_rate_loss
-    if n_ko > 0:
-        total += ko_loss / n_ko
+    ko_penalty = ko_loss / n_ko if n_ko > 0 else 0.0
 
     # --- Step 3: Jacobian penalty (evaluated at ring-averaged rates) ---
-    total += jacobian_connectivity_penalty(params, ring_means)
+    jacobian_loss = jacobian_connectivity_penalty(params, ring_means) * jacobian_weight
 
     # --- Step 3b: ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 ~35× α7 on SOM) ---
-    total += ach_ratio_penalty(params, weight=ach_ratio_weight)
+    ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
 
     # --- Step 4: Turing instability penalty (analytical, from ring rest rates) ---
+    turing_loss = 0.0
     if turing_weight > 0.0:
         t_loss = turing_instability_loss(params, ring_params, ring_means, turing_margin, turing_cue_scale, rate_loss=ring_rate_loss)
-        total += turing_weight * t_loss
+        turing_loss = turing_weight * t_loss
 
     # --- Step 4b: Spatial uniformity penalty (simulation-based) ---
     # Penalises spatial CV of PYR rates at rest: high CV → spontaneous bump at rest.
+    spatial_loss = 0.0
     if spatial_uniformity_weight > 0.0:
-        total += spatial_uniformity_weight * spatial_cv ** 2
+        spatial_loss = spatial_uniformity_weight * spatial_cv ** 2
 
     # --- Step 5: Bump quality (Mode 2) ---
+    bump_loss = 0.0
     if bump_target is not None:
         b_loss = run_bump_trial(params, ring_params, cfg, bump_target, rng, connectivity=connectivity)
-        total += bump_target.bump_loss_weight * b_loss
+        bump_loss = bump_target.bump_loss_weight * b_loss
 
-    return total, ring_means, ko_means
+    total = ring_rate_loss + ko_penalty + jacobian_loss + ach_loss + turing_loss + spatial_loss + bump_loss
+
+    breakdown = RingLossBreakdown(
+        ring_rate=float(ring_rate_loss),
+        ko_penalty=float(ko_penalty),
+        jacobian=float(jacobian_loss),
+        ack_ratio=float(ach_loss),
+        turing=float(turing_loss),
+        spatial_uniformity=float(spatial_loss),
+        bump=float(bump_loss),
+        total=float(total),
+    )
+
+    return total, ring_means, ko_means, breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -762,13 +800,13 @@ def _print_turing_diagnostic(
 
     # Bump operating point: fixed at r_pyr = 40 Hz via transfer-function inversion
     I_star_pyr = _find_I_star_pyr(params, target_rate=40.0)
-    phi_pyr_bump = params.A_pyr * _phi_derivative(
+    phi_pyr_bump = _phi_derivative(
         I_star_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc
     )
     r_ss_bump = r_ss.copy()
     r_ss_bump[0] = 40.0
     _, _, I_pv_bump, _ = _total_inputs_func(params, r_ss_bump)
-    phi_pv_bump = params.A_pv * _phi_derivative(
+    phi_pv_bump = _phi_derivative(
         I_pv_bump, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh
     )
     ggaba = params.g_gaba()
@@ -882,6 +920,7 @@ def nevergrad_optimize_ring(
     log_file: Optional[str] = None,
     log_interval: int = 50,
     save_output_dir: Optional[str] = None,
+    jacobian_weight: float = 1.0,
     turing_weight: float = 0.0,
     turing_margin: float = 0.05,
     turing_cue_scale: float = 5.0,
@@ -980,11 +1019,11 @@ def nevergrad_optimize_ring(
             p = params_from_ng_dict(ng_dict, base_circuit)
             rp = ring_params_from_ng_dict(ng_dict, base_ring)
 
-            L, ring_means, ko_means = evaluate_ring_params(p, rp, target, ring_cfg, bump_target, rng, turing_weight, turing_margin, turing_cue_scale, spatial_uniformity_weight, ach_ratio_weight)
+            L, ring_means, ko_means, breakdown = evaluate_ring_params(p, rp, target, ring_cfg, bump_target, rng, jacobian_weight, turing_weight, turing_margin, turing_cue_scale, spatial_uniformity_weight, ach_ratio_weight)
             current_ng_optimizer.tell(x, L)
 
             prev_best_loss = best[0].loss if best else float("inf")
-            cand = RingCandidate(loss=L, ring_means=ring_means, ko_means=ko_means, params=p, ring_params=rp)
+            cand = RingCandidate(loss=L, ring_means=ring_means, ko_means=ko_means, params=p, ring_params=rp, breakdown=breakdown)
 
             if len(best) < top_k:
                 best.append(cand)
@@ -1025,16 +1064,26 @@ def nevergrad_optimize_ring(
 
             pbar.set_postfix(
                 loss=f"{best[0].loss:.4g}" if best else "N/A",
+                pyr=f"{best[0].ring_means[0]:.2f}" if best else "N/A",
                 step=step,
                 plateau=steps_since_improvement,
             )
 
             if log_file and step % log_interval == 0 and best:
                 _log_ring_candidate(log_file, step, best[0], target)
+                # Generate loss evolution plots every log_interval steps
+                try:
+                    _generate_loss_plots(log_file)
+                except Exception:
+                    pass
 
             if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
                 if log_file and best:
                     _log_ring_candidate(log_file, step, best[0], target)
+                    try:
+                        _generate_loss_plots(log_file)
+                    except Exception:
+                        pass
                 stopped_early = True
                 break
 
@@ -1042,6 +1091,10 @@ def nevergrad_optimize_ring(
                 print(f"\nEarly stop: no improvement for {plateau_patience} steps.")
                 if log_file and best:
                     _log_ring_candidate(log_file, step, best[0], target)
+                    try:
+                        _generate_loss_plots(log_file)
+                    except Exception:
+                        pass
                 stopped_early = True
                 break
 
@@ -1053,6 +1106,10 @@ def nevergrad_optimize_ring(
 
     if log_file and best and (not stopped_early) and last_step % log_interval != 0:
         _log_ring_candidate(log_file, last_step, best[0], target)
+        try:
+            _generate_loss_plots(log_file)
+        except Exception:
+            pass
 
     # Print final bounds saturation table
     if best:
@@ -1060,6 +1117,29 @@ def nevergrad_optimize_ring(
         _print_bounds_final_table(best[0], circuit_bounds, ring_bounds)
 
     return best
+
+
+def _generate_loss_plots(log_file: str) -> None:
+    """Generate loss evolution plots from the current log file.
+    
+    Called periodically during ring optimization to update live visualizations.
+    Saves plots to the same directory as the log file.
+    """
+    try:
+        from ..loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
+        
+        log_path = Path(log_file)
+        output_dir = str(log_path.parent)
+        
+        # Generate both plots
+        plot_loss_evolution(log_file, output_dir=output_dir, dpi=72)
+        plot_loss_evolution_ratios(log_file, output_dir=output_dir, dpi=72)
+    except ImportError:
+        # Matplotlib or plotting module not available
+        pass
+    except Exception:
+        # Silently fail - don't interrupt optimization
+        pass
 
 
 def _log_ring_candidate(path: str, step: int, cand: RingCandidate, target: TargetRates) -> None:
@@ -1095,5 +1175,16 @@ def _log_ring_candidate(path: str, step: int, cand: RingCandidate, target: Targe
             "beta2_ko_pyr":  target.beta2_ko_pyr,
         },
     }
+    if cand.breakdown is not None:
+        entry["breakdown"] = {
+            "ring_rate": float(cand.breakdown.ring_rate),
+            "ko_penalty": float(cand.breakdown.ko_penalty),
+            "jacobian": float(cand.breakdown.jacobian),
+            "ach_ratio": float(cand.breakdown.ack_ratio),
+            "turing": float(cand.breakdown.turing),
+            "spatial_uniformity": float(cand.breakdown.spatial_uniformity),
+            "bump": float(cand.breakdown.bump),
+            "total": float(cand.breakdown.total),
+        }
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
