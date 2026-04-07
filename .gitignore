@@ -1,6 +1,11 @@
 .venv*
 .claude/
 .pytest_cache/
+.rtk/
+.github/
+.ruff_cache/
+.pytest_cache/
+.**cache/
 
 *.pyc
 */*.pyc
@@ -11,6 +16,7 @@ __pycache__/
 
 
 log.md
+CLAUDE.md
 writing/
 AD_data/
 
