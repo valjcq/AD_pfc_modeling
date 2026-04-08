@@ -316,7 +316,7 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
 | `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
 | `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight (proxy for `w_pyr_pyr_inter` in single-node mode). |
-| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
+| `--turing_cue_scale` | float | `0.4` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
 | `--ach_ratio_weight` | float | `2.0` | Weight of β2/α7 ACh current ratio penalty (0 = disabled). Penalises `I_beta2_som / I_alpha7_som` deviating from 35 (Koukouli et al. 2025). |
 
 ### I/O Settings
@@ -1332,9 +1332,9 @@ python -m circuit_model ring-optimize [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--turing_weight` | float | `0.0` | Weight of three-term Turing bistability penalty (0 = disabled). Penalises: gain > 1−m at rest (spontaneous bump), gain < 1+m at 40 Hz bump (no fixed point), gain > 1−m at cue (runaway). |
+| `--turing_weight` | float | `2.0` | Weight of three-term Turing bistability penalty (0 = disabled). Penalises: gain > 1−m at rest (spontaneous bump), gain < 1+m at 40 Hz bump (no fixed point), gain > 1−m at cue (runaway). |
 | `--turing_margin` | float | `0.05` | Safety margin `m` around the Turing threshold. |
-| `--turing_cue_scale` | float | `5.0` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
+| `--turing_cue_scale` | float | `0.4` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
 
 #### ACh receptor ratio penalty (optional)
 

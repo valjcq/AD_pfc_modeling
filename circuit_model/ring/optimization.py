@@ -415,9 +415,9 @@ def evaluate_ring_params(
     bump_target: Optional[BumpTarget],
     rng: np.random.Generator,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 0.0,
+    turing_weight: float = 2.0,
     turing_margin: float = 0.05,
-    turing_cue_scale: float = 5.0,
+    turing_cue_scale: float = 0.4,
     spatial_uniformity_weight: float = 0.0,
     ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, "RingLossBreakdown"]:
@@ -921,9 +921,9 @@ def nevergrad_optimize_ring(
     log_interval: int = 50,
     save_output_dir: Optional[str] = None,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 0.0,
+    turing_weight: float = 2.0,
     turing_margin: float = 0.05,
-    turing_cue_scale: float = 5.0,
+    turing_cue_scale: float = 0.4,
     spatial_uniformity_weight: float = 0.0,
     ach_ratio_weight: float = 2.0,
 ) -> list[RingCandidate]:

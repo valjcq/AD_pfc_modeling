@@ -951,17 +951,17 @@ Examples:
                                  "and freeze them.")
 
     # Turing instability penalty
-    opt_parser.add_argument("--turing_weight", type=float, default=0.0,
-                            help="Weight of two-sided Turing bistability penalty (default: 0 = disabled). "
+    opt_parser.add_argument("--turing_weight", type=float, default=2.0,
+                            help="Weight of two-sided Turing bistability penalty (default: 2.0). "
                                  "Penalises rest-state gain above 1-margin AND cue-state gain below 1+margin.")
     opt_parser.add_argument("--turing_margin", type=float, default=0.05,
                             help="Safety margin around the Turing threshold (default: 0.05)")
     opt_parser.add_argument("--turing_w_inter_ref", type=float, default=10.0,
                             help="Reference inter-node weight used in the Turing condition for single-node "
                                  "optimization (default: 10.0). Has no effect if --turing_weight is 0.")
-    opt_parser.add_argument("--turing_cue_scale", type=float, default=5.0,
+    opt_parser.add_argument("--turing_cue_scale", type=float, default=0.4,
                             help="Multiplier applied to I0_pyr to approximate the cue operating point "
-                                 "(default: 5.0, matching the bump stimulus amplitude)")
+                                 "(default: 0.4)")
     opt_parser.add_argument("--skip-jacobian", action="store_true",
                             help="Skip the Jacobian connectivity penalty during optimization.")
     opt_parser.add_argument("--jacobian_weight", type=float, default=1.0,

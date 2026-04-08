@@ -8991,14 +8991,14 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                              "--freeze J_adapt_pyr,J_adapt_som.")
 
     # --- Turing instability penalty ---
-    parser.add_argument("--turing_weight", type=float, default=0.0,
-                        help="Weight of three-term Turing bistability penalty (default: 0 = disabled). "
+    parser.add_argument("--turing_weight", type=float, default=2.0,
+                        help="Weight of three-term Turing bistability penalty (default: 2.0). "
                              "Enforces three-regime attractor geometry: gain < 1 at rest, gain > 1 at bump, gain < 1 at cue.")
     parser.add_argument("--turing_margin", type=float, default=0.05,
                         help="Safety margin around the Turing threshold (default: 0.05)")
-    parser.add_argument("--turing_cue_scale", type=float, default=5.0,
+    parser.add_argument("--turing_cue_scale", type=float, default=0.4,
                         help="Multiplier applied to I0_pyr to approximate the cue operating point "
-                             "(default: 5.0, target ~50-60 Hz PYR, clamped to 80 Hz)")
+                             "(default: 0.4)")
     parser.add_argument("--spatial_uniformity_weight", type=float, default=0.0,
                         help="Weight of spatial uniformity penalty (default: 0 = disabled). "
                              "Penalises std(r_pyr_nodes)/mean(r_pyr_nodes) at rest to prevent "

@@ -487,15 +487,27 @@ $$G_\text{eff}(I^*_\text{bump}) \cdot w^\text{inter}_\text{pyr} > 1 \qquad \text
 
 $$G_\text{eff}(I^*_\text{cue}) \cdot w^\text{inter}_\text{pyr} < 1 \qquad \text{(self-limiting at cue — no runaway)}$$
 
-**Computing the three operating points.** The rest operating point $I^*_\text{rest}$ is recovered directly from the circuit equations at the fitted baseline firing rates (~8 Hz PYR, consistent with Koukouli et al. 2025). The bump operating point is **fixed at $r_\text{PYR} = 40$ Hz**, consistent with self-sustained WM delay activity in rodent PFC. $I^*_\text{bump}$ is found by numerically inverting the PYR transfer function:
+**Computing the three operating points.**
 
-$$\Phi_\text{PYR}(I^*_\text{bump}) = 40 \text{ Hz} \quad \text{(bisection)}$$
+*Rest.* $I^*_\text{PYR,rest}$ and $I^*_\text{PV,rest}$ are evaluated directly from the circuit fixed-point equations at the fitted baseline firing rates (~8 Hz PYR, consistent with Koukouli et al. 2025).
 
-The PV input $I^*_\text{PV}^\text{bump}$ is then derived from the full circuit equations at $r_\text{PYR} = 40$ Hz (other populations held at rest values). This approach directly targets a biologically motivated operating point rather than depending on a scale factor. The cue operating point $I^*_\text{cue}$ is obtained by scaling the PYR external drive by `--turing_cue_scale` (default 5.0):
+*Bump.* The PYR operating point is **fixed at $r_\text{PYR} = 40$ Hz**, consistent with self-sustained WM delay activity in rodent PFC. $I^*_\text{PYR,bump}$ is found by numerically inverting the PYR transfer function (bisection):
 
-$$I_0^\text{PYR} \to 5 \cdot I_0^\text{PYR}$$
+$$\Phi_\text{PYR}(I^*_\text{PYR,bump}) = 40 \text{ Hz}$$
 
-This produces PYR firing rates at the cue-driven level (~50–60 Hz, clamped to 80 Hz max; required by inhibitory feedback, Pfeffer et al. 2013). For the cue operating point, the elevated PYR firing increases the input to PV via the recurrent connection $w_{ep}$, so $I^*_\text{PV}^\text{cue} > I^*_\text{PV}^\text{rest}$. All operating-point currents ($I^*_\text{PYR}$, $I^*_\text{PV}$) must be recomputed for each regime before evaluating ${\Phi'}_\text{PYR}$ and ${\Phi'}_\text{PV}$.
+The PV input at the bump is **not** obtained by inverting the PV transfer function; it is evaluated directly from the circuit equation:
+
+$$I^*_\text{PV,bump} = w_{ep}\, r_\text{PYR}^\text{bump} - g_\text{GABA}\bigl(w_{pp}\, r_\text{PV}^\text{rest} + w_{sp}\, r_\text{SOM}^\text{rest}\bigr) - w_{vp}\, r_\text{VIP}^\text{rest} + I_0^\text{PV}$$
+
+where only $r_\text{PYR}$ is set to the bump rate (40 Hz) and all other populations are held at their fitted rest values. No inversion is needed because the PV input is an explicit function of population rates; the only $w_{ep}$ term changes, raising $I^*_\text{PV,bump}$ above its rest value.
+
+*Cue.* The cue operating point is obtained by scaling the PYR external drive by `--turing_cue_scale` (default 0.4):
+
+$$I_{\text{cue}}^{\text{PYR}} = 0.4 \cdot I_0^{\text{PYR}} + I_0^{\text{PYR}}$$
+
+This produces PYR firing rates at the cue-driven level (~50–60 Hz, clamped to 80 Hz max; required by inhibitory feedback, Pfeffer et al. 2013). $I^*_\text{PYR,cue}$ is found by the same bisection as above. $I^*_\text{PV,cue}$ is then evaluated from the same circuit equation with $r_\text{PYR}^\text{cue}$ replacing $r_\text{PYR}^\text{bump}$; because $r_\text{PYR}^\text{cue} > r_\text{PYR}^\text{bump}$, the $w_{ep}$ term is larger, so $I^*_\text{PV,cue} > I^*_\text{PV,bump} > I^*_\text{PV,rest}$.
+
+All operating-point currents ($I^*_{\text{PYR}}$, $I^*_{\text{PV}}$) are recomputed for each regime before evaluating ${\Phi'}_{\text{PYR}}$ and ${\Phi'}_{\text{PV}}$.
 
 These operating points are grounded in the dynamics of the system: rest corresponds to baseline activity in quiet wakefulness; bump corresponds to the target self-sustained bump rate during the working-memory delay; and cue corresponds to the stimulus-driven activity that initiates and drives the bump. No additional simulation is required — all three operating points and their transfer-function derivatives are computed analytically from the current parameter set.
 

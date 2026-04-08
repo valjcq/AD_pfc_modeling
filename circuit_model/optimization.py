@@ -133,10 +133,10 @@ def _loss_from_results(
     *,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 0.0,
+    turing_weight: float = 2.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 5.0,
+    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Compute total loss from a list of condition simulation results.
@@ -225,10 +225,10 @@ def evaluate_params(
     executor: Optional[ProcessPoolExecutor] = None,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 0.0,
+    turing_weight: float = 2.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 5.0,
+    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Evaluate a parameter set under baseline and knockout conditions.
@@ -347,10 +347,10 @@ def nevergrad_optimize(
     append_log: bool = False,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 0.0,
+    turing_weight: float = 2.0,
     turing_margin: float = 0.05,
     turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 5.0,
+    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
 ) -> list[Candidate]:
     """
