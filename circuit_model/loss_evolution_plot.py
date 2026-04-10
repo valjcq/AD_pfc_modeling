@@ -13,6 +13,59 @@ from typing import Optional
 import numpy as np
 
 
+def _extract_component_values(breakdown: dict) -> dict[str, float]:
+    """Extract loss components from both legacy and ring log formats."""
+    return {
+        # Legacy optimize naming
+        "firing_rate": float(breakdown.get("firing_rate", 0.0)),
+        "ko_firing_rate": float(breakdown.get("ko_firing_rate", 0.0)),
+        # Ring optimize naming
+        "ring_rate": float(breakdown.get("ring_rate", 0.0)),
+        "ko_penalty": float(breakdown.get("ko_penalty", 0.0)),
+        # Shared / optional terms
+        "jacobian": float(breakdown.get("jacobian", 0.0)),
+        "turing": float(breakdown.get("turing", 0.0)),
+        "ach_ratio": float(breakdown.get("ach_ratio", 0.0)),
+        "spatial_uniformity": float(breakdown.get("spatial_uniformity", 0.0)),
+        "bump": float(breakdown.get("bump", 0.0)),
+    }
+
+
+def _drop_aberrant_initial_steps(
+    steps: np.ndarray,
+    total_losses: np.ndarray,
+    components: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Drop aberrant first-step entries when they dominate scale.
+
+    Heuristic:
+    - consider all rows with minimal step value (usually step 1),
+    - if their median total loss is > 5x median of subsequent rows,
+      remove all those minimal-step rows.
+    """
+    if len(steps) < 3:
+        return steps, total_losses, components
+
+    first_step = np.min(steps)
+    first_mask = steps == first_step
+    later_mask = ~first_mask
+    if not np.any(later_mask):
+        return steps, total_losses, components
+
+    first_med = float(np.median(total_losses[first_mask]))
+    later_med = float(np.median(total_losses[later_mask]))
+    if later_med <= 0:
+        return steps, total_losses, components
+
+    if first_med > 5.0 * later_med:
+        steps = steps[later_mask]
+        total_losses = total_losses[later_mask]
+        for k in list(components.keys()):
+            components[k] = components[k][later_mask]
+
+    return steps, total_losses, components
+
+
 def should_plot_loss_evolution(step: int, log_interval: int = 50) -> bool:
     """Check if this step should trigger loss evolution plotting."""
     return step % log_interval == 0
@@ -41,6 +94,8 @@ def plot_loss_evolution(
     Returns:
         Path to saved figure
     """
+    import matplotlib
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
     
@@ -55,11 +110,11 @@ def plot_loss_evolution(
     # Load log file
     steps = []
     total_losses = []
-    fr_losses = []
-    ko_losses = []
-    jac_losses = []
-    turing_losses = []
-    ach_losses = []
+    comp_keys = [
+        "firing_rate", "ko_firing_rate", "ring_rate", "ko_penalty",
+        "jacobian", "turing", "ach_ratio", "spatial_uniformity", "bump",
+    ]
+    comp_lists = {k: [] for k in comp_keys}
     
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -68,29 +123,21 @@ def plot_loss_evolution(
             total_losses.append(entry['loss'])
             
             breakdown = entry.get('breakdown', {})
-            fr_losses.append(breakdown.get('firing_rate', 0.0))
-            ko_losses.append(breakdown.get('ko_firing_rate', 0.0))
-            jac_losses.append(breakdown.get('jacobian', 0.0))
-            turing_losses.append(breakdown.get('turing', 0.0))
-            ach_losses.append(breakdown.get('ach_ratio', 0.0))
+            comp_vals = _extract_component_values(breakdown)
+            for k in comp_keys:
+                comp_lists[k].append(comp_vals[k])
     
     steps = np.array(steps)
     total_losses = np.array(total_losses)
-    fr_losses = np.array(fr_losses)
-    ko_losses = np.array(ko_losses)
-    jac_losses = np.array(jac_losses)
-    turing_losses = np.array(turing_losses)
-    ach_losses = np.array(ach_losses)
-    
-    # Skip the first step (typically has huge initial loss that breaks scaling)
-    if len(steps) > 1:
-        steps = steps[1:]
-        total_losses = total_losses[1:]
-        fr_losses = fr_losses[1:]
-        ko_losses = ko_losses[1:]
-        jac_losses = jac_losses[1:]
-        turing_losses = turing_losses[1:]
-        ach_losses = ach_losses[1:]
+    components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
+    steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
+
+    # Legacy aliases for this figure layout
+    fr_losses = components["firing_rate"] + components["ring_rate"]
+    ko_losses = components["ko_firing_rate"] + components["ko_penalty"]
+    jac_losses = components["jacobian"]
+    turing_losses = components["turing"]
+    ach_losses = components["ach_ratio"]
     
     # Create figure with subplots
     fig = plt.figure(figsize=figsize, dpi=dpi)
@@ -243,8 +290,7 @@ def plot_loss_evolution(
     # Save figure
     output_file = Path(output_dir) / 'loss_evolution.png'
     plt.savefig(str(output_file), dpi=dpi, bbox_inches='tight')
-    print(f"✓ Loss evolution plot saved to {output_file}")
-    
+
     plt.close(fig)
     
     return str(output_file)
@@ -270,6 +316,8 @@ def plot_loss_evolution_ratios(
     Returns:
         Path to saved figure
     """
+    import matplotlib
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
     
     if figsize is None:
@@ -283,11 +331,11 @@ def plot_loss_evolution_ratios(
     # Load log file
     steps = []
     total_losses = []
-    fr_losses = []
-    ko_losses = []
-    jac_losses = []
-    turing_losses = []
-    ach_losses = []
+    comp_keys = [
+        "firing_rate", "ko_firing_rate", "ring_rate", "ko_penalty",
+        "jacobian", "turing", "ach_ratio", "spatial_uniformity", "bump",
+    ]
+    comp_lists = {k: [] for k in comp_keys}
     
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -296,58 +344,52 @@ def plot_loss_evolution_ratios(
             total_losses.append(entry['loss'])
             
             breakdown = entry.get('breakdown', {})
-            fr_losses.append(breakdown.get('firing_rate', 0.0))
-            ko_losses.append(breakdown.get('ko_firing_rate', 0.0))
-            jac_losses.append(breakdown.get('jacobian', 0.0))
-            turing_losses.append(breakdown.get('turing', 0.0))
-            ach_losses.append(breakdown.get('ach_ratio', 0.0))
+            comp_vals = _extract_component_values(breakdown)
+            for k in comp_keys:
+                comp_lists[k].append(comp_vals[k])
     
     steps = np.array(steps)
     total_losses = np.array(total_losses)
-    fr_losses = np.array(fr_losses)
-    ko_losses = np.array(ko_losses)
-    jac_losses = np.array(jac_losses)
-    turing_losses = np.array(turing_losses)
-    ach_losses = np.array(ach_losses)
-    
-    # Skip the first step (typically has huge initial loss that breaks scaling)
-    if len(steps) > 1:
-        steps = steps[1:]
-        total_losses = total_losses[1:]
-        fr_losses = fr_losses[1:]
-        ko_losses = ko_losses[1:]
-        jac_losses = jac_losses[1:]
-        turing_losses = turing_losses[1:]
-        ach_losses = ach_losses[1:]
-    
-    # Calculate ratios
+    components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
+    steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
+
+    # Merge legacy+ring aliases so ratio plots work for both log formats
+    merged_components = {
+        "rate": components["firing_rate"] + components["ring_rate"],
+        "ko": components["ko_firing_rate"] + components["ko_penalty"],
+        "jacobian": components["jacobian"],
+        "turing": components["turing"],
+        "ach_ratio": components["ach_ratio"],
+        "spatial_uniformity": components["spatial_uniformity"],
+        "bump": components["bump"],
+    }
+
+    active_names = [k for k, v in merged_components.items() if np.any(v > 0)]
+    if not active_names:
+        active_names = ["rate", "ko", "jacobian", "turing"]
+
     total_losses_safe = np.maximum(total_losses, 1e-10)
-    fr_ratio = 100 * fr_losses / total_losses_safe
-    ko_ratio = 100 * ko_losses / total_losses_safe
-    jac_ratio = 100 * jac_losses / total_losses_safe
-    turing_ratio = 100 * turing_losses / total_losses_safe
-    ach_ratio = 100 * ach_losses / total_losses_safe
+    ratio = {k: 100.0 * merged_components[k] / total_losses_safe for k in active_names}
     
     # Define colors
     colors = {
-        'firing_rate': '#1f77b4',
-        'ko_firing_rate': '#ff7f0e',
+        'rate': '#1f77b4',
+        'ko': '#ff7f0e',
         'jacobian': '#2ca02c',
         'turing': '#d62728',
         'ach_ratio': '#9467bd',
+        'spatial_uniformity': '#8c564b',
+        'bump': '#17becf',
     }
     
     fig, axes = plt.subplots(2, 2, figsize=figsize, dpi=dpi)
     
     # 1. Stacked area chart of ratios
     ax = axes[0, 0]
-    ax.stackplot(steps, fr_ratio, ko_ratio, jac_ratio, turing_ratio, 
-                 labels=['Firing Rate', 'KO Firing Rate', 'Jacobian', 'Turing'],
-                 colors=[colors['firing_rate'], colors['ko_firing_rate'], 
-                        colors['jacobian'], colors['turing']],
-                 alpha=0.7)
-    if np.any(ach_losses > 0):
-        ax.stackplot(steps, ach_ratio, labels=['ACh Ratio'], colors=[colors['ach_ratio']], alpha=0.7)
+    stack_arrays = [ratio[name] for name in active_names]
+    stack_labels = [name.replace('_', ' ').title() for name in active_names]
+    stack_colors = [colors.get(name, '#7f7f7f') for name in active_names]
+    ax.stackplot(steps, *stack_arrays, labels=stack_labels, colors=stack_colors, alpha=0.7)
     ax.set_xlabel('Optimization Step')
     ax.set_ylabel('Percentage of Total Loss (%)')
     ax.set_title('Loss Component Ratios (Stacked %)', fontsize=12, fontweight='bold')
@@ -355,14 +397,10 @@ def plot_loss_evolution_ratios(
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3, axis='y')
     
-    # 2. Individual ratio lines
+    # 2. Individual ratio lines (full scale)
     ax = axes[0, 1]
-    ax.plot(steps, fr_ratio, label='Firing Rate', color=colors['firing_rate'], linewidth=2)
-    ax.plot(steps, ko_ratio, label='KO Firing Rate', color=colors['ko_firing_rate'], linewidth=2)
-    ax.plot(steps, jac_ratio, label='Jacobian', color=colors['jacobian'], linewidth=2)
-    ax.plot(steps, turing_ratio, label='Turing', color=colors['turing'], linewidth=2)
-    if np.any(ach_losses > 0):
-        ax.plot(steps, ach_ratio, label='ACh Ratio', color=colors['ach_ratio'], linewidth=2)
+    for name in active_names:
+        ax.plot(steps, ratio[name], label=name.replace('_', ' ').title(), color=colors.get(name, '#7f7f7f'), linewidth=2)
     ax.set_xlabel('Optimization Step')
     ax.set_ylabel('Percentage of Total Loss (%)')
     ax.set_title('Loss Component Ratios (Line)', fontsize=12, fontweight='bold')
@@ -370,41 +408,24 @@ def plot_loss_evolution_ratios(
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3)
     
-    # 3. Total loss with component breakdown bars (sample every Nth step for clarity)
+    # 3. Zoomed ratio lines for small components (auto scale)
     ax = axes[1, 0]
-    sample_every = max(1, len(steps) // 20)  # Show ~20 time points
-    sample_indices = np.arange(0, len(steps), sample_every)
-    if len(steps) - 1 not in sample_indices:
-        sample_indices = np.append(sample_indices, len(steps) - 1)
-    
-    sample_steps = steps[sample_indices]
-    x_pos = np.arange(len(sample_steps))
-    
-    sample_fr = fr_losses[sample_indices]
-    sample_ko = ko_losses[sample_indices]
-    sample_jac = jac_losses[sample_indices]
-    sample_tur = turing_losses[sample_indices]
-    sample_ach = ach_losses[sample_indices]
-    
-    width = 0.6
-    ax.bar(x_pos, sample_fr, width, label='Firing Rate', color=colors['firing_rate'], alpha=0.8)
-    ax.bar(x_pos, sample_ko, width, bottom=sample_fr, label='KO Firing Rate', 
-           color=colors['ko_firing_rate'], alpha=0.8)
-    ax.bar(x_pos, sample_jac, width, bottom=sample_fr+sample_ko, label='Jacobian', 
-           color=colors['jacobian'], alpha=0.8)
-    ax.bar(x_pos, sample_tur, width, bottom=sample_fr+sample_ko+sample_jac, label='Turing', 
-           color=colors['turing'], alpha=0.8)
-    if np.any(sample_ach > 0):
-        ax.bar(x_pos, sample_ach, width, bottom=sample_fr+sample_ko+sample_jac+sample_tur, 
-               label='ACh Ratio', color=colors['ach_ratio'], alpha=0.8)
-    
+    for name in active_names:
+        ax.plot(steps, ratio[name], label=name.replace('_', ' ').title(), color=colors.get(name, '#7f7f7f'), linewidth=2)
+    # Auto zoom: ignore the largest median contributor to reveal smaller curves
+    medians = {k: float(np.median(v)) for k, v in ratio.items()}
+    dominant = max(medians, key=medians.get)
+    others = [ratio[k] for k in active_names if k != dominant]
+    if others:
+        ymax = max(5.0, min(100.0, np.percentile(np.concatenate(others), 99.0) * 1.2))
+        ax.set_ylim(0.0, ymax)
+    else:
+        ax.set_ylim(0.0, 10.0)
     ax.set_xlabel('Optimization Step')
-    ax.set_ylabel('Loss Value')
-    ax.set_title('Loss Component Breakdown (Sampled)', fontsize=12, fontweight='bold')
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels([f'{int(s)}' for s in sample_steps], rotation=45, ha='right')
+    ax.set_ylabel('Percentage of Total Loss (%)')
+    ax.set_title('Ratios (Zoom on Small Components)', fontsize=12, fontweight='bold')
     ax.legend(loc='best', fontsize=9)
-    ax.grid(True, alpha=0.3, axis='y')
+    ax.grid(True, alpha=0.3)
     
     # 4. Convergence metrics
     ax = axes[1, 1]
@@ -431,8 +452,7 @@ def plot_loss_evolution_ratios(
     # Save figure
     output_file = Path(output_dir) / 'loss_evolution_ratios.png'
     plt.savefig(str(output_file), dpi=dpi, bbox_inches='tight')
-    print(f"✓ Loss evolution ratios plot saved to {output_file}")
-    
+
     plt.close(fig)
     
     return str(output_file)

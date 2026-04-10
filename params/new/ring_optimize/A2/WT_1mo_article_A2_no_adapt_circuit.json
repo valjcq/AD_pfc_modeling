@@ -1,0 +1,106 @@
+{
+  "_fit_metadata": {
+    "loss": 3.559043,
+    "comparison": {
+      "base": {
+        "PYR": {
+          "actual": 9.1674,
+          "target": 8.214,
+          "error_pct": 11.61
+        },
+        "SOM": {
+          "actual": 5.5083,
+          "target": 4.295,
+          "error_pct": 28.25
+        },
+        "PV": {
+          "actual": 5.9247,
+          "target": 4.073,
+          "error_pct": 45.46
+        },
+        "VIP": {
+          "actual": 9.7351,
+          "target": 6.051,
+          "error_pct": 60.88
+        }
+      }
+    },
+    "jacobian": {
+      "_note": "J[row,col] = dr_row/dr_col: effect of col population on row population",
+      "PYR": {
+        "PYR": 1.604327,
+        "SOM": -33.800933,
+        "PV": -2.003206,
+        "VIP": 0.0
+      },
+      "SOM": {
+        "PYR": 3.325673,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": -4.284351
+      },
+      "PV": {
+        "PYR": 2.900106,
+        "SOM": -1.280978,
+        "PV": -2.138794,
+        "VIP": -1.372553
+      },
+      "VIP": {
+        "PYR": 0.095622,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": 0.0
+      }
+    },
+    "ring_params": {
+      "w_pyr_pyr_inter": 0.017801,
+      "w_pv_global": 0.054126,
+      "sigma_pyr_deg": 15.0,
+      "n_nodes": 64
+    }
+  },
+  "I0_pv": 0.1782754603224441,
+  "I0_pyr": 1.2965401615727041,
+  "I0_som": 0.1581121526180537,
+  "I0_vip": 0.24583098255540733,
+  "I_alpha5_vip": 0.025276201191027158,
+  "I_alpha7_pv": 0.4259368965932525,
+  "I_alpha7_som": 0.04674548749340687,
+  "I_beta2_som": 0.28262567439272634,
+  "J_adapt_pyr": 0.0,
+  "J_adapt_som": 0.0,
+  "Theta_pv": 0.2878,
+  "Theta_pyr": 0.40323,
+  "Theta_som": 0.2878,
+  "Theta_vip": 0.2878,
+  "act_alpha5": 1.0,
+  "act_alpha7": 1.0,
+  "act_beta2": 1.0,
+  "alpha_pv": 615.0,
+  "alpha_pyr": 310.0,
+  "alpha_som": 615.0,
+  "alpha_vip": 615.0,
+  "g_alpha7": 1.10373710465476,
+  "g_exc": 0.16,
+  "g_gaba_base": 0.711546085360319,
+  "g_inh": 0.087,
+  "sigma_noise": 0.1,
+  "sigma_s": 0.0,
+  "tau_adapt_pyr": 600.0,
+  "tau_adapt_som": 189.7823379228805,
+  "tau_s": 20.0,
+  "trans_duration_ms": 500.0,
+  "trans_enabled": false,
+  "trans_factor": 0.2,
+  "trans_start_ms": 1000.0,
+  "w_ee": 0.026809039744696325,
+  "w_ep": 0.18345791930608749,
+  "w_es": 0.08005705441506224,
+  "w_ev": 0.0004028918591757025,
+  "w_pe": 0.38867920821288243,
+  "w_pp": 0.07453274177549718,
+  "w_se": 0.06006520139380648,
+  "w_sp": 0.044639549949697606,
+  "w_vp": 0.08682638200058902,
+  "w_vs": 0.10313474913790699
+}

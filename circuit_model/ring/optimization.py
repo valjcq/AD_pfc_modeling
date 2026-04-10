@@ -33,8 +33,6 @@ from ..params import CircuitParams, ParamBound, default_bounds
 from ..loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty, transfer_function_slope
 from ..optimization import (
     KOMeans,
-    run_condition,
-    _build_conditions,
     _build_optimizer,
     build_nevergrad_parametrization,
     params_from_ng_dict,
@@ -57,21 +55,19 @@ class RingFitConfig:
     """
     Configuration for ring-based optimization.
 
-    Wraps a FitConfig (used for single-node KO evaluations) and adds
-    ring-specific settings.
+    Wraps a FitConfig and adds ring-specific settings.
     """
     fit_cfg: FitConfig = None  # type: ignore[assignment]  # set post-init via __post_init__
     n_trials_ring: int = 5     # Number of ring trials per candidate (5 gives good averaging of stochastic noise)
-    ko_on_ring: bool = False   # If True, run KO conditions on ring (slower but fully consistent)
 
     def __post_init__(self):
         if self.fit_cfg is None:
             object.__setattr__(self, 'fit_cfg', FitConfig())
 
     @classmethod
-    def from_fit_cfg(cls, fit_cfg: FitConfig, n_trials_ring: int = 3, ko_on_ring: bool = False) -> "RingFitConfig":
+    def from_fit_cfg(cls, fit_cfg: FitConfig, n_trials_ring: int = 3) -> "RingFitConfig":
         """Build a RingFitConfig from an existing FitConfig."""
-        return cls(fit_cfg=fit_cfg, n_trials_ring=n_trials_ring, ko_on_ring=ko_on_ring)
+        return cls(fit_cfg=fit_cfg, n_trials_ring=n_trials_ring)
 
 
 @dataclass(frozen=True)
@@ -96,7 +92,7 @@ class RingCandidate:
     """Optimization result holding both CircuitParams and RingParams."""
     loss: float
     ring_means: np.ndarray   # Mean firing rates averaged across ring nodes, shape (4,)
-    ko_means: KOMeans        # KO condition results (single-node or ring)
+    ko_means: KOMeans        # KO condition results on ring
     params: CircuitParams
     ring_params: RingParams
     breakdown: Optional["RingLossBreakdown"] = None
@@ -245,162 +241,198 @@ def run_bump_trial(
 
 
 # ---------------------------------------------------------------------------
-# Turing instability loss
+# Turing bistability loss (simulation trace based)
 # ---------------------------------------------------------------------------
 
-# Biological justification for the three operating points:
-#
-#   r_rest ~ 8 Hz   : experimental PYR baseline in quiet wakefulness
-#                     (Koukouli et al. 2025, rodent PFC layer 2/3)
-#   r_bump = 40 Hz  : consistent with self-sustained WM delay activity in rodent PFC;
-#                     the bump operating point is fixed (not derived from a scale factor)
-#                     so the penalty targets a concrete physiological regime
-#   r_cue           : the cue-driven rate (turing_cue_scale × I0_pyr); must remain below
-#                     the Turing threshold to prevent saturation at the 200 Hz cap —
-#                     required by the inhibitory feedback described in Pfeffer et al. 2013
+# The trace-based loss targets two stable regimes in the ring:
+#   - Rest near target rates with gain product safely below threshold.
+#   - Cue-evoked bump around 40 Hz with gain floor for sustain and explicit anti-runaway terms.
 
-def _phi_pyr_rate(p: CircuitParams, I: float) -> float:
-    """Evaluate the PYR transfer function Φ_pyr(I) = u/(1−exp(−g·u)), u=c·(I−θ)."""
-    u = p.alpha_pyr * (I - p.Theta_pyr)
-    if u <= 0.0:
-        return 0.0
-    z = p.g_exc * u
-    if abs(z) < 1e-8:
-        return u / 2.0
-    return u / (1.0 - np.exp(-z))
-
-
-def _find_I_star_pyr(p: CircuitParams, target_rate: float = 40.0) -> float:
-    """Find I_star_pyr such that Φ_pyr(I_star_pyr) = target_rate via bisection."""
-    lo, hi = -10.0, 200.0
-    for _ in range(100):
-        mid = 0.5 * (lo + hi)
-        if _phi_pyr_rate(p, mid) < target_rate:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
+def _phi_derivative_array(
+    I: np.ndarray,
+    *,
+    theta: float,
+    c: float,
+    g: float,
+) -> np.ndarray:
+    """Vectorized Wong-Wang derivative dPhi/dI with stable handling near z=0."""
+    u = c * (I - theta)
+    z = g * u
+    z_clip = np.clip(z, -60.0, 60.0)
+    e = np.exp(-z_clip)
+    denom = 1.0 - e
+    deriv = np.where(
+        np.abs(z) < 1e-8,
+        c / 2.0,
+        c * (1.0 - e * (1.0 + z_clip)) / np.maximum(denom * denom, 1e-16),
+    )
+    cutoff = -700.0 / max(g, 1e-9)
+    deriv = np.where(u < cutoff, 0.0, deriv)
+    deriv = np.where(z < -60.0, 0.0, deriv)
+    return deriv
 
 
-def turing_instability_loss(
+def turing_trace_bistability_loss(
     params: CircuitParams,
     ring_params: RingParams,
-    r_ss: np.ndarray,
+    cfg: RingFitConfig,
+    target: TargetRates,
+    *,
+    connectivity: RingConnectivity,
     margin: float = 0.05,
-    cue_scale: float = 5.0,
-    rate_loss: float | None = None,
+    cue_amplitude: float = 0.4,
+    cue_duration_ms: float = 250.0,
+    cue_sigma_deg: float = 20.0,
+    late_delay_ms: float = 500.0,
+    bump_min_hz: float = 35.0,
+    bump_max_hz: float = 45.0,
+    topk_nodes: int = 5,
+    runaway_gain_ceiling: float = 1.15,
+    background_max_hz: float = 20.0,
 ) -> float:
-    """Three-term soft penalty enforcing the corrected Turing bistability geometry.
+    """Simulation-trace loss enforcing rest-vs-bump bistability in the ring.
 
-    For working-memory bump states, the network must satisfy a three-regime bistable
-    attractor structure:
-
-      - At rest    : G_eff(I*_rest) · w_pyr_inter < 1   (uniform state stable, no spontaneous bump)
-      - At bump rate: G_eff(I*_bump) · w_pyr_inter > 1   (bump fixed point exists, self-sustained)
-      - At cue rate : G_eff(I*_cue)  · w_pyr_inter < 1   (transfer function self-limits, no runaway)
-
-    This three-crossing condition ensures the network can straddle the Turing threshold and form
-    a stable bump fixed point during delay, while avoiding runaway growth to saturation.
-
-        The corrected gain product accounts for the full 4-population local circuit:
-
-            G_eff = Φ'_PYR / (1 + J_adapt · Φ'_PYR + g_GABA · w_pe · Φ'_PV · w_ep · Φ'_PYR)
-      turing_gain = G_eff · w_pyr_pyr_inter
-
-    G_eff accounts for the divisive PV→PYR feedback loop that reduces the effective
-    PYR gain. SOM and VIP are local-only and do not add spatial Jacobian terms; they
-    influence the operating point through the full 4-population fixed-point computation.
-
-    Operating points:
-      I*_rest is recovered from r_ss (baseline firing rates, ~8 Hz PYR).
-      I*_bump is the input current at which Φ_pyr(I*_bump) = 40 Hz, found by bisection.
-              I*_pv at the bump is computed from the full circuit at r_pyr = 40 Hz.
-      I*_cue  is computed with I0_pyr scaled by cue_scale (default 5.0, clamped to 80 Hz PYR max).
-
-    Penalty (three terms, each one-sided quadratic with safety margin m):
-
-      L_rest  = max(0, G_eff(I*_rest)·w_pyr_pyr_inter − (1−m))²   [penalise spontaneous bumps at rest]
-      L_bump  = max(0, (1+m) − G_eff(I*_bump)·w_pyr_pyr_inter )²  [penalise missing bump fixed point]
-      L_above = max(0, G_eff(I*_cue)·w_pyr_pyr_inter − (1−m))²    [penalise runaway at cue]
-
-    Parameters
-    ----------
-    params    : CircuitParams — local circuit parameters
-    ring_params : RingParams — ring connectivity parameters
-    r_ss      : steady-state firing rates [pyr, som, pv, vip] from ring rest trials
-    margin    : safety margin around the instability threshold (default 0.05)
-    cue_scale : multiplier applied to I0_pyr to approximate the cue-driven operating point
-               (default 5.0, clamped to 80 Hz max)
-    rate_loss : optional rate loss value for diagnostic logging
+    A deterministic cue simulation is run once, then gain traces are reconstructed
+    from recorded rates and adaptation. The loss combines:
+      - rest-rate matching and rest gain ceiling (no spontaneous bump)
+      - bump-node late-delay rate band around 40 Hz
+      - bump-node late-delay gain floor (self-sustain)
+      - bump-node gain ceiling + non-bump rate ceiling (anti-runaway)
     """
-    from dataclasses import replace as _replace
-    from ..jacobian import _total_inputs as _total_inputs_func
-    from ..jacobian import _phi_derivative
+    fit_cfg = cfg.fit_cfg
+    cue_onset_ms = fit_cfg.burn_in_ms
+    cue_current = max(0.0, cue_amplitude) * params.I0_pyr
 
-    def _turing_gain(p: CircuitParams, r_ss_use: np.ndarray) -> tuple[float, float, float, float, float]:
-        """Compute turing gain and return (gain, phi_pyr, phi_pv, G_eff, w_pyr_inter).
-
-        The gain product is: G_eff * w_pyr_pyr_inter
-        (w_pv_global does not appear in the analytical Turing criterion)
-
-        Adaptation correction: at the slow timescale where adaptation tracks rate
-        (r_adapt ≈ r_pyr), a spatial perturbation δr_pyr induces δI_adapt = J_adapt × δr_pyr,
-        adding J_adapt × Φ'_pyr to the effective denominator:
-            G_eff = Φ'_pyr / (1 + J_adapt × Φ'_pyr + g_GABA × w_pe × Φ'_pv × w_ep × Φ'_pyr)
-        This preferentially reduces G_eff at operating points with high Φ'_pyr (e.g. rest),
-        which can open the bistable window needed for the three-crossing condition.
-        """
-        phi_pyr = transfer_function_slope(p, r_ss_use, population="PYR")
-        phi_pv  = transfer_function_slope(p, r_ss_use, population="PV")
-        ggaba = p.g_gaba()
-        G_eff = phi_pyr / (1.0 + p.J_adapt_pyr * phi_pyr + ggaba * p.w_pe * phi_pv * p.w_ep * phi_pyr)
-        gain = G_eff * ring_params.w_pyr_pyr_inter
-        return gain, phi_pyr, phi_pv, G_eff, ring_params.w_pyr_pyr_inter
-
-    # Rest operating point
-    turing_rest, phi_pyr_rest, phi_pv_rest, g_eff_rest, _ = _turing_gain(params, r_ss)
-
-    # Bump operating point: fixed at r_pyr = 40 Hz (consistent with WM delay activity in rodent PFC).
-    # I_star_pyr is found by numerically inverting the PYR transfer function.
-    # I_star_pv is derived from the full circuit equations at r_pyr = 40 Hz.
-    I_star_pyr = _find_I_star_pyr(params, target_rate=40.0)
-    phi_pyr_bump = _phi_derivative(
-        I_star_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc
+    stim = RingStimulus(
+        center_deg=0.0,
+        amplitude=cue_current,
+        sigma_deg=cue_sigma_deg,
+        onset_ms=cue_onset_ms,
+        duration_ms=cue_duration_ms,
     )
-    r_ss_bump = r_ss.copy()
-    r_ss_bump[0] = 40.0
-    _, _, I_pv_bump, _ = _total_inputs_func(params, r_ss_bump)
-    phi_pv_bump = _phi_derivative(
-        I_pv_bump, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh
+    T_ms = cue_onset_ms + cue_duration_ms + max(late_delay_ms, 200.0)
+
+    result = simulate_ring(
+        params,
+        ring_params,
+        T_ms=T_ms,
+        dt_ms=fit_cfg.dt_ms,
+        stimuli=[stim],
+        seed=0,
+        noise_type="none",
+        tau_noise_ms=fit_cfg.tau_noise_ms,
+        connectivity=connectivity,
+        record_dt_ms=fit_cfg.record_dt_ms,
+        record_adaptation=True,
     )
+
+    if result.I_adapt_stored is None:
+        return 1e6
+
+    t_ms = result.t_ms
+    r = result.r
+    r_pyr = r[:, :, 0]
+    r_som = r[:, :, 1]
+    r_pv = r[:, :, 2]
+    r_vip = r[:, :, 3]
+    I_adapt = result.I_adapt_stored[:, :, 0]
+
+    cue_offset_ms = cue_onset_ms + cue_duration_ms
+    rest_start_ms = max(0.0, cue_onset_ms - max(fit_cfg.window_ms, 200.0))
+    rest_mask = (t_ms >= rest_start_ms) & (t_ms < cue_onset_ms)
+    late_start_ms = max(cue_offset_ms, T_ms - late_delay_ms)
+    late_mask = t_ms >= late_start_ms
+
+    if not np.any(rest_mask) or not np.any(late_mask):
+        return 1e6
+
+    # Reconstruct inter-node currents from recorded rates.
+    I_pyr_inter = np.einsum("ij,tj->ti", connectivity.W_pyr_pyr, r_pyr)
+    I_pv_inter = np.einsum("ij,tj->ti", connectivity.W_pv_pyr, r_pv)
+
+    # Rebuild the cue current trace exactly as used in simulation.
+    node_angles = ring_params.node_angles_rad
+    dist = np.abs(node_angles - stim.center_rad)
+    dist = np.minimum(dist, 2.0 * np.pi - dist)
+    spatial = np.exp(-(dist * dist) / (2.0 * stim.sigma_rad * stim.sigma_rad))
+    cue_time = ((t_ms >= cue_onset_ms) & (t_ms < cue_offset_ms)).astype(float)
+    I_stim = cue_time[:, None] * (cue_current * spatial[None, :])
+
     ggaba = params.g_gaba()
-    G_eff_bump = phi_pyr_bump / (
-        1.0
-        + params.J_adapt_pyr * phi_pyr_bump
-        + ggaba * params.w_pe * phi_pv_bump * params.w_ep * phi_pyr_bump
+    denom = 1.0 + ggaba * params.w_pe * r_pv
+    I_pyr = (
+        (params.w_ee * r_pyr) / np.maximum(denom, 1e-12)
+        + I_pyr_inter
+        - ggaba * I_pv_inter
+        - ggaba * params.w_se * r_som
+        - I_adapt
+        + params.I_ext_pyr()
+        + I_stim
     )
-    turing_bump = G_eff_bump * ring_params.w_pyr_pyr_inter
+    I_pv = (
+        params.w_ep * r_pyr
+        - ggaba * params.w_pp * r_pv
+        - ggaba * params.w_sp * r_som
+        - params.w_vp * r_vip
+        + params.I_ext_pv()
+    )
 
-    # Cue operating point: scaled PYR drive at cue scale (target ~50-60 Hz, clamped to 80 Hz)
-    params_cue = _replace(params, I0_pyr=cue_scale * params.I0_pyr)
-    I_pyr_rest, _, _, _ = _total_inputs_func(params, r_ss)
-    I_pyr_cue, _, _, _ = _total_inputs_func(params_cue, r_ss)
-    dI_pyr = I_pyr_cue - I_pyr_rest
-    dr_pyr_est = phi_pyr_rest * dI_pyr
-    r_ss_cue = r_ss.copy()
-    r_ss_cue[0] = min(max(0.0, r_ss[0] + dr_pyr_est), 80.0)
-    turing_cue, _, _, _, _ = _turing_gain(params_cue, r_ss_cue)
+    dphi_pyr = _phi_derivative_array(
+        I_pyr,
+        theta=params.Theta_pyr,
+        c=params.alpha_pyr,
+        g=params.g_exc,
+    )
+    dphi_pv = _phi_derivative_array(
+        I_pv,
+        theta=params.Theta_pv,
+        c=params.alpha_pv,
+        g=params.g_inh,
+    )
+    G_eff = dphi_pyr / (
+        1.0
+        + params.J_adapt_pyr * dphi_pyr
+        + ggaba * params.w_pe * dphi_pv * params.w_ep * dphi_pyr
+    )
+    gain = G_eff * ring_params.w_pyr_pyr_inter
 
-    # Three-term penalty with bistable attractor geometry:
-    #   - L_rest:  gain product below 1 at rest (no spontaneous bump)
-    #   - L_bump:  gain product above 1 at 40 Hz (self-sustained bump fixed point)
-    #   - L_above: gain product below 1 at cue rate (no runaway growth)
-    loss_rest  = max(0.0, turing_rest - (1.0 - margin)) ** 2          # penalise spontaneous bumps
-    loss_bump  = max(0.0, (1.0 + margin) - turing_bump) ** 2          # penalise missing bump fixed point
-    loss_above = max(0.0, turing_cue - (1.0 - margin)) ** 2           # penalise runaway at cue
-    loss_total = loss_rest + loss_bump + loss_above
+    # Pick bump-supporting nodes from late-delay mean PYR and keep them fixed.
+    late_mean_pyr = r_pyr[late_mask].mean(axis=0)
+    k = int(np.clip(topk_nodes, 1, ring_params.n_nodes))
+    bump_nodes = np.argsort(late_mean_pyr)[-k:]
+    bg_nodes = np.setdiff1d(np.arange(ring_params.n_nodes), bump_nodes)
 
-    return loss_total
+    rest_gain = gain[rest_mask]
+    rest_rate = r_pyr[rest_mask].mean()
+    late_gain_bump = gain[late_mask][:, bump_nodes]
+    late_rate_bump = r_pyr[late_mask][:, bump_nodes]
+
+    target_rest = max(target.mean_r_pyr, 1e-3)
+    loss_rest_rate = ((rest_rate - target_rest) / target_rest) ** 2
+    loss_rest_gain = np.mean(np.maximum(0.0, rest_gain - (1.0 - margin)) ** 2)
+
+    mean_bump_rate = float(np.mean(late_rate_bump))
+    loss_bump_low = (max(0.0, bump_min_hz - mean_bump_rate) / max(bump_min_hz, 1e-3)) ** 2
+    loss_bump_high = (max(0.0, mean_bump_rate - bump_max_hz) / max(bump_max_hz, 1e-3)) ** 2
+    loss_bump_rate = loss_bump_low + loss_bump_high
+
+    loss_sustain = np.mean(np.maximum(0.0, (1.0 + margin) - late_gain_bump) ** 2)
+    loss_runaway_gain = np.mean(np.maximum(0.0, late_gain_bump - runaway_gain_ceiling) ** 2)
+
+    if bg_nodes.size > 0:
+        late_rate_bg = r_pyr[late_mask][:, bg_nodes]
+        loss_bg_runaway = np.mean(np.maximum(0.0, late_rate_bg - background_max_hz) ** 2) / (background_max_hz ** 2)
+    else:
+        loss_bg_runaway = 0.0
+
+    return float(
+        loss_rest_rate
+        + loss_rest_gain
+        + loss_bump_rate
+        + loss_sustain
+        + 0.5 * loss_runaway_gain
+        + 0.5 * loss_bg_runaway
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -417,22 +449,37 @@ def evaluate_ring_params(
     jacobian_weight: float = 1.0,
     turing_weight: float = 2.0,
     turing_margin: float = 0.05,
-    turing_cue_scale: float = 0.4,
+    turing_cue_amplitude: float = 0.4,
+    turing_cue_duration_ms: float = 250.0,
+    turing_cue_sigma_deg: float = 20.0,
+    turing_late_delay_ms: float = 500.0,
+    turing_bump_min_hz: float = 35.0,
+    turing_bump_max_hz: float = 45.0,
+    turing_topk_nodes: int = 5,
+    turing_activate_below_ring_rate_loss: float = 1.0,
     spatial_uniformity_weight: float = 0.0,
     ach_ratio_weight: float = 2.0,
+    turing_activated_sticky: bool = False,
 ) -> tuple[float, np.ndarray, KOMeans, "RingLossBreakdown"]:
     """
     Evaluate a (CircuitParams, RingParams) pair.
 
     Steps:
     1. Run ring at rest (n_trials_ring) → ring rate loss
-    2. Run KO conditions on single-node (default) or ring (cfg.ko_on_ring)
+    2. Run KO conditions on ring
     3. Jacobian connectivity penalty
-    4. (optional) Turing instability penalty (turing_weight > 0)
+    4. (optional) Trace-based Turing bistability penalty (turing_weight > 0)
+       - Gate: activated when ring_rate_loss <= turing_activate_below_ring_rate_loss OR
+         once turing_activated_sticky=True (stays on for rest of optimization)
     4b.(optional) Spatial uniformity penalty (spatial_uniformity_weight > 0):
        penalises high coefficient of variation of PYR rates across nodes at rest,
        discouraging spontaneous bump formation in the resting state.
     5. (Mode 2) Run bump trial → bump loss
+
+    Parameters:
+        turing_activated_sticky: If True, Turing loss is always evaluated (sticky gate).
+            In the optimization loop, this is set to True once Turing activates, keeping it on
+            even if ring_rate_loss rises back above the activation threshold.
 
     Returns:
         (total_loss, ring_means, ko_means, breakdown)
@@ -448,13 +495,19 @@ def evaluate_ring_params(
 
     ring_rate_loss = loss_from_means(ring_means, target)
 
-    # --- Step 2: KO conditions ---
+    # --- Step 2: KO conditions (only if at least one KO target is provided) ---
     ko_means = KOMeans()
-    ko_loss = 0.0
-    n_ko = 0
+    ko_penalty = 0.0
+    has_ko_targets = (
+        target.alpha7_ko_pyr is not None
+        or target.alpha5_ko_pyr is not None
+        or target.beta2_ko_pyr is not None
+    )
+    if has_ko_targets:
+        ko_loss = 0.0
+        n_ko = 0
 
-    if cfg.ko_on_ring:
-        # Run each KO condition on the ring
+        # Run each KO condition on the ring.
         ko_conditions = [
             ("alpha7_ko", replace(params, act_alpha7=0.0, g_alpha7=0.0)),
             ("alpha5_ko", replace(params, act_alpha5=0.0)),
@@ -471,59 +524,65 @@ def evaluate_ring_params(
                 ko_means.alpha5_ko = ko_m
             elif ko_name == "beta2_ko":
                 ko_means.beta2_ko = ko_m
-    else:
-        # Run KO conditions on single-node (cheaper, same CircuitParams)
+
+        # Compute KO losses
+        base_pyr = float(ring_means[0])
         fit_cfg = cfg.fit_cfg
-        ko_conditions_sn = _build_conditions(params, target, fit_cfg, rng)
-        for name, ok_sn, means_sn in [run_condition(c) for c in ko_conditions_sn]:
-            if not ok_sn:
-                bd = RingLossBreakdown(ring_rate=ring_rate_loss, ko_penalty=1e9, jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
-                return 1e9, ring_means, ko_means, bd
-            if name == "alpha7_ko":
-                ko_means.alpha7_ko = means_sn
-            elif name == "alpha5_ko":
-                ko_means.alpha5_ko = means_sn
-            elif name == "beta2_ko":
-                ko_means.beta2_ko = means_sn
 
-    # Compute KO losses
-    base_pyr = float(ring_means[0])
-    fit_cfg = cfg.fit_cfg
+        if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
+            ko_loss += loss_from_ko_pyr(
+                float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr, base_pyr,
+                min_effect_weight=fit_cfg.ko_min_effect_penalty,
+                wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
+            )
+            n_ko += 1
+        if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
+            ko_loss += loss_from_ko_pyr(
+                float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr, base_pyr,
+                min_effect_weight=fit_cfg.ko_min_effect_penalty,
+                wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
+            )
+            n_ko += 1
+        if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
+            ko_loss += loss_from_ko_pyr(
+                float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
+                min_effect_weight=fit_cfg.ko_min_effect_penalty,
+                wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
+            )
+            n_ko += 1
 
-    if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr, base_pyr,
-            min_effect_weight=fit_cfg.ko_min_effect_penalty,
-            wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
-    if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr, base_pyr,
-            min_effect_weight=fit_cfg.ko_min_effect_penalty,
-            wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
-    if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
-            min_effect_weight=fit_cfg.ko_min_effect_penalty,
-            wrong_direction_weight=fit_cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
-
-    ko_penalty = ko_loss / n_ko if n_ko > 0 else 0.0
+        ko_penalty = ko_loss / n_ko if n_ko > 0 else 0.0
 
     # --- Step 3: Jacobian penalty (evaluated at ring-averaged rates) ---
-    jacobian_loss = jacobian_connectivity_penalty(params, ring_means) * jacobian_weight
+    jacobian_loss = 0.0
+    if jacobian_weight > 0.0:
+        jacobian_loss = jacobian_connectivity_penalty(params, ring_means) * jacobian_weight
 
     # --- Step 3b: ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 ~35× α7 on SOM) ---
-    ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
+    ach_loss = 0.0
+    if ach_ratio_weight > 0.0:
+        ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
 
-    # --- Step 4: Turing instability penalty (analytical, from ring rest rates) ---
+    # --- Step 4: Turing bistability penalty (simulation trace, deterministic cue) ---
+    # Gate Turing so rate fitting can settle first. Once activated, stay activated (sticky).
     turing_loss = 0.0
-    if turing_weight > 0.0:
-        t_loss = turing_instability_loss(params, ring_params, ring_means, turing_margin, turing_cue_scale, rate_loss=ring_rate_loss)
+    turing_gate_ok = turing_activated_sticky or (ring_rate_loss <= max(0.0, turing_activate_below_ring_rate_loss))
+    if turing_weight > 0.0 and turing_gate_ok:
+        t_loss = turing_trace_bistability_loss(
+            params,
+            ring_params,
+            cfg,
+            target,
+            connectivity=connectivity,
+            margin=turing_margin,
+            cue_amplitude=turing_cue_amplitude,
+            cue_duration_ms=turing_cue_duration_ms,
+            cue_sigma_deg=turing_cue_sigma_deg,
+            late_delay_ms=turing_late_delay_ms,
+            bump_min_hz=turing_bump_min_hz,
+            bump_max_hz=turing_bump_max_hz,
+            topk_nodes=turing_topk_nodes,
+        )
         turing_loss = turing_weight * t_loss
 
     # --- Step 4b: Spatial uniformity penalty (simulation-based) ---
@@ -775,78 +834,18 @@ def _print_turing_diagnostic(
     ring_params: RingParams,
     r_ss: np.ndarray,
     margin: float = 0.05,
-    cue_scale: float = 5.0,
+    cue_scale: float = 0.4,
     rate_loss: float | None = None,
 ) -> float:
-    """
-    Compute and print Turing instability diagnostic, return the loss.
-    This is the same computation as turing_instability_loss but also prints it.
-    """
-    from dataclasses import replace as _replace
-    from ..jacobian import _total_inputs as _total_inputs_func
-    from ..jacobian import _phi_derivative
-
-    def _turing_gain(p: CircuitParams, r_ss_use: np.ndarray) -> tuple[float, float, float, float, float]:
-        """Compute turing gain and return (gain, phi_pyr, phi_pv, G_eff, w_pyr_inter)."""
-        phi_pyr = transfer_function_slope(p, r_ss_use, population="PYR")
-        phi_pv  = transfer_function_slope(p, r_ss_use, population="PV")
-        ggaba = p.g_gaba()
-        G_eff = phi_pyr / (1.0 + p.J_adapt_pyr * phi_pyr + ggaba * p.w_pe * phi_pv * p.w_ep * phi_pyr)
-        gain = G_eff * ring_params.w_pyr_pyr_inter
-        return gain, phi_pyr, phi_pv, G_eff, ring_params.w_pyr_pyr_inter
-
-    # Rest operating point
-    turing_rest, phi_pyr_rest, phi_pv_rest, g_eff_rest, _ = _turing_gain(params, r_ss)
-
-    # Bump operating point: fixed at r_pyr = 40 Hz via transfer-function inversion
-    I_star_pyr = _find_I_star_pyr(params, target_rate=40.0)
-    phi_pyr_bump = _phi_derivative(
-        I_star_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc
-    )
-    r_ss_bump = r_ss.copy()
-    r_ss_bump[0] = 40.0
-    _, _, I_pv_bump, _ = _total_inputs_func(params, r_ss_bump)
-    phi_pv_bump = _phi_derivative(
-        I_pv_bump, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh
-    )
-    ggaba = params.g_gaba()
-    G_eff_bump = phi_pyr_bump / (
-        1.0
-        + params.J_adapt_pyr * phi_pyr_bump
-        + ggaba * params.w_pe * phi_pv_bump * params.w_ep * phi_pyr_bump
-    )
-    turing_bump = G_eff_bump * ring_params.w_pyr_pyr_inter
-
-    # Cue operating point: scaled PYR drive, linear approximation, clamped to 80 Hz
-    params_cue = _replace(params, I0_pyr=cue_scale * params.I0_pyr)
-    I_pyr_rest, _, _, _ = _total_inputs_func(params, r_ss)
-    I_pyr_cue, _, _, _ = _total_inputs_func(params_cue, r_ss)
-    dI_pyr = I_pyr_cue - I_pyr_rest
-    dr_pyr_est = phi_pyr_rest * dI_pyr
-    r_ss_cue = r_ss.copy()
-    r_ss_cue[0] = min(max(0.0, r_ss[0] + dr_pyr_est), 80.0)
-    turing_cue, _, _, _, _ = _turing_gain(params_cue, r_ss_cue)
-
-    loss_rest  = max(0.0, turing_rest - (1.0 - margin)) ** 2
-    loss_bump  = max(0.0, (1.0 + margin) - turing_bump) ** 2
-    loss_above = max(0.0, turing_cue - (1.0 - margin)) ** 2
-    loss_total = loss_rest + loss_bump + loss_above
-
+    """Legacy helper retained for API compatibility after trace-loss migration."""
     rate_loss_str = f"L_rate={rate_loss:.4g}" if rate_loss is not None else "L_rate=N/A"
-    log_line = (
-        f"[TURING] "
-        f"gp_rest={turing_rest:.4g} "
-        f"gp_bump={turing_bump:.4g} "
-        f"gp_cue={turing_cue:.4g} "
-        f"L_rest={loss_rest:.4g} "
-        f"L_bump={loss_bump:.4g} "
-        f"L_above={loss_above:.4g} "
-        f"L_turing={loss_total:.4g} "
-        f"{rate_loss_str}"
+    print(
+        "[TURING] analytical diagnostic is deprecated; "
+        f"trace-based loss is active (margin={margin:.3g}, cue_amp={cue_scale:.3g}) {rate_loss_str}",
+        file=sys.stderr,
+        flush=True,
     )
-    print(log_line, file=sys.stderr, flush=True)
-
-    return loss_total
+    return 0.0
 
 
 def _print_bounds_final_table(
@@ -923,7 +922,14 @@ def nevergrad_optimize_ring(
     jacobian_weight: float = 1.0,
     turing_weight: float = 2.0,
     turing_margin: float = 0.05,
-    turing_cue_scale: float = 0.4,
+    turing_cue_amplitude: float = 0.4,
+    turing_cue_duration_ms: float = 250.0,
+    turing_cue_sigma_deg: float = 20.0,
+    turing_late_delay_ms: float = 500.0,
+    turing_bump_min_hz: float = 35.0,
+    turing_bump_max_hz: float = 45.0,
+    turing_topk_nodes: int = 5,
+    turing_activate_below_ring_rate_loss: float = 1.0,
     spatial_uniformity_weight: float = 0.0,
     ach_ratio_weight: float = 2.0,
 ) -> list[RingCandidate]:
@@ -959,9 +965,11 @@ def nevergrad_optimize_ring(
         log_file: Path to JSONL log file
         log_interval: Log every N steps
         save_output_dir: Directory to save best circuit + ring params during optimization
-        turing_weight: Weight of the three-term Turing bistability penalty (0 = disabled)
+        turing_weight: Weight of the trace-based Turing bistability penalty (0 = disabled)
         turing_margin: Safety margin around the Turing threshold (default 0.05)
-        turing_cue_scale: Multiplier applied to I0_pyr to approximate the cue operating point (default 5.0)
+        turing_cue_amplitude: Additive cue amplitude factor on I0_pyr for deterministic Turing pass.
+        turing_activate_below_ring_rate_loss: Activate Turing term only when ring_rate_loss
+            is <= this threshold (default 1.0).
         spatial_uniformity_weight: Weight of the spatial uniformity penalty (0 = disabled).
             Penalises std(r_pyr_nodes)/mean(r_pyr_nodes) at rest to prevent spontaneous bump formation.
         ach_ratio_weight: Weight of the β2/α7 ACh current ratio penalty (default 2.0, 0 = disabled).
@@ -987,28 +995,35 @@ def nevergrad_optimize_ring(
     if save_output_dir:
         Path(save_output_dir).mkdir(parents=True, exist_ok=True)
 
-    turing_str = f" + Turing penalty (w={turing_weight}, margin={turing_margin})" if turing_weight > 0.0 else ""
-    mode_str = ("Mode 2 (rates + bump quality)" if bump_target is not None else "Mode 1 (rates only)") + turing_str
+    turing_str = (
+        f" + Turing penalty (w={turing_weight}, margin={turing_margin}, "
+        f"active_when_rate_loss<={turing_activate_below_ring_rate_loss})"
+        if turing_weight > 0.0
+        else ""
+    )
+    mode_str = ("Mode 2 (legacy bump term enabled)" if bump_target is not None else "Mode 1 (rates only)") + turing_str
     print(f"Ring joint optimization — {mode_str}")
     if optimizer == "chaining":
         print(f"Optimizer: {optimizer} (DE → Nelder-Mead at step 5000)")
     else:
         print(f"Optimizer: {optimizer}")
     print(f"Ring trials per eval: {ring_cfg.n_trials_ring}")
-    print(f"KO conditions on: {'ring' if ring_cfg.ko_on_ring else 'single-node'}")
+    print("KO conditions on: ring")
     print(f"Plateau patience: {plateau_patience} steps (switching to Nelder-Mead at step 5000)")
 
     # For dynamic chaining: track if we've switched and current optimizer
     chaining_active = optimizer == "chaining"
     optimizer_switched = False
     current_ng_optimizer = ng_optimizer
+    current_optimizer_name = "DE" if chaining_active else optimizer
 
     best: list[RingCandidate] = []
     steps_since_improvement = 0
     last_step = 0
     stopped_early = False
+    turing_activated_sticky = False  # Sticky gate: once Turing activates, keep it on
 
-    pbar = tqdm(range(1, n_samples + 1), desc="Ring-Optimize", unit="step")
+    pbar = tqdm(range(1, n_samples + 1), desc="Ring-Optimize", unit="step", position=0, leave=True)
     try:
         for step in pbar:
             last_step = step
@@ -1019,7 +1034,31 @@ def nevergrad_optimize_ring(
             p = params_from_ng_dict(ng_dict, base_circuit)
             rp = ring_params_from_ng_dict(ng_dict, base_ring)
 
-            L, ring_means, ko_means, breakdown = evaluate_ring_params(p, rp, target, ring_cfg, bump_target, rng, jacobian_weight, turing_weight, turing_margin, turing_cue_scale, spatial_uniformity_weight, ach_ratio_weight)
+            L, ring_means, ko_means, breakdown = evaluate_ring_params(
+                p,
+                rp,
+                target,
+                ring_cfg,
+                bump_target,
+                rng,
+                jacobian_weight,
+                turing_weight,
+                turing_margin,
+                turing_cue_amplitude,
+                turing_cue_duration_ms,
+                turing_cue_sigma_deg,
+                turing_late_delay_ms,
+                turing_bump_min_hz,
+                turing_bump_max_hz,
+                turing_topk_nodes,
+                turing_activate_below_ring_rate_loss,
+                spatial_uniformity_weight,
+                ach_ratio_weight,
+                turing_activated_sticky=turing_activated_sticky,
+            )
+            # Once Turing loss becomes non-zero, keep it activated (sticky gate)
+            if turing_weight > 0.0 and breakdown.turing > 0.0:
+                turing_activated_sticky = True
             current_ng_optimizer.tell(x, L)
 
             prev_best_loss = best[0].loss if best else float("inf")
@@ -1038,18 +1077,8 @@ def nevergrad_optimize_ring(
                     _save_ring_candidate(save_output_dir, best[0])
                 if log_file and best:
                     _log_ring_candidate(log_file, step, best[0], target)
-                # Print bounds saturation diagnostic on improvement
-                _print_bounds_saturation(best[0], circuit_bounds, ring_bounds, step, periodic=False)
             else:
                 steps_since_improvement += 1
-
-            # Print bounds saturation + Turing diagnostic periodically every 50 steps
-            if step % 50 == 0 and best:
-                _print_bounds_periodic_table(best[0], circuit_bounds, ring_bounds, step)
-                if turing_weight > 0.0:
-                    rate_loss = loss_from_means(best[0].ring_means, target)
-                    _print_turing_diagnostic(best[0].params, best[0].ring_params, best[0].ring_means,
-                                            turing_margin, turing_cue_scale, rate_loss=rate_loss)
 
             # Chaining: switch to Nelder-Mead after 5000 steps
             if chaining_active and not optimizer_switched and step == 5000:
@@ -1059,15 +1088,24 @@ def nevergrad_optimize_ring(
                         parametrization=parametrization, budget=remaining_budget, num_workers=1
                     )
                     optimizer_switched = True
+                    current_optimizer_name = "NM"
                     print(f"\n→ Switched to Nelder-Mead at step {step} (loss={best[0].loss:.4g})")
                     steps_since_improvement = 0  # Reset plateau counter after switch
 
-            pbar.set_postfix(
-                loss=f"{best[0].loss:.4g}" if best else "N/A",
-                pyr=f"{best[0].ring_means[0]:.2f}" if best else "N/A",
-                step=step,
-                plateau=steps_since_improvement,
-            )
+            # Build postfix with loss breakdown
+            postfix = {"opt": current_optimizer_name, "plateau": steps_since_improvement}
+            if best:
+                bd = best[0].breakdown
+                if bd:
+                    postfix.update({
+                        "rate": f"{bd.ring_rate:.2g}",
+                        "jac": f"{bd.jacobian:.2g}",
+                        "tur": f"{bd.turing:.2g}",
+                        "pyr": f"{best[0].ring_means[0]:.2f}",
+                    })
+                else:
+                    postfix["loss"] = f"{best[0].loss:.4g}"
+            pbar.set_postfix(postfix)
 
             if log_file and step % log_interval == 0 and best:
                 _log_ring_candidate(log_file, step, best[0], target)
@@ -1088,6 +1126,18 @@ def nevergrad_optimize_ring(
                 break
 
             if plateau_patience > 0 and steps_since_improvement >= plateau_patience:
+                if chaining_active and not optimizer_switched:
+                    # During TwoPointsDE phase: switch to Nelder-Mead early instead of stopping
+                    remaining_budget = n_samples - step
+                    if remaining_budget > 0:
+                        current_ng_optimizer = ng.optimizers.NelderMead(
+                            parametrization=parametrization, budget=remaining_budget, num_workers=1
+                        )
+                        optimizer_switched = True
+                        current_optimizer_name = "NM"
+                        steps_since_improvement = 0
+                        print(f"\n→ Plateau after {plateau_patience} steps — switched to Nelder-Mead at step {step} (loss={best[0].loss:.4g})")
+                        continue
                 print(f"\nEarly stop: no improvement for {plateau_patience} steps.")
                 if log_file and best:
                     _log_ring_candidate(log_file, step, best[0], target)
@@ -1100,8 +1150,7 @@ def nevergrad_optimize_ring(
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.", file=sys.stderr, flush=True)
-        pbar.close()
-    else:
+    finally:
         pbar.close()
 
     if log_file and best and (not stopped_early) and last_step % log_interval != 0:

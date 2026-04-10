@@ -48,6 +48,17 @@ def load_params_json(path: str) -> "CircuitParams":
     return replace(base, **clean)
 
 
+def load_ring_params_json(path: str) -> "RingParams":
+    """Load RingParams from a JSON file."""
+    from .ring.params import RingParams
+
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    allowed = {fld.name for fld in fields(RingParams)}
+    clean = {k: d[k] for k in d if k in allowed}
+    return RingParams(**clean)
+
+
 def build_fit_comparison(
     means: np.ndarray,
     ko_means: "KOMeans",

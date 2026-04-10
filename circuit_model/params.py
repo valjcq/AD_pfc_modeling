@@ -267,56 +267,48 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     b: dict[str, ParamBound] = {}
 
     # --- Time constants (ms) — tau_s fixed at 20 ms, not optimised ---
-    # Tightened around working init: tau_adapt_pyr=600, tau_adapt_som=150.
-    b["tau_adapt_pyr"] = ParamBound(300.0, 1200.0, mode="log")
-    b["tau_adapt_som"] = ParamBound(20.0, 300.0, mode="log")  # expanded: 80.0..300.0 -> 20.0..300.0 (bounds diagnostic)
+    # Working WT solution: tau_adapt_pyr=600, tau_adapt_som=150.
+    b["tau_adapt_pyr"] = ParamBound(200.0, 1200.0, mode="log")
+    b["tau_adapt_som"] = ParamBound(20.0, 300.0, mode="log")
 
     # --- Adaptation strengths (nA/Hz) ---
-    # Tightened around working init: J_adapt_pyr=0.002, J_adapt_som=0.
-    b["J_adapt_pyr"] = ParamBound(0.001, 1, mode="log")
-    b["J_adapt_som"] = ParamBound(0.001, 1, mode="lin")
+    # Working WT solution: J_adapt_pyr=0.002, J_adapt_som~0.001. Tightened upper bound.
+    b["J_adapt_pyr"] = ParamBound(0.001, 0.2, mode="log")
+    b["J_adapt_som"] = ParamBound(0.001, 0.2, mode="lin")
 
     # --- GABA modulation (dimensionless) ---
-    # Tightened around working init: g_gaba_base=1.0, g_alpha7=0.0.
-    b["g_gaba_base"] = ParamBound(0.5, 10, mode="lin")
-    b["g_alpha7"]    = ParamBound(0.0, 10, mode="lin")
+    # Working WT solution: g_gaba_base=1.0, g_alpha7~0. Tightened from [0.5,20] and [0,20].
+    b["g_gaba_base"] = ParamBound(0.5, 5.0, mode="lin")
+    b["g_alpha7"]    = ParamBound(0.0, 5.0, mode="lin")
 
     # --- Synaptic weights (nA/Hz) ---
-    # Additive connections centered near working init 0.002 nA/Hz.
+    # Working WT solution: all weights in [0.00005, 0.005], w_pe~0.05.
+    # Tightened from [0, 10] → [0, 0.5]; covers 100x headroom above WT values,
+    # while eliminating the useless 0.5–10 range that caused degenerate high-gain solutions.
     _W_LO = 0
-    _W_HI = 10
+    _W_HI = 0.5
 
     for name in ["w_ee", "w_ep", "w_pp", "w_se", "w_es", "w_vs", "w_ev", "w_sp", "w_vp"]:
         b[name] = ParamBound(_W_LO, _W_HI, mode="log")
 
     # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
-    # For meaningful shunting at r_pv ~ 4 Hz: g_gaba*w_pe*r_pv ~ 0.2–2  → w_pe ~ 0.05–0.5.
-    # Tightened lower bound: biologically implausible below this value
-    # (Pfeffer et al. 2013); prevents optimizer from zeroing out inhibitory
-    # feedback needed for gain product bell shape.
-    b["w_pe"] = ParamBound(0, 1, mode="log")
-
-    # Tightened lower bound: biologically implausible below this value
-    b["w_se"] = ParamBound(0, 1, mode="log")
-
-    # w_ep: expanded lower bound to allow finer tuning
-    b["w_ep"] = ParamBound(0, 1, mode="log")  # expanded: 0.001..0.008 -> 0.0001..0.008 (bounds diagnostic)
-
-    # w_pp: expanded upper bound for PV self-inhibition
-    b["w_pp"] = ParamBound(0, 1, mode="log")  # expanded: 0.001..0.008 -> 0.001..0.02 (saturated at upper, bounds diagnostic)
+    # Working WT solution: w_pe~0.05. Upper bound tightened from 10 → 1.0.
+    b["w_pe"] = ParamBound(0, 1.0, mode="log")
 
     # --- External tonic drives (nA) ---
-    b["I0_pyr"] = ParamBound(0.01, 0.9, mode="lin")
-    b["I0_pv"]  = ParamBound(0.01, 0.9, mode="lin")
-    b["I0_som"] = ParamBound(0.01, 0.9, mode="lin")
-    b["I0_vip"] = ParamBound(0.01, 0.9, mode="lin")
+    # Working WT solution: I0_pyr=0.415, I0_pv/som/vip=0.25–0.27.
+    # APP solution: I0_pyr=0.435, I0_inh=0.255–0.265. Tightened from [0.01, 2.0] → [0.1, 0.8].
+    b["I0_pyr"] = ParamBound(0.1, 1.5, mode="lin")
+    b["I0_pv"]  = ParamBound(0.1, 0.6, mode="lin")
+    b["I0_som"] = ParamBound(0.1, 0.6, mode="lin")
+    b["I0_vip"] = ParamBound(0.1, 0.6, mode="lin")
 
     # Transient stimulus (dimensionless fraction of I0_pyr), centered near working init 0.2.
     b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # TODO: Remove from optimization (not a circuit parameter, but a stimulus parameter used for testing transient response)
 
     # --- nAChR cholinergic currents (nA) ---
     # These add to I0_x; should be comparable fraction of (I0_x - Theta_x).
-    # Working init is 0 for all receptor-mediated currents; keep moderate headroom.
+    # Working init is 0 for all receptor-mediated currents. Tightened from [0, 2] → [0, 0.5].
     b["I_alpha7_pv"]  = ParamBound(0.0, 0.5, mode="lin")
     b["I_alpha7_som"] = ParamBound(0.0, 0.5, mode="lin")
     b["I_beta2_som"]  = ParamBound(0.0, 0.5, mode="lin")

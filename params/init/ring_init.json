@@ -1,0 +1,6 @@
+{
+  "w_pyr_pyr_inter": 0.0051,
+  "w_pv_global": 0.0271,
+  "sigma_pyr_deg": 15.0,
+  "n_nodes": 64
+}

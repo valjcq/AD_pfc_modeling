@@ -352,6 +352,7 @@ def nevergrad_optimize(
     turing_w_inter_ref: float = 10.0,
     turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
+    bistable_cfg: Optional[Any] = None,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -407,9 +408,19 @@ def nevergrad_optimize(
 
         x = ng_optimizer.ask()
         p = params_from_ng_dict(x.value, base)
-        cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
 
-        L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
+        if bistable_cfg is not None:
+            # Bistable mode: use bistable loss directly
+            from .bistable_loss import bistable_loss as _bistable_loss
+            L = float(_bistable_loss(p, bistable_cfg))
+            means = np.zeros(4)
+            ko_means = KOMeans()
+            breakdown = LossBreakdown(firing_rate=0., ko_firing_rate=0., jacobian=0., turing=L, total=L)
+        else:
+            # Standard mode: simulate and compute loss
+            cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
+            L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
+
         ng_optimizer.tell(x, L)
         
         # Update progress bar with loss breakdown

@@ -569,7 +569,9 @@ def cmd_study(args: argparse.Namespace) -> None:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Run parameter optimization."""
-    if not getattr(args, "resume", False):
+    mode = getattr(args, "mode", "standard")
+
+    if not getattr(args, "resume", False) and mode in ("standard", "bistable"):
         missing = [f"--target_{k}" for k, v in [
             ("pyr", args.target_pyr), ("som", args.target_som),
             ("pv", args.target_pv), ("vip", args.target_vip),
@@ -617,7 +619,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"Targets loaded from log: pyr={target.mean_r_pyr}, som={target.mean_r_som}, "
               f"pv={target.mean_r_pv}, vip={target.mean_r_vip}")
     else:
-        # Build target rates from CLI args
+        # Build target rates from CLI args (used in both standard and bistable modes)
         target = TargetRates(
             mean_r_pyr=args.target_pyr,
             mean_r_som=args.target_som,
@@ -657,10 +659,34 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         base = replace(base, J_adapt_pyr=0.0, J_adapt_som=0.0)
         print("--no_adapt: J_adapt_pyr=0, J_adapt_som=0 (frozen)")
 
+    # Resolve n_samples (budget is an alias for n_samples in bistable mode)
+    n_samples = args.budget if getattr(args, "budget", None) is not None else args.n_samples
+
     bounds = default_bounds(base)
     freeze = parse_freeze_list(args.freeze)
     if args.no_adapt:
         freeze |= {"J_adapt_pyr", "J_adapt_som"}
+
+    # Build bistable config if in bistable mode
+    bistable_cfg = None
+    if mode == "bistable":
+        from .bistable_loss import BistableConfig
+        # If --r_low_hz not explicitly set, use --target_pyr
+        # (the resting PYR rate is both the low FP location and the rate target)
+        r_low_hz = args.r_low_hz if args.r_low_hz is not None else args.target_pyr
+        bistable_cfg = BistableConfig(
+            r_low_target=r_low_hz,
+            r_high_target=args.r_high_hz,
+            r_mid_probe=args.r_mid_hz,
+            delta_r_min=args.delta_r_min,
+            r_pv_target=args.target_pv,
+            r_som_target=args.target_som,
+            r_vip_target=args.target_vip,
+            w_bistab=args.w_bistab,
+            w_rate=args.w_rate_bistab,
+            w_margin=args.w_margin,
+            condition=getattr(args, "condition", "WT"),
+        )
 
     # Print parameter status
     if args.show_params:
@@ -696,24 +722,37 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"  beta2 KO PYR: {target.beta2_ko_pyr} {unit}")
     print()
 
-    init_seed = args.seed if args.seed is not None else 0
-    init_rng = np.random.default_rng(init_seed)
     jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
-    init_loss, init_means, _, init_breakdown = evaluate_params(
-        base,
-        target,
-        fit_cfg,
-        rng=init_rng,
-        squared_loss=args.squared_loss,
-        jacobian_weight=jacobian_weight,
-        turing_weight=args.turing_weight,
-        turing_margin=args.turing_margin,
-        turing_w_inter_ref=args.turing_w_inter_ref,
-        turing_cue_scale=args.turing_cue_scale,
-        ach_ratio_weight=args.ach_ratio_weight,
-    )
-    _print_opt_init_summary(base, init_means, init_breakdown)
-    print()
+
+    if mode == "standard":
+        init_seed = args.seed if args.seed is not None else 0
+        init_rng = np.random.default_rng(init_seed)
+        init_loss, init_means, _, init_breakdown = evaluate_params(
+            base,
+            target,
+            fit_cfg,
+            rng=init_rng,
+            squared_loss=args.squared_loss,
+            jacobian_weight=jacobian_weight,
+            turing_weight=args.turing_weight,
+            turing_margin=args.turing_margin,
+            turing_w_inter_ref=args.turing_w_inter_ref,
+            turing_cue_scale=args.turing_cue_scale,
+            ach_ratio_weight=args.ach_ratio_weight,
+        )
+        _print_opt_init_summary(base, init_means, init_breakdown)
+        print()
+    else:
+        # Bistable mode: print initial bistability loss
+        from .bistable_loss import bistable_loss as _bistable_loss
+        init_loss, init_components = _bistable_loss(base, bistable_cfg, return_components=True)
+        print("\nInitial bistability loss components:")
+        print(f"  L_bistab:  {init_components.get('L_bistab', 0.0):.4g}")
+        print(f"  L_rate:    {init_components.get('L_rate', 0.0):.4g}")
+        print(f"  L_margin:  {init_components.get('L_margin', 0.0):.4g}")
+        print(f"  L_jac:     {init_components.get('L_jac', 0.0):.4g}")
+        print(f"  L_total:   {init_components.get('L_total', 0.0):.4g}")
+        print()
 
     # Run optimization
     best = nevergrad_optimize(
@@ -721,7 +760,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         base=base,
         bounds=bounds,
         fit_cfg=fit_cfg,
-        n_samples=args.n_samples,
+        n_samples=n_samples,
         top_k=args.top_k,
         seed=args.seed if args.seed is not None else 0,
         optimizer=args.optimizer,
@@ -740,6 +779,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         turing_w_inter_ref=args.turing_w_inter_ref,
         turing_cue_scale=args.turing_cue_scale,
         ach_ratio_weight=args.ach_ratio_weight,
+        bistable_cfg=bistable_cfg,
     )
 
     if not best:
@@ -764,23 +804,45 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             f"{ko_str}"
         )
 
-    print("\nBest parameter set:\n")
-    print(format_params_as_code(best[0].params))
+    if mode == "standard":
+        print("\nBest parameter set:\n")
+        print(format_params_as_code(best[0].params))
 
-    # Jacobian sanity check at the best fitted steady state
-    r_ss = best[0].means  # ndarray [pyr, som, pv, vip]
-    J = compute_jacobian(best[0].params, r_ss)
-    print_sanity_check(best[0].params, r_ss)
+        # Jacobian sanity check at the best fitted steady state
+        r_ss = best[0].means  # ndarray [pyr, som, pv, vip]
+        J = compute_jacobian(best[0].params, r_ss)
+        print_sanity_check(best[0].params, r_ss)
 
-    # Comparison table: actual vs target for all conditions and populations
-    fit_meta = build_fit_comparison(best[0].means, best[0].ko_means, target, best[0].loss, jacobian=J)
-    print_comparison_table(best[0].means, best[0].ko_means, target, best[0].loss)
+        # Comparison table: actual vs target for all conditions and populations
+        fit_meta = build_fit_comparison(best[0].means, best[0].ko_means, target, best[0].loss, jacobian=J)
+        print_comparison_table(best[0].means, best[0].ko_means, target, best[0].loss)
 
-    # Final save with metadata (overrides the incremental params-only saves done during optimization)
-    if args.save_best_json:
-        save_params_json(args.save_best_json, best[0].params, fit_meta=fit_meta)
-        save_fit_summary_txt(args.save_best_json, fit_meta, params=best[0].params)
-        print(f"Best params saved to: {args.save_best_json}")
+        # Final save with metadata (overrides the incremental params-only saves done during optimization)
+        if args.save_best_json:
+            save_params_json(args.save_best_json, best[0].params, fit_meta=fit_meta)
+            save_fit_summary_txt(args.save_best_json, fit_meta, params=best[0].params)
+            print(f"Best params saved to: {args.save_best_json}")
+    else:
+        # Bistable mode: save bistable-specific outputs
+        from .bistable_loss import bistable_loss as _bistable_loss, save_bistable_summary
+
+        # Determine output directory
+        out_dir = args.output_dir or (Path(args.save_best_json).parent if args.save_best_json else ".")
+        out_dir = str(out_dir)
+
+        # Get final components
+        _, components = _bistable_loss(best[0].params, bistable_cfg, return_components=True)
+
+        # Save params and summary
+        os.makedirs(out_dir, exist_ok=True)
+        bistable_json = os.path.join(out_dir, "bistable_params.json")
+        save_params_json(bistable_json, best[0].params)
+        save_bistable_summary(out_dir, best[0].params, components, bistable_cfg)
+
+        print("\nBest bistable parameters and summary saved:")
+        print(f"  Params:  {bistable_json}")
+        print(f"  Summary: {os.path.join(out_dir, 'bistable_summary.txt')}")
+        print(f"\n  Final bistability regime: {'BISTABLE' if components.get('n_crossings', 0) >= 2 else 'MONOSTABLE'}")
     
     # Generate loss evolution plots
     if args.log_file:
@@ -972,6 +1034,30 @@ Examples:
                                  "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
                                  "(Koukouli et al. 2025: β2-type currents ~35× stronger than α7 at 1.77 μM ACh).")
 
+    # Bistable mode arguments
+    opt_parser.add_argument("--mode", type=str, default="standard",
+                            choices=["standard", "bistable"],
+                            help="Optimization mode: standard (fit to rates) or bistable (find bistable nullcline). "
+                                 "Default: standard")
+    opt_parser.add_argument("--output_dir", type=str, default="",
+                            help="Output directory for bistable mode results (default: use parent of --save_best_json)")
+    opt_parser.add_argument("--budget", type=int, default=None,
+                            help="Nevergrad budget (alias for --n_samples, convenience for bistable mode)")
+    opt_parser.add_argument("--r_low_hz", type=float, default=None,
+                            help="Target low fixed point PYR rate for bistable mode (Hz, default: uses --target_pyr)")
+    opt_parser.add_argument("--r_high_hz", type=float, default=30.0,
+                            help="Target high fixed point PYR rate for bistable mode (Hz, default: 30.0)")
+    opt_parser.add_argument("--r_mid_hz", type=float, default=15.0,
+                            help="Probe point PYR rate for bistable mode (Hz, default: 15.0)")
+    opt_parser.add_argument("--delta_r_min", type=float, default=15.0,
+                            help="Minimum gap between low and high fixed points (Hz, default: 15.0)")
+    opt_parser.add_argument("--w_bistab", type=float, default=1.0,
+                            help="Weight of bistability sign pattern loss (default: 1.0)")
+    opt_parser.add_argument("--w_rate_bistab", type=float, default=1.0,
+                            help="Weight of rate matching loss in bistable mode (default: 1.0)")
+    opt_parser.add_argument("--w_margin", type=float, default=0.5,
+                            help="Weight of fixed point separation margin loss (default: 0.5)")
+
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
                             help="Save best parameters to JSON file")
@@ -1132,6 +1218,10 @@ Examples:
     ring_run_parser.add_argument(
         "--no_adapt", action="store_true",
         help="Disable spike-frequency adaptation: set J_adapt_pyr=0 and J_adapt_som=0.",
+    )
+    ring_run_parser.add_argument(
+        "--output_dir", type=str, default="",
+        help="Explicit output directory for results (default: auto-generated path based on params)",
     )
 
     # =========================================================================
@@ -1781,8 +1871,9 @@ Examples:
         description=(
             "Optimize CircuitParams and RingParams simultaneously so the ring network "
             "at rest (no stimulus) reproduces the target firing rates from quiet wakefulness data. "
-            "Mode 1 (default): match firing rates only. "
-            "Mode 2 (--bump_mode): also require that a bump forms after a cue stimulus."
+            "The objective includes optional trace-based Turing bistability constraints "
+            "(rest stability + bump sustain around 40 Hz + anti-runaway). "
+            "Legacy --bump_mode is deprecated and ignored."
         ),
     )
     from .ring.cli import add_ring_optimize_args as _add_ring_optimize_args

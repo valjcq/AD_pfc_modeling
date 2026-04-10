@@ -1,0 +1,106 @@
+{
+  "_fit_metadata": {
+    "loss": 0.016095,
+    "comparison": {
+      "base": {
+        "PYR": {
+          "actual": 9.1915,
+          "target": 8.214,
+          "error_pct": 11.9
+        },
+        "SOM": {
+          "actual": 4.3031,
+          "target": 4.295,
+          "error_pct": 0.19
+        },
+        "PV": {
+          "actual": 4.3114,
+          "target": 4.073,
+          "error_pct": 5.85
+        },
+        "VIP": {
+          "actual": 6.2846,
+          "target": 6.051,
+          "error_pct": 3.86
+        }
+      }
+    },
+    "jacobian": {
+      "_note": "J[row,col] = dr_row/dr_col: effect of col population on row population",
+      "PYR": {
+        "PYR": 3.279578,
+        "SOM": -24.848153,
+        "PV": -4.075734,
+        "VIP": 0.0
+      },
+      "SOM": {
+        "PYR": 35.797256,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": -19.111734
+      },
+      "PV": {
+        "PYR": 2.76108,
+        "SOM": -6.464713,
+        "PV": -20.804412,
+        "VIP": -1.84125
+      },
+      "VIP": {
+        "PYR": 0.688904,
+        "SOM": 0.0,
+        "PV": 0.0,
+        "VIP": 0.0
+      }
+    },
+    "ring_params": {
+      "w_pyr_pyr_inter": 0.006088,
+      "w_pv_global": 0.025978,
+      "sigma_pyr_deg": 15.0,
+      "n_nodes": 64
+    }
+  },
+  "I0_pv": 0.5583570977581027,
+  "I0_pyr": 1.0812920288864973,
+  "I0_som": 0.22998998142974877,
+  "I0_vip": 0.16297798323655202,
+  "I_alpha5_vip": 0.07228401342783938,
+  "I_alpha7_pv": 0.4025622636696527,
+  "I_alpha7_som": 0.010878495604100605,
+  "I_beta2_som": 0.4212654559404413,
+  "J_adapt_pyr": 0.03613876508975752,
+  "J_adapt_som": 0.1732168803458994,
+  "Theta_pv": 0.2878,
+  "Theta_pyr": 0.40323,
+  "Theta_som": 0.2878,
+  "Theta_vip": 0.2878,
+  "act_alpha5": 1.0,
+  "act_alpha7": 1.0,
+  "act_beta2": 1.0,
+  "alpha_pv": 615.0,
+  "alpha_pyr": 310.0,
+  "alpha_som": 615.0,
+  "alpha_vip": 615.0,
+  "g_alpha7": 0.5161448513914498,
+  "g_exc": 0.16,
+  "g_gaba_base": 1.0437543722757818,
+  "g_inh": 0.087,
+  "sigma_noise": 0.1,
+  "sigma_s": 0.0,
+  "tau_adapt_pyr": 600.0,
+  "tau_adapt_som": 200.0,
+  "tau_s": 20.0,
+  "trans_duration_ms": 500.0,
+  "trans_enabled": false,
+  "trans_factor": 0.2,
+  "trans_start_ms": 1000.0,
+  "w_ee": 0.02663706956411436,
+  "w_ep": 0.018775927257914767,
+  "w_es": 0.05820691971161981,
+  "w_ev": 0.0034683848451141147,
+  "w_pe": 0.207826995372537,
+  "w_pp": 0.09069458122681591,
+  "w_se": 0.053959887883384385,
+  "w_sp": 0.028182217422537015,
+  "w_vp": 0.012520887578698164,
+  "w_vs": 0.031075990591969648
+}

@@ -116,9 +116,11 @@ def default_ring_bounds() -> "dict[str, ParamBound]":
     w_pv_global upper bound (3e-2) corresponds to near-silent regime where
     inhibition suppresses all activity.
     """
+    # Working WT solution: w_pyr_pyr_inter=0.0051, w_pv_global=0.027, sigma_pyr_deg=15.
+    # Tightened from [5e-4, 5] → [5e-4, 0.1] / [5e-4, 0.2]; sigma from [5, 60] → [5, 40].
     from ..params import ParamBound
     return {
-        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=5, mode="log"),
-        "w_pv_global":     ParamBound(lo=5e-4,  hi=5, mode="log"),
-        "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=60.0,   mode="lin"),
+        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=0.1,  mode="log"),
+        "w_pv_global":     ParamBound(lo=5e-4,  hi=0.2,  mode="log"),
+        "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=40.0, mode="lin"),
     }

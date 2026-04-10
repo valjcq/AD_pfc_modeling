@@ -1256,9 +1256,12 @@ python -m circuit_model ring-bump-decay-study \
 
 Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Knockout (KO) conditions are run on single-node by default (cheap) or on the ring (`--ko_on_ring`).
 
-Two modes:
-- **Mode 1** (default): match ring resting firing rates to `TargetRates`. Loss = rate loss + KO loss + Jacobian penalty.
-- **Mode 2** (`--bump_mode`): same as Mode 1, plus a soft bump quality constraint — the ring must form a localized bump after a test stimulus. Bump and rate targets are independent (bump targets are biophysical constraints, not from experimental data).
+Primary mode:
+- Match ring resting firing rates to `TargetRates` with KO and structural penalties.
+- Apply a trace-based Turing bistability loss (optional via `--turing_weight`) using a deterministic cue simulation.
+
+Legacy mode:
+- `--bump_mode` is deprecated and ignored. Bump constraints are now integrated into the trace-based Turing loss.
 
 ```bash
 python -m circuit_model ring-optimize [options]
@@ -1283,10 +1286,8 @@ python -m circuit_model ring-optimize [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--params_json` | str | `""` | Load initial `CircuitParams` from JSON (default: project WT default) |
+| `--ring_params_json` | str | `""` | Load initial `RingParams` from JSON (same format as `--save_best_ring_json` output) — **required** |
 | `--n_nodes` | int | `64` | Number of ring nodes — fixed during optimization, not optimized |
-| `--w_pyr_pyr_inter_init` | float | `8.0` | Initial inter-node PYR→PYR weight |
-| `--w_pv_global_init` | float | `10.0` | Initial global PV→PYR inhibition weight |
-| `--sigma_pyr_deg_init` | float | `15.0` | Initial PYR connectivity Gaussian width (degrees) |
 
 #### Ring parameter search bounds
 
@@ -1313,12 +1314,12 @@ python -m circuit_model ring-optimize [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--n_trials_ring` | int | `3` | Ring simulations per candidate (fewer than single-node due to cost) |
+| `--n_trials_ring` | int | `5` | Ring simulations per candidate (for stochastic averaging) |
 | `--ko_on_ring` | flag | `False` | Run KO conditions on ring (consistent but slower). Default: single-node. |
 | `--T_ms` | float | `2500.0` | Ring simulation duration (ms) |
-| `--burn_in_ms` | float | `1800.0` | Burn-in period to discard transients (ms) |
+| `--burn_in_ms` | float | `1200.0` | Burn-in period to discard transients (ms) |
 | `--window_ms` | float | `500.0` | Rate averaging window (ms) |
-| `--noise_type` | str | `none` | `none`, `white`, or `ou` |
+| `--noise_type` | str | `white` | `none`, `white`, or `ou` |
 | `--ko_min_effect_penalty` | float | `5.0` | Penalty weight for weak KO effect |
 | `--ko_wrong_direction_penalty` | float | `10.0` | Penalty weight for wrong-direction KO |
 
@@ -1328,13 +1329,20 @@ python -m circuit_model ring-optimize [options]
 |-----------|------|---------|-------------|
 | `--no_adapt` | flag | `False` | Disable spike-frequency adaptation: sets `J_adapt_pyr=0` and `J_adapt_som=0` and freezes them. |
 
-#### Turing instability penalty (optional)
+#### Trace-based Turing bistability penalty (optional)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--turing_weight` | float | `2.0` | Weight of three-term Turing bistability penalty (0 = disabled). Penalises: gain > 1−m at rest (spontaneous bump), gain < 1+m at 40 Hz bump (no fixed point), gain > 1−m at cue (runaway). |
+| `--turing_weight` | float | `2.0` | Weight of trace-based Turing loss (0 = disabled): rest stability + bump sustain + anti-runaway. |
 | `--turing_margin` | float | `0.05` | Safety margin `m` around the Turing threshold. |
-| `--turing_cue_scale` | float | `0.4` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
+| `--turing_cue_amplitude` | float | `0.4` | Additive cue amplitude as factor of `I0_pyr` (PYR-only). |
+| `--turing_cue_duration_ms` | float | `250.0` | Cue duration (ms) for deterministic Turing pass. |
+| `--turing_cue_sigma_deg` | float | `20.0` | Cue spatial width (deg) for deterministic Turing pass. |
+| `--turing_late_delay_ms` | float | `500.0` | Late-delay window length (ms) used for sustain checks. |
+| `--turing_bump_min_hz` | float | `35.0` | Minimum bump-node PYR rate in late delay. |
+| `--turing_bump_max_hz` | float | `45.0` | Maximum bump-node PYR rate in late delay. |
+| `--turing_topk_nodes` | int | `5` | Number of top PYR nodes defining the bump support set. |
+| `--turing_activate_below_ring_rate_loss` | float | `1.0` | Gate for Turing loss: trace-based Turing term is applied only when ring firing-rate loss is `<=` this threshold. |
 
 #### ACh receptor ratio penalty (optional)
 
@@ -1342,11 +1350,11 @@ python -m circuit_model ring-optimize [options]
 |-----------|------|---------|-------------|
 | `--ach_ratio_weight` | float | `2.0` | Weight of β2/α7 ACh current ratio penalty (0 = disabled). Penalises `I_beta2_som / I_alpha7_som` deviating from 35 (Koukouli et al. 2025). |
 
-#### Mode 2 — bump quality (optional)
+#### Legacy bump options (deprecated)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--bump_mode` | flag | `False` | Enable Mode 2: add bump quality constraint |
+| `--bump_mode` | flag | `False` | Deprecated and ignored (kept for backward compatibility). |
 | `--min_bump_amplitude` | float | `0.3` | Minimum bump amplitude `[0, 1]`. Penalised if not reached. |
 | `--bump_loss_weight` | float | `2.0` | Weight of bump loss relative to rate loss |
 | `--bump_stim_amplitude` | float | `5.0` | Peak current of test stimulus (applied to PYR) |
@@ -1374,29 +1382,19 @@ ring_optim_output/
 
 ### Loss structure
 
-**Mode 1:**
+**Current objective:**
 ```
 loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
-     [+ turing_weight × L_turing       if turing_weight > 0]
+  [+ turing_weight × L_turing_trace if turing_weight > 0 and ring_rate_loss <= turing_activate_below_ring_rate_loss]
      [+ ach_ratio_weight × L_ach_ratio  if ach_ratio_weight > 0]
 ```
 where `ring_rate_loss` = MSPE between node-averaged ring rates and `TargetRates`.
 
-The Turing penalty has three terms:
-- `L_rest`:  zero when gain product ≤ 1−m at rest (no spontaneous bump)
-- `L_bump`:  zero when gain product ≥ 1+m at 40 Hz (self-sustained bump fixed point exists); the 40 Hz bump operating point is found by numerically inverting the PYR transfer function (bisection), fixed independently of `I0_pyr`
-- `L_above`: zero when gain product ≤ 1−m at cue rate (no runaway); `I*_cue` evaluated with `I0_pyr` scaled by `turing_cue_scale`
-
-Diagnostic log format: `[TURING] gp_rest=X gp_bump=X gp_cue=X L_rest=X L_bump=X L_above=X L_turing=X L_rate=X`
-
-**Mode 2:**
-```
-loss = ring_rate_loss + ko_loss / n_ko + jacobian_penalty
-     [+ turing_weight × turing_loss        if turing_weight > 0]
-     [+ ach_ratio_weight × L_ach_ratio      if ach_ratio_weight > 0]
-     + bump_loss_weight × max(0, min_amplitude − mean_amplitude)²
-```
-Bump loss is zero once the bump amplitude exceeds `min_amplitude`.
+`L_turing_trace` is computed from a deterministic cue simulation and includes:
+- rest-rate + rest-gain constraints (no spontaneous bump),
+- late-delay bump-rate band around 40 Hz,
+- late-delay gain floor for sustain,
+- gain/rate ceilings to prevent runaway.
 
 ### Examples
 
@@ -1412,11 +1410,11 @@ python -m circuit_model ring-optimize \
   --target_alpha7_ko_pyr 17.539 --target_alpha5_ko_pyr 9.285 --target_beta2_ko_pyr 17.965 \
   --n_nodes 64 --n_samples 5000 --output_dir ring_optim_output
 
-# Mode 2: also require bump formation (independent soft constraint)
+# Legacy bump flag is accepted but ignored (trace-based Turing already includes bump constraints)
 python -m circuit_model ring-optimize \
   --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
   --n_nodes 64 --n_samples 5000 \
-  --bump_mode --min_bump_amplitude 0.3 --bump_loss_weight 2.0 \
+  --bump_mode \
   --output_dir ring_optim_output
 
 # Start from a previously fitted circuit, only optimize ring params

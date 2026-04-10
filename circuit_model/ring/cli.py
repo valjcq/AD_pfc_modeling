@@ -358,19 +358,31 @@ def _build_common(args, amp_factor: float | None = None):
         (base_params, ring_params, T_ms, stimuli, amp_factor, load_msg)
     """
     cond_key = getattr(args, "condition", None)
+    # Save n_nodes before _load_base_params_for_ring patches it from defaults,
+    # so we can tell whether the user explicitly passed --n_nodes.
+    _explicit_n_nodes = args.n_nodes
     base_params, load_msg = _load_base_params_for_ring(
         args.params_json,
         args,
         condition_key=cond_key,
     )
 
-    ring_params = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-
-    )
+    # Load ring params from JSON if provided, otherwise construct from args
+    if args.ring_params_json:
+        from ..io import load_ring_params_json
+        ring_params = load_ring_params_json(args.ring_params_json)
+        load_msg += f"\nLoaded RingParams from: {args.ring_params_json}"
+        # CLI --n_nodes overrides the JSON value when explicitly provided.
+        if _explicit_n_nodes is not None:
+            ring_params = replace(ring_params, n_nodes=_explicit_n_nodes)
+            load_msg += f"\nOverriding n_nodes from CLI: {_explicit_n_nodes}"
+    else:
+        ring_params = RingParams(
+            n_nodes=args.n_nodes,
+            w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
+            sigma_pyr_deg=args.sigma_pyr_deg,
+            w_pv_global=args.w_pv_global,
+        )
 
     factor = amp_factor if amp_factor is not None else args.amplitude[0]
     actual_current = factor * base_params.I_ext_pyr()
@@ -754,6 +766,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--params_json", type=str, default="",
         help="Load base parameters from JSON file",
+    )
+    parser.add_argument(
+        "--ring_params_json", type=str, default="",
+        help="Load ring parameters (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg, n_nodes) from JSON file "
+             "(same format as --save_best_ring_json output from ring-optimize)",
     )
     parser.add_argument(
         "--seed", type=_parse_seed, default=442,
@@ -3587,22 +3604,27 @@ def cmd_run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Output directory (needed before _print_config for save_path)
     # ------------------------------------------------------------------
-    _amp_label = f"amp{_fmt(amp_factor)}"
-    if getattr(args, 'no_adapt', False):
-        _amp_label += "_no_adapt"
-    _conn_label = f"wpyr{_fmt(ring_params.w_pyr_pyr_inter)}_wpv{_fmt(ring_params.w_pv_global)}"
-    out_dir_parts = [
-        _output_dir("figs/ring/run", args.params_json),
-        _run_type_label(args),
-        _amp_label,
-        _conn_label,
-    ]
-    if _has_distractor(args):
-        out_dir_parts.append(
-            f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
-        )
-    out_dir_parts.append(cond_key)
-    out_dir = os.path.join(*out_dir_parts)
+    # Use explicit output_dir if provided, otherwise auto-generate
+    if getattr(args, 'output_dir', None) and args.output_dir.strip():
+        out_dir = args.output_dir
+    else:
+        _amp_label = f"amp{_fmt(amp_factor)}"
+        if getattr(args, 'no_adapt', False):
+            _amp_label += "_no_adapt"
+        _conn_label = f"wpyr{_fmt(ring_params.w_pyr_pyr_inter)}_wpv{_fmt(ring_params.w_pv_global)}"
+        out_dir_parts = [
+            _output_dir("figs/ring/run", args.params_json),
+            _run_type_label(args),
+            _amp_label,
+            _conn_label,
+        ]
+        if _has_distractor(args):
+            out_dir_parts.append(
+                f"offset{_fmt(args.distractor_offset_deg)}_factor{_fmt(args.distractor_factor)}"
+            )
+        out_dir_parts.append(cond_key)
+        out_dir = os.path.join(*out_dir_parts)
+
     os.makedirs(out_dir, exist_ok=True)
 
     _run_info = [
@@ -3746,6 +3768,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     # ── Numerical summary JSON ────────────────────────────────────────────────
     import json as _json
     from .analysis import compute_bump_metrics as _compute_bump_metrics
+    from ..diagnostic import compute_turing_gain_timecourse
 
     _bump_metrics = _compute_bump_metrics(result)
 
@@ -3767,6 +3790,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     _delay_pyr_center = float(np.mean(_pyr[_delay_mask, _stim_node])) if np.any(_delay_mask) else float("nan")
     _delay_pyr_opposite = float(np.mean(_pyr[_delay_mask, _opp_node])) if np.any(_delay_mask) else float("nan")
 
+    # Turing gain at bump node during delay period
+    _t_ms, _gain_mean, _gain_peak = compute_turing_gain_timecourse(result, local_params, ring_params)
+    _delay_mask_turing = _t_ms > result.stim_window[1]
+    _delay_turing_bump = float(np.mean(_gain_peak[_delay_mask_turing])) if np.any(_delay_mask_turing) else float("nan")
+    _delay_turing_mean = float(np.mean(_gain_mean[_delay_mask_turing])) if np.any(_delay_mask_turing) else float("nan")
+
     _summary = {
         "params": {
             "w_pyr_pyr_inter": ring_params.w_pyr_pyr_inter,
@@ -3782,6 +3811,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             "delay_pyr_center_hz": round(_delay_pyr_center, 3),
             "delay_pyr_opposite_hz": round(_delay_pyr_opposite, 3),
         },
+        "turing_gain_delay": {
+            "bump_node": round(_delay_turing_bump, 4) if not np.isnan(_delay_turing_bump) else None,
+            "mean_background": round(_delay_turing_mean, 4) if not np.isnan(_delay_turing_mean) else None,
+        },
         "bump_metrics": {k: (round(v, 4) if not np.isnan(v) else None)
                          for k, v in _bump_metrics.items()},
     }
@@ -3789,6 +3822,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     with open(_summary_path, "w") as _f:
         _json.dump(_summary, _f, indent=2)
     print(f"Metrics saved to {_summary_path}")
+
+    # ── Print summary metrics ─────────────────────────────────────────────────
+    print("\n" + "─" * 66)
+    print("  KEY METRICS SUMMARY")
+    print("─" * 66)
+    print(f"  Amplitude:                    {amp_factor:.2f}×")
+    print(f"  PYR firing rate (bump node):  {_summary['steady_state']['delay_pyr_center_hz']:.3f} Hz")
+    print(f"  Turing gain (bump node):      {_summary['turing_gain_delay']['bump_node']}")
+    print(f"  Turing gain (background):    {_summary['turing_gain_delay']['mean_background']}")
+    print(f"  Bump amplitude:               {_summary['bump_metrics']['amplitude_mean']:.4f}")
+    print(f"  Bump width:                   {_summary['bump_metrics']['width_mean_deg']:.2f}°")
+    print("─" * 66 + "\n")
 
     if not args.no_show:
         plt.show()
@@ -8893,22 +8938,18 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Number of ring nodes (fixed during optimization, default: 64)")
 
     # --- Starting point for ring params ---
-    parser.add_argument("--w_pyr_pyr_inter_init", type=float, default=0.004,
-                        help="Initial inter-node PYR->PYR weight (default: 0.004)")
-    parser.add_argument("--w_pv_global_init", type=float, default=0.008,
-                        help="Initial global PV->PYR inhibition weight (default: 0.008)")
-    parser.add_argument("--sigma_pyr_deg_init", type=float, default=15.0,
-                        help="Initial PYR connectivity Gaussian width in degrees (default: 15.0)")
+    parser.add_argument("--ring_params_json", type=str, default="",
+                        help="Load initial RingParams from JSON file (same format as --save_best_ring_json output)")
 
     # --- Ring parameter search bounds (optional overrides) ---
     parser.add_argument("--w_pyr_pyr_inter_lo", type=float, default=0.0005,
                         help="Lower bound for w_pyr_pyr_inter (default: 0.0005)")
-    parser.add_argument("--w_pyr_pyr_inter_hi", type=float, default=0.015,
-                        help="Upper bound for w_pyr_pyr_inter (default: 0.015)")
+    parser.add_argument("--w_pyr_pyr_inter_hi", type=float, default=0.05,
+                        help="Upper bound for w_pyr_pyr_inter (default: 0.05)")
     parser.add_argument("--w_pv_global_lo", type=float, default=0.0005,
                         help="Lower bound for w_pv_global (default: 0.0005)")
-    parser.add_argument("--w_pv_global_hi", type=float, default=0.03,
-                        help="Upper bound for w_pv_global (default: 0.03)")
+    parser.add_argument("--w_pv_global_hi", type=float, default=0.1,
+                        help="Upper bound for w_pv_global (default: 0.1)")
     parser.add_argument("--sigma_pyr_deg_lo", type=float, default=5.0,
                         help="Lower bound for sigma_pyr_deg (default: 5.0)")
     parser.add_argument("--sigma_pyr_deg_hi", type=float, default=60.0,
@@ -8938,9 +8979,6 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
     # --- Ring fit config ---
     parser.add_argument("--n_trials_ring", type=int, default=5,
                         help="Ring simulations per candidate evaluation (default: 5 for noise averaging)")
-    parser.add_argument("--ko_on_ring", action="store_true",
-                        help="Run KO conditions on ring (slower but fully consistent). "
-                             "Default: KO conditions run on single-node.")
 
     # --- Simulation time settings ---
     parser.add_argument("--T_ms", type=float, default=2500.0,
@@ -8966,11 +9004,10 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ko_wrong_direction_penalty", type=float, default=10.0,
                         help="Penalty weight for wrong-direction KO effect (default: 10.0)")
 
-    # --- Mode 2: bump quality constraint ---
+    # --- Deprecated Mode 2: bump quality constraint ---
     parser.add_argument("--bump_mode", action="store_true",
-                        help="Enable Mode 2: add bump quality constraint to loss. "
-                             "Network must form a bump after stimulus. "
-                             "Firing rate and bump targets are independent.")
+                        help="Deprecated. Bump constraints are now integrated in the "
+                            "trace-based Turing loss. Flag kept for backward compatibility.")
     parser.add_argument("--min_bump_amplitude", type=float, default=0.3,
                         help="Minimum acceptable bump amplitude [0,1] for Mode 2 (default: 0.3)")
     parser.add_argument("--bump_loss_weight", type=float, default=2.0,
@@ -8992,13 +9029,28 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
 
     # --- Turing instability penalty ---
     parser.add_argument("--turing_weight", type=float, default=2.0,
-                        help="Weight of three-term Turing bistability penalty (default: 2.0). "
-                             "Enforces three-regime attractor geometry: gain < 1 at rest, gain > 1 at bump, gain < 1 at cue.")
+                        help="Weight of simulation-trace Turing bistability loss (default: 2.0). "
+                            "Enforces rest stability + bump sustain around 40 Hz + anti-runaway.")
     parser.add_argument("--turing_margin", type=float, default=0.05,
                         help="Safety margin around the Turing threshold (default: 0.05)")
-    parser.add_argument("--turing_cue_scale", type=float, default=0.4,
-                        help="Multiplier applied to I0_pyr to approximate the cue operating point "
-                             "(default: 0.4)")
+    parser.add_argument("--turing_cue_amplitude", type=float, default=0.4,
+                        help="Cue amplitude as factor of I0_pyr for the deterministic Turing pass "
+                            "(default: 0.4, additive PYR-only cue).")
+    parser.add_argument("--turing_cue_duration_ms", type=float, default=250.0,
+                        help="Cue duration (ms) used by the deterministic Turing pass (default: 250)")
+    parser.add_argument("--turing_cue_sigma_deg", type=float, default=20.0,
+                        help="Cue spatial width (deg) used by the deterministic Turing pass (default: 20)")
+    parser.add_argument("--turing_late_delay_ms", type=float, default=500.0,
+                        help="Late-delay window length (ms) used for bump/sustain checks (default: 500)")
+    parser.add_argument("--turing_bump_min_hz", type=float, default=35.0,
+                        help="Minimum late-delay bump-node PYR rate (Hz, default: 35)")
+    parser.add_argument("--turing_bump_max_hz", type=float, default=45.0,
+                        help="Maximum late-delay bump-node PYR rate (Hz, default: 45)")
+    parser.add_argument("--turing_topk_nodes", type=int, default=5,
+                        help="Number of top PYR nodes used as bump support set (default: 5)")
+    parser.add_argument("--turing_activate_below_ring_rate_loss", type=float, default=1.0,
+                        help="Activate Turing loss only when ring firing-rate loss is <= this threshold "
+                            "(default: 1.0)")
     parser.add_argument("--spatial_uniformity_weight", type=float, default=0.0,
                         help="Weight of spatial uniformity penalty (default: 0 = disabled). "
                              "Penalises std(r_pyr_nodes)/mean(r_pyr_nodes) at rest to prevent "
@@ -9033,7 +9085,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     from dataclasses import fields, replace as _replace
     from ..params import default_bounds, ParamBound
     from ..loss import TargetRates, FitConfig
-    from ..io import load_params_json, save_params_json
+    from ..io import load_params_json, load_ring_params_json, save_params_json
     from .params import RingParams, default_ring_bounds
     from .optimization import BumpTarget, nevergrad_optimize_ring, _save_ring_candidate
 
@@ -9094,12 +9146,11 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     )
 
     # --- Build initial ring parameters ---
-    base_ring = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter_init,
-        w_pv_global=args.w_pv_global_init,
-        sigma_pyr_deg=args.sigma_pyr_deg_init,
-    )
+    if args.ring_params_json:
+        base_ring = load_ring_params_json(args.ring_params_json)
+        print(f"Loaded RingParams from: {args.ring_params_json}")
+    else:
+        raise ValueError("--ring_params_json is required")
 
     # --- Build bounds ---
     circuit_bounds = default_bounds(base_circuit)
@@ -9134,20 +9185,12 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     ring_cfg = RingFitConfig(
         fit_cfg=fit_cfg,
         n_trials_ring=args.n_trials_ring,
-        ko_on_ring=args.ko_on_ring,
     )
 
-    # --- Mode 2: bump quality constraint ---
+    # --- Deprecated Mode 2: bump quality constraint ---
     bump_target = None
     if args.bump_mode:
-        bump_target = BumpTarget(
-            min_amplitude=args.min_bump_amplitude,
-            bump_loss_weight=args.bump_loss_weight,
-            stim_amplitude=args.bump_stim_amplitude,
-            stim_sigma_deg=args.bump_stim_sigma_deg,
-            stim_duration_ms=args.bump_stim_duration_ms,
-            eval_window_ms=args.bump_eval_window_ms,
-        )
+        print("[DEPRECATED] --bump_mode is ignored. Trace-based Turing loss now includes bump constraints.")
 
     # --- Print summary ---
     print("\nOptimization targets:")
@@ -9159,12 +9202,12 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} Hz")
     if target.beta2_ko_pyr is not None:
         print(f"  beta2 KO PYR: {target.beta2_ko_pyr} Hz")
-    print(f"\nRing: n_nodes={args.n_nodes}, "
-          f"w_pyr_pyr_inter_init={args.w_pyr_pyr_inter_init}, "
-          f"w_pv_global_init={args.w_pv_global_init}, "
-          f"sigma_pyr_deg_init={args.sigma_pyr_deg_init}")
-    print(f"Mode: {'2 (rates + bump quality)' if bump_target else '1 (rates only)'}")
-    print(f"KO conditions on: {'ring' if args.ko_on_ring else 'single-node'}")
+    print(f"\nRing: n_nodes={base_ring.n_nodes}, "
+          f"w_pyr_pyr_inter={base_ring.w_pyr_pyr_inter}, "
+          f"w_pv_global={base_ring.w_pv_global}, "
+          f"sigma_pyr_deg={base_ring.sigma_pyr_deg}")
+    print("Mode: rates + trace-based Turing bistability")
+    print("KO conditions on: ring")
     print(f"Output dir: {args.output_dir}")
     print()
 
@@ -9180,11 +9223,20 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
-        turing_cue_scale=args.turing_cue_scale,
+        turing_cue_amplitude=args.turing_cue_amplitude,
+        turing_cue_duration_ms=args.turing_cue_duration_ms,
+        turing_cue_sigma_deg=args.turing_cue_sigma_deg,
+        turing_late_delay_ms=args.turing_late_delay_ms,
+        turing_bump_min_hz=args.turing_bump_min_hz,
+        turing_bump_max_hz=args.turing_bump_max_hz,
+        turing_topk_nodes=args.turing_topk_nodes,
+        turing_activate_below_ring_rate_loss=args.turing_activate_below_ring_rate_loss,
         spatial_uniformity_weight=args.spatial_uniformity_weight,
         ach_ratio_weight=args.ach_ratio_weight,
     )
     _print_ring_init_summary(base_circuit, base_ring, init_ring_means, init_loss)
+
+    optimizer = args.optimizer
     print()
 
     # --- Run optimization ---
@@ -9199,7 +9251,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         n_samples=args.n_samples,
         top_k=args.top_k,
         seed=args.seed,
-        optimizer=args.optimizer,
+        optimizer=optimizer,
         freeze=freeze,
         early_stop_loss=args.early_stop_loss,
         plateau_patience=args.plateau_patience,
@@ -9209,7 +9261,14 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         jacobian_weight=jacobian_weight,
         turing_weight=args.turing_weight,
         turing_margin=args.turing_margin,
-        turing_cue_scale=args.turing_cue_scale,
+        turing_cue_amplitude=args.turing_cue_amplitude,
+        turing_cue_duration_ms=args.turing_cue_duration_ms,
+        turing_cue_sigma_deg=args.turing_cue_sigma_deg,
+        turing_late_delay_ms=args.turing_late_delay_ms,
+        turing_bump_min_hz=args.turing_bump_min_hz,
+        turing_bump_max_hz=args.turing_bump_max_hz,
+        turing_topk_nodes=args.turing_topk_nodes,
+        turing_activate_below_ring_rate_loss=args.turing_activate_below_ring_rate_loss,
         spatial_uniformity_weight=args.spatial_uniformity_weight,
         ach_ratio_weight=args.ach_ratio_weight,
     )
@@ -9266,4 +9325,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     print(f"  circuit: {circuit_path}")
     print(f"  ring:    {ring_path}")
     print(f"  summary: {str(_Path(circuit_path).with_suffix('.txt'))}")
+
+    # Force clean exit to avoid hanging threads
+    import sys as _sys
+    _sys.exit(0)
 

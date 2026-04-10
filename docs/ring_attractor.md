@@ -405,167 +405,77 @@ The `compute_oscillation_spectrum` function (in `analysis.py`) computes the powe
 
 ## 10. Joint Ring + Circuit Optimization
 
-The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the ring network at rest (no stimulus) reproduces experimentally measured quiet-wakefulness firing rates.
+The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the ring network at rest reproduces target firing rates while enforcing bump-supporting bistability constraints.
 
 ### 10.1 Motivation
 
-The standard workflow optimizes `CircuitParams` against single-node firing rates and then tunes ring parameters (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) separately via calibration sweeps. This two-step approach can produce inconsistencies: the local circuit was fit assuming no inter-node coupling, but ring connectivity alters the effective input each node receives. Joint optimization resolves this by optimizing all parameters simultaneously against ring-level measurements.
+Rate matching alone is necessary but not sufficient for working-memory behavior: a parameter set can match quiet-wakefulness means and still fail to sustain a bump after cue offset. The current optimizer therefore combines:
 
-A deeper problem is that matching firing rates alone does not guarantee that the fitted network can support a working-memory bump. Rate matching is a necessary but not sufficient condition: a network can reproduce quiet-wakefulness rates while being unable to sustain localized activity. Two additional constraints address this:
-
-1. **Turing instability** (`--turing_weight`): a necessary condition for bump formation, derived analytically from the parameters without any additional simulation.
-2. **Adaptation control** (`--no_adapt`): spike-frequency adaptation can mask whether a bump is truly self-sustaining or merely decaying; disabling it tests robustness under the most permissive conditions for bump stability.
+1. rate + KO + Jacobian terms,
+2. an optional **trace-based Turing bistability loss** computed from a deterministic cue simulation,
+3. optional additional regularizers (spatial uniformity, ACh ratio).
 
 ### 10.2 Parameter Space
 
-The joint search space is `CircuitParams` (~60 parameters) extended with three ring-specific parameters:
+`ring-optimize` searches over `CircuitParams` together with ring-specific parameters:
 
 | Parameter | Symbol | Default bounds | Description |
 |-----------|--------|---------------|-------------|
 | `w_pyr_pyr_inter` | $w_\text{pyr}^\text{inter}$ | [1, 30] | Total inter-node PYR→PYR coupling (row-sum normalized) |
 | `w_pv_global` | $w_\text{PV}^\text{global}$ | [0.5, 20] | Total global PV→PYR inhibition (uniform all-to-all) |
-| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [10°, 60°] | Gaussian width of PYR→PYR connectivity profile |
+| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [10°, 60°] | Gaussian width of PYR→PYR profile |
 
-`n_nodes` is fixed by the user and not optimized.
+`n_nodes` is fixed by CLI and not optimized.
 
 ### 10.3 Loss Function
 
-All modes share the base loss terms:
+Base objective:
 
-$$\mathcal{L}_\text{base} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}} \sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
+$$\mathcal{L}_\text{base} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}}\sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
 
-where $\mathcal{L}_\text{rate}$ is the MSPE between node-averaged ring firing rates and the target rates from quiet wakefulness:
+where
 
-$$\mathcal{L}_\text{rate} = \frac{1}{4} \sum_{X \in \{P,S,V,I\}} \left(\frac{\bar{r}^X - r^X_\text{target}}{r^X_\text{target}}\right)^2$$
+$$\mathcal{L}_\text{rate} = \frac{1}{4} \sum_{X \in \{\text{PYR},\text{SOM},\text{PV},\text{VIP}\}} \left(\frac{\bar r^X - r^X_\text{target}}{r^X_\text{target}}\right)^2$$
 
-The node-averaged rate $\bar{r}^X$ is:
+and
 
-$$\bar{r}^X = \frac{1}{N} \sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}$$
+$$\bar r^X = \frac{1}{N}\sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}.$$
 
-KO conditions (alpha7, alpha5, beta2) are run on single-node by default or on the ring with `--ko_on_ring`.
+KO conditions (alpha7, alpha5, beta2) are evaluated on single-node by default, or on ring with `--ko_on_ring`.
 
-#### Turing instability penalty (optional, `--turing_weight`)
+#### Trace-based Turing bistability loss (optional, `--turing_weight`)
 
-For a ring network to support cue-triggered bump states without generating spontaneous bumps at rest, the network must satisfy a **three-regime bistable attractor condition**. This ensures that:
-- The uniform state is stable at rest (no spontaneous bump nucleation);
-- A stable self-sustained bump fixed point exists in the intermediate firing-rate regime (~20–40 Hz PYR);
-- The transfer function self-limits at cue-driven rates, preventing runaway growth to saturation.
+The current implementation is simulation-based (not analytical). For each candidate:
 
-These three conditions define the full bistable attractor geometry and are expressed via the **corrected Turing instability criterion** for the full 4-population ring network.
+1. Run one deterministic cue simulation (`noise_type="none"`) with cue parameters:
+   - `--turing_cue_amplitude`
+   - `--turing_cue_duration_ms`
+   - `--turing_cue_sigma_deg`
+2. Reconstruct gain traces from recorded rates/adaptation and inter-node currents.
+3. Score rest-vs-delay constraints with margin `--turing_margin`:
+   - rest gain below threshold,
+   - late-delay bump-node rate band (`--turing_bump_min_hz`, `--turing_bump_max_hz`),
+   - late-delay sustain floor on gain,
+   - anti-runaway ceilings (gain/background activity).
 
-**Step 1 — W&W transfer-function derivative.** The Wong-Wang transfer function for population $x$ is:
+Top bump-support nodes are chosen from late-delay PYR activity using `--turing_topk_nodes`; late-delay window size is `--turing_late_delay_ms`.
 
-$$\Phi^x(I) = A_x \cdot \frac{u}{1 - e^{-g_x u}}, \qquad u = c_x (I - \Theta_x)$$
+The combined objective is:
 
-Its derivative with respect to $I$ is:
+$$\mathcal{L} = \mathcal{L}_\text{base} + w_T \cdot \mathcal{L}_\text{Turing,trace} + w_U \cdot \mathcal{L}_\text{uniformity} + w_A \cdot \mathcal{L}_\text{ACh}.$$
 
-$${\Phi^x}'(I) = A_x \cdot c_x \cdot \frac{1 - e^{-g_x u}(1 + g_x u)}{(1 - e^{-g_x u})^2}$$
+#### Deprecated bump mode
 
-evaluated at the steady-state input current $I^*_x$ recovered from the circuit equations at the operating point. The shape parameters $c_x$, $\Theta_x$, $g_x$ are the fixed W&W 2006 constants ($c_e$, $\Theta_e$, $g_e$ for PYR; $c_i$, $\Theta_i$, $g_i$ for PV/SOM/VIP).
-
-**Step 2 — Effective PYR gain.** The divisive PV→PYR inhibition in the PYR input equation reduces the effective PYR gain. Accounting for this local feedback loop:
-
-$$G_\text{eff}(I^*) = \frac{{\Phi'}_\text{PYR}(I^*_\text{PYR})}{1 + g_\text{GABA} \cdot w_{pe} \cdot {\Phi'}_\text{PV}(I^*_\text{PV}) \cdot w_{ep} \cdot {\Phi'}_\text{PYR}(I^*_\text{PYR})}$$
-
-where $w_{pe}$ is the PV→PYR divisive weight, $w_{ep}$ is the PYR→PV weight, and $g_\text{GABA}$ is the GABA scaling factor.
-
-**Step 3 — Corrected Turing gain product.** The uniform state is linearly unstable to spatial (bump-mode, $k=1$) perturbations when:
-
-$$G_\text{eff}(I^*) \cdot w^\text{inter}_\text{pyr} > 1$$
-
-where $w^\text{inter}_\text{pyr}$ is the PYR→PYR inter-node spatial excitation (Mexican-hat Gaussian profile).
-
-The global all-to-all PV→PYR inter-node inhibition does not appear because uniform kernels (zero spatial structure) have zero Fourier coefficient at all spatial modes $k \geq 1$. This kernel only affects the $k=0$ homogeneous mode, which is not part of the Turing criterion for bump formation. Thus the spatial drive is simply $w^\text{inter}_\text{pyr}$.
-
-**Role of SOM and VIP.** SOM and VIP are local-only populations — they have no inter-node connections and therefore do not add new terms to the spatial Jacobian. They are consequently absent from the criterion above. However, they do influence the operating-point currents $I^*_\text{PYR}$ and $I^*_\text{PV}$ through the full 4-population circuit equations. This effect is already correctly accounted for: both $I^*_\text{PYR}$ and $I^*_\text{PV}$ are recovered via the full 4-population fixed-point computation at the fitted firing rates, so SOM and VIP contributions are implicitly included in the derivatives ${\Phi'}_\text{PYR}$ and ${\Phi'}_\text{PV}$.
-
-The desired working-memory regime therefore requires three gain-product crossings:
-
-$$G_\text{eff}(I^*_\text{rest}) \cdot w^\text{inter}_\text{pyr} < 1 \qquad \text{(stable at rest — no spontaneous bump)}$$
-
-$$G_\text{eff}(I^*_\text{bump}) \cdot w^\text{inter}_\text{pyr} > 1 \qquad \text{(bump fixed point exists — self-sustained)}$$
-
-$$G_\text{eff}(I^*_\text{cue}) \cdot w^\text{inter}_\text{pyr} < 1 \qquad \text{(self-limiting at cue — no runaway)}$$
-
-**Computing the three operating points.**
-
-*Rest.* $I^*_\text{PYR,rest}$ and $I^*_\text{PV,rest}$ are evaluated directly from the circuit fixed-point equations at the fitted baseline firing rates (~8 Hz PYR, consistent with Koukouli et al. 2025).
-
-*Bump.* The PYR operating point is **fixed at $r_\text{PYR} = 40$ Hz**, consistent with self-sustained WM delay activity in rodent PFC. $I^*_\text{PYR,bump}$ is found by numerically inverting the PYR transfer function (bisection):
-
-$$\Phi_\text{PYR}(I^*_\text{PYR,bump}) = 40 \text{ Hz}$$
-
-The PV input at the bump is **not** obtained by inverting the PV transfer function; it is evaluated directly from the circuit equation:
-
-$$I^*_\text{PV,bump} = w_{ep}\, r_\text{PYR}^\text{bump} - g_\text{GABA}\bigl(w_{pp}\, r_\text{PV}^\text{rest} + w_{sp}\, r_\text{SOM}^\text{rest}\bigr) - w_{vp}\, r_\text{VIP}^\text{rest} + I_0^\text{PV}$$
-
-where only $r_\text{PYR}$ is set to the bump rate (40 Hz) and all other populations are held at their fitted rest values. No inversion is needed because the PV input is an explicit function of population rates; the only $w_{ep}$ term changes, raising $I^*_\text{PV,bump}$ above its rest value.
-
-*Cue.* The cue operating point is obtained by scaling the PYR external drive by `--turing_cue_scale` (default 0.4):
-
-$$I_{\text{cue}}^{\text{PYR}} = 0.4 \cdot I_0^{\text{PYR}} + I_0^{\text{PYR}}$$
-
-This produces PYR firing rates at the cue-driven level (~50–60 Hz, clamped to 80 Hz max; required by inhibitory feedback, Pfeffer et al. 2013). $I^*_\text{PYR,cue}$ is found by the same bisection as above. $I^*_\text{PV,cue}$ is then evaluated from the same circuit equation with $r_\text{PYR}^\text{cue}$ replacing $r_\text{PYR}^\text{bump}$; because $r_\text{PYR}^\text{cue} > r_\text{PYR}^\text{bump}$, the $w_{ep}$ term is larger, so $I^*_\text{PV,cue} > I^*_\text{PV,bump} > I^*_\text{PV,rest}$.
-
-All operating-point currents ($I^*_{\text{PYR}}$, $I^*_{\text{PV}}$) are recomputed for each regime before evaluating ${\Phi'}_{\text{PYR}}$ and ${\Phi'}_{\text{PV}}$.
-
-These operating points are grounded in the dynamics of the system: rest corresponds to baseline activity in quiet wakefulness; bump corresponds to the target self-sustained bump rate during the working-memory delay; and cue corresponds to the stimulus-driven activity that initiates and drives the bump. No additional simulation is required — all three operating points and their transfer-function derivatives are computed analytically from the current parameter set.
-
-**Penalty.** The three conditions are enforced as a combined soft penalty with safety margin $m$ (default 0.05, `--turing_margin`):
-
-$$\mathcal{L}_\text{rest} = \max\!\left(0,\; G_\text{eff}(I^*_\text{rest}) \cdot w^\text{inter}_\text{pyr} - (1 - m)\right)^2 \qquad \text{(penalise spontaneous bumps at rest)}$$
-
-$$\mathcal{L}_\text{bump} = \max\!\left(0,\; 1 + m - G_\text{eff}(I^*_\text{bump}) \cdot w^\text{inter}_\text{pyr}\right)^2 \qquad \text{(penalise missing bump fixed point at 40 Hz)}$$
-
-$$\mathcal{L}_\text{above} = \max\!\left(0,\; G_\text{eff}(I^*_\text{cue}) \cdot w^\text{inter}_\text{pyr} - (1 - m)\right)^2 \qquad \text{(penalise runaway at cue — ceiling, same form as } \mathcal{L}_\text{rest}\text{)}$$
-
-$$\mathcal{L}_\text{Turing} = \mathcal{L}_\text{rest} + \mathcal{L}_\text{bump} + \mathcal{L}_\text{above}$$
-
-$\mathcal{L}_\text{rest}$ is zero when the network is safely below the Turing threshold at rest; it activates as soon as the gain product approaches 1, pushing the optimizer away from parameter regions that produce spontaneous bumps. $\mathcal{L}_\text{bump}$ is zero when the network is safely above threshold at the self-sustained bump rate (fixed at 40 Hz, Koukouli et al. 2025); it activates when the bump-driven gain is below the threshold, penalising parameter regions where no stable bump fixed point exists. $\mathcal{L}_\text{above}$ is zero when the network is safely below threshold at cue-driven rates (same ceiling form as $\mathcal{L}_\text{rest}$); it activates when the cue-driven gain exceeds the threshold, penalising runaway growth to saturation (Pfeffer et al. 2013).
-
-Diagnostic log line format: `[TURING] gp_rest=X gp_bump=X gp_cue=X L_rest=X L_bump=X L_above=X L_turing=X L_rate=X`
-
-Together, these three terms enforce the full bistable attractor geometry: gain product must cross 1 three times (rest → bump threshold → bump fixed point → cue threshold), creating a self-sustaining but bounded bump state.
-
-Note that satisfying this penalty guarantees the correct **geometry** for bistability — the three operating points properly straddle the Turing threshold — but does not guarantee bump persistence through the full delay period, which additionally depends on adaptation dynamics and noise. Bump persistence is verified empirically via simulation. The corrected three-term criterion properly accounts for PV feedback in the divisive inhibition (via $G_\text{eff}$) and enforces all three regime crossings, making it a more accurate proxy for the true bistable attractor dynamics of the 4-population ring.
-
-#### Adaptation (`--no_adapt`)
-
-When `--no_adapt` is set, $J_\text{adapt,PYR}$ and $J_\text{adapt,SOM}$ are fixed to zero and excluded from the search space. Spike-frequency adaptation introduces a slow negative feedback that can compensate for strong recurrent excitation and mask whether a bump is truly self-sustaining. Fitting without adaptation is a conservative choice: parameters that support a bump without adaptation will also support one in the presence of adaptation (which only helps stability). This mode is useful to establish a baseline that is independent of the adaptation time constants.
-
-#### Summary of modes
-
-| Mode | `ring-optimize` flags | Extra loss terms |
-|------|----------------------|-----------------|
-| 1 — rates only | *(none)* | — |
-| 2 — rates + Turing | `--turing_weight 2.0` | $w_T \cdot \mathcal{L}_\text{Turing}$ |
-| 3 — rates + Turing + no adapt | `--turing_weight 2.0 --no_adapt` | $w_T \cdot \mathcal{L}_\text{Turing}$ |
-| 4 — single-node + no adapt + Turing | `optimize --turing_weight 2.0 --no_adapt` | $w_T \cdot \mathcal{L}_\text{Turing}$ (fixed $w_\text{ref}$) |
-| 5 — rates + bump quality | `--bump_mode` | $w_B \cdot \mathcal{L}_\text{bump}$ |
-
-The full loss for mode 2/3 is:
-
-$$\mathcal{L} = \mathcal{L}_\text{base} + w_T \cdot \mathcal{L}_\text{Turing}$$
-
-The full loss for mode 5 (bump quality) is:
-
-$$\mathcal{L} = \mathcal{L}_\text{base} + w_B \cdot \mathcal{L}_\text{bump}$$
-
-where:
-
-$$\mathcal{L}_\text{bump} = \max\!\left(0,\; A_\text{min} - \langle A \rangle_\text{window}\right)^2$$
-
-$\langle A \rangle_\text{window}$ is the mean population-vector amplitude during a post-stimulus window and $A_\text{min}$ (default 0.3) is the minimum acceptable amplitude. Mode 5 requires running an additional bump simulation per candidate, making it significantly more expensive than modes 2/3.
+`--bump_mode` is deprecated and ignored. Bump constraints are integrated in the trace-based Turing term.
 
 ### 10.4 Computational Cost
 
-Ring simulations are ~10–50× slower than single-node. To stay tractable:
-- `n_trials_ring = 3` (vs 8 for single-node)
-- KO conditions on single-node (same `CircuitParams`, no ring overhead)
-- `n_nodes = 64` recommended during optimization (smaller and faster)
-- The Turing penalty adds no simulation overhead — it is a pure analytical computation from the rest rates already computed in step 1
+Ring optimization remains expensive. Practical defaults:
 
-Each evaluation is roughly: 3 ring sims + 3 single-node KO sims (+ 1 bump sim in mode 5).
+- `n_nodes = 64` during optimization,
+- moderate `n_trials_ring` for stochastic averaging,
+- `ko_on_ring = False` unless strict consistency is required,
+- nonzero `turing_weight` adds one deterministic cue simulation per evaluation.
 
 ### 10.5 Output
 
@@ -577,7 +487,7 @@ ring_optim_output/
 
 These can be passed directly to `ring-run` or `ring-study` via `--params_json` and a manual `--w_pyr_pyr_inter / --w_pv_global / --sigma_pyr_deg` override.
 
-See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full argument reference.
+See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full, up-to-date argument reference.
 
 ---
 
