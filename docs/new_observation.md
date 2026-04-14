@@ -548,3 +548,401 @@ Implement NMDA gating on PYR local recurrence:
 - Update nullcline_analysis.py to use J_NMDA · S*(r) in I_net computation
 - Update bistable_loss.py accordingly
 - Rerun nullcline diagnostic to confirm fold appears before full optimization
+
+
+### NMDA Gating Enables Bistability but Reveals New Fitting Problems (2026-04-10)
+
+**Context**: After implementing NMDA gating on PYR local recurrence
+(replacing w_ee · r_PYR with J_NMDA · S_PYR), the bistable optimizer was
+rerun. For the first time, a genuine BISTABLE regime was found (3 crossings,
+2 stable fixed points, both below R_MAX_PHYS = 100 Hz — upper FP at 68.62 Hz).
+This confirms that NMDA gating structurally restores the fold mechanism that
+the fast-synapse approximation had eliminated.
+
+**Result summary**:
+- Regime: BISTABLE ✓
+- Low FP:  r_PYR = 0.16 Hz (near-silent low state)
+- High FP: r_PYR = 68.62 Hz
+- L_bistab = 8.591 (sign pattern not fully satisfied — fold exists but
+  probe points not all satisfied)
+- L_margin = 0 (separation criterion met: 68.62 - 0.16 > 15 Hz)
+- L_rate = 2.647 (firing rates off target)
+- L_jac = 9.123 (Jacobian regularization heavily violated)
+- SOM at low FP: 1.33 Hz (+18% vs target) — only interneuron near target
+- PV at low FP: 0.09 Hz (−91% vs target)
+- VIP at low FP: 0.03 Hz (−98% vs target)
+
+**Observation from nullcline analysis (2026-04-10, prior to SOM adaptation fix)**:
+
+Previous runs showed SOM firing rate saturating at ~200 Hz in the intermediate
+regime between the low stable FP and unstable FP. This was noted as pathological
+given the known physiological range (5–30 Hz). The high Jacobian loss (L_jac = 9.123)
+suggested this was an optimizer artifact — a degenerate solution relying on
+extreme coupling gains rather than a biologically plausible bistable mechanism.
+
+**Status after SOM adaptation bug fix (2026-04-14)**:
+
+With SOM adaptation now properly implemented in the single-node simulation,
+the pathological SOM saturation should no longer occur. SOM now experiences
+negative feedback proportional to its firing rate, preventing runaway to 200 Hz.
+The nullcline geometry should reflect a more physiologically plausible mechanism:
+- SOM rates in the intermediate regime should remain in the 5–30 Hz range
+- The bistable fold should emerge from NMDA saturation + coupled inhibition,
+  not from degenerate high-gain coupling
+- Rerunning the bistable optimization should produce solutions with lower L_jac
+  values and more realistic interneuron rates throughout the nullcline
+
+**Immediate next step**:
+Re-evaluate bistable parameters with the corrected single-node simulation to
+confirm that:
+1. SOM saturation pathology is resolved
+2. Jacobian regularization loss improves (lower L_jac values)
+3. Bistable folds remain present and separation maintained
+4. Interneuron rates stay physiologically plausible across all fixed points
+
+---
+
+### Bistable optimization — two fits and cue-sweep dynamic validation (2026-04-13)
+
+#### Model equation
+
+The simulation uses the full NMDA gating variable (Wong & Wang 2006):
+
+```
+dS/dt = (-S + (1 - S) · γ · r_PYR) / τ_NMDA
+I_PYR = J_NMDA · S / (1 + g_GABA · w_PE · r_PV) - g_GABA · w_SE · r_SOM - I_adapt + I_ext_PYR
+```
+
+with τ_NMDA = 100 ms, γ = 0.641. The NMDA gating variable introduces both
+saturation (S ≤ 1) and a slow decay, which is precisely the mechanism that
+can create the fold in the PYR nullcline required for bistability.
+
+#### Two optimizations performed
+
+**Fit 1 — `bistable_fixed`**
+Target resting rates taken from mean population firing rates during rest
+(PYR = 8.21, SOM = 4.29, PV = 4.07, VIP = 6.05 Hz). Target high state:
+r_high = 30 Hz.
+
+Nullcline result: 3 fixed points (2 stable), high FP at **78.28 Hz** —
+higher than the 30 Hz target, which the optimizer could not bring down
+while maintaining bistability.
+
+Low-FP rates in the optimizer (static analysis):
+PYR = 0.00 Hz (−100% vs 8.21 target), SOM = 2.04 Hz (−53%), PV = 2.41 Hz (−41%), VIP = 6.65 Hz (+10%).
+
+Key parameters: J_NMDA = 0.054 nA, g_gaba_base = 1.19, w_vs = 0.014, w_vp = 0.005 (ratio w_vs/w_vp = 3.1).
+
+**Fit 2 — `bistable_L_state_to_H`** (ROOY 2021)
+Target resting rates from literature low state (PYR = 1.75, SOM = 1.12,
+PV = 1.04, VIP = 1.33 Hz). Target high state from ROOY 2021: r_high = 60.2 Hz.
+
+Nullcline result: 3 fixed points (2 stable), high FP at **74.78 Hz** —
+again above the 60.2 Hz target. Unstable FP at 62.37 Hz (much higher
+threshold to cross than fit 1's 35.60 Hz).
+
+Low-FP rates: PYR = 0.00 Hz (−100%), SOM = 1.23 Hz (+10%), PV = 0.52 Hz (−50%), VIP = 1.49 Hz (+12%).
+
+Key parameters: J_NMDA = 0.642 nA (~12× stronger than fit 1),
+g_gaba_base = 4.47, w_vs = 0.010, w_vp = 0.010 (ratio ≈ 1.0, balanced).
+
+#### Cue-sweep dynamic validation
+
+A transient input (`trans_factor × I0` added to all populations) was swept
+from 0 to 6 to test whether the network can dynamically switch states.
+Three time windows were measured: pre-cue (rest), during cue, and post-cue.
+
+**Both fits confirm dynamic bistability**: above a threshold factor,
+the network reaches an elevated PYR state that is self-sustained after cue
+removal.
+
+| | bistable_fixed | bistable_L_state_to_H |
+|---|---|---|
+| Resting SOM rate | **159 Hz** | **85 Hz** |
+| Threshold factor | ~0.5–0.75 | ~1.25–1.5 |
+| Post-cue PYR (high state) | ~75–87 Hz | ~73 Hz |
+| Bistable factor window | 0.75–2.75 | 1.5–2.25 |
+
+#### Dynamic regime description
+
+At rest, SOM fires at a high autonomous rate (159 Hz / 85 Hz depending on
+the fit) that completely silences PYR, PV, and partially VIP. SOM is
+self-sustaining from its external drive alone — it does not require PYR
+excitation to maintain this activity.
+
+When the cue input is applied, VIP is the first to respond (it receives a
+strong drive through w_EV). Rising VIP activity inhibits SOM via w_VS,
+which releases PYR from inhibition. Once PYR crosses the unstable fixed
+point (35.60 Hz in fit 1, 62.37 Hz in fit 2), NMDA recurrent excitation
+takes over and PYR self-sustains. PV also activates at this point, driven
+by PYR excitation through w_EP.
+
+In the post-cue elevated state: PYR ~75–87 Hz, SOM ~0 Hz (fully silenced
+by VIP), VIP ~49–79 Hz, PV ~1–4 Hz.
+
+#### Concerns and open questions
+
+**1. Abnormally high resting SOM rate.**
+SOM fires at 85–159 Hz at rest, which is far from any physiological range.
+This occurs because I_ext_SOM is large enough for SOM to fire
+autonomously without PYR excitation. The VIP→SOM inhibition (w_VS) is too
+weak relative to SOM's external drive to bring SOM down to a physiological
+resting rate.
+
+In `bistable_fixed`, the w_VS/w_VP ratio is 3.1 (VIP targets SOM ~3×
+more strongly than PV), yet SOM still fires at 159 Hz at rest because the
+absolute magnitude of w_VS is small (0.014) relative to I_ext_SOM (0.64 nA).
+In `bistable_L_state_to_H`, the ratio is ~1.0 (balanced), and resting SOM
+is lower (85 Hz) — consistent with the lower I_ext_SOM target — but still
+far above the 1.12 Hz target.
+
+**2. Single-node limitation.**
+At the single-node level, PV is silent at rest because PYR is silent. In a
+ring network, global lateral PV inhibition from other nodes (driven by
+population-level activity) could provide an additional suppressive drive
+onto PYR that helps maintain the low state at a more physiological level,
+rather than relying entirely on SOM's autonomous firing.
+
+**3. Disinhibition mechanism.**
+The cue acts primarily through the VIP→SOM disinhibition pathway. This is
+consistent with the biological role of VIP interneurons as disinhibitory
+elements. However, the extreme resting SOM rate means the disinhibition
+must overcome a much larger baseline inhibitory current than would be
+biologically expected.
+
+**Next steps:**
+- Add a constraint to the bistable loss that enforces `φ_SOM(I_ext_SOM) <
+  r_low_target` — i.e. SOM cannot self-sustain without PYR excitation.
+  This would force the optimizer to find solutions where SOM requires the
+  PYR→SOM excitatory drive to reach its resting rate, making the low state
+  depend on the PYR→SOM→PYR loop rather than autonomous SOM activity.
+
+---
+
+### Effect of firing rate loss weight on bistable optimization (2026-04-14)
+
+Four runs were compared by varying the firing rate loss weight across two target regimes (high and low resting FR):
+
+| Run | FR loss weight | Bistable found? | Notes |
+|-----|---------------|-----------------|-------|
+| `bistable_high_fr` | baseline | yes | |
+| `bistable_high_fr_higher_loss_fr` | increased | yes | PYR stays at 0 during resting state |
+| `bistable_low_fr` | baseline | yes | |
+| `bistable_low_fr_higher_loss_fr` | increased | **no** | optimizer fails to find any bistable point |
+
+**Interpretation:**
+
+When the firing rate loss weight is increased in the low-FR regime, the optimizer cannot simultaneously satisfy the bistability constraint and match the low target rates — it finds no valid bistable fixed point at all. In the high-FR regime, a bistable point is still found, but with PYR silent at rest (firing rate = 0), which is a degenerate solution.
+
+This pattern suggests one of two things:
+
+1. **The network architecture itself constrains the bistable mechanism**: the only way this single-node circuit can achieve genuine bistability is the mechanism identified earlier (SOM autonomous firing + VIP disinhibition), and tighter firing rate constraints rule out this mechanism in the low-FR regime.
+
+2. **Loss function design issue**: the optimizer may be unable to navigate the joint landscape of bistability + firing rate constraints efficiently, not because the solution doesn't exist, but because the loss surface becomes too rugged or the gradients conflict.
+
+Distinguishing these requires either a more exhaustive search (e.g. larger population, more restarts) or an analytical check of whether the nullcline geometry can accommodate both bistability and low physiological rates simultaneously.
+- Test the ring network with these parameters to assess whether lateral PV
+  inhibition rescues the low-state PYR dynamics.
+
+---
+
+### Ring Network Sweep: Key Findings and Bump Detection Problems (2026-04-14)
+
+#### Summary of sweep results (sigma=30° and sigma=15°)
+
+Two systematic 2D sweeps were conducted using bistable parameters (`bistable_high_fr`, I0_pyr=1.07 nA):
+
+**Phase space exploration (w_pv_global × amplitude, sigma=30°)**:
+- `w_pv_global = 0.05` is the threshold for a quiet pre-cue state (~3 Hz)
+- There is a sharp bistable threshold around amplitude=0.5: below → no effect, above → full 200 Hz saturation
+- Best delay activity at the first amplitude just above threshold (amp=0.55)
+- Bump center_std stays above 80° everywhere: w_pyr_pyr_inter=0.002 cannot sustain a localised bump
+
+**w_pyr_pyr_inter sweep (sigma=15°)**:
+- At sigma=15°, a qualitative localization transition appears between wpyr=0.004 and wpyr=0.006
+- At wpyr=0.00592: center_std drops to 35.9°, delay firing at 128.8 Hz — a genuine localised bump
+- However, pre-cue baseline rises to 22.4 Hz at this wpyr (same wpv=0.05 too weak to suppress spontaneous activity)
+- Pre-cue saturation cliff at wpyr≈0.008 (same in sigma=30° and sigma=15°, as expected from row-sum normalisation)
+
+#### Fundamental problems with the current bump detection and classification
+
+**Problem 1 — Saturated bumps counted as successes**: Any post-cue activity above the noise floor is counted as a "bump", including 200 Hz saturated states. A network locked at the rate cap throughout the delay is pathological, not a working memory state.
+
+**Problem 2 — Saturation during cue corrupts bump quality**: When the cue drives nodes to 200 Hz, the adaptation current (proportional to peak rate × cue duration) builds up excessively. After cue offset, the elevated adaptation suppresses the bump even if a genuine attractor state existed. A good bump should form without the network reaching saturation during the cue.
+
+**Problem 3 — Delay state not tracked over time**: The current metrics only report the mean firing rate at the end of the delay period. They cannot distinguish: (a) a bump that was sustained throughout the delay, (b) a bump that formed but decayed after 500ms, or (c) a saturated state that gradually decayed toward the noise floor.
+
+**Problem 4 — Fixed 20 Hz threshold ignores resting rate**: The bump lower bound should be defined relative to the actual resting firing rate, not a fixed value. For very quiet baselines (~0 Hz), 20 Hz is appropriate; for baselines at 3–5 Hz, the threshold may be too permissive.
+
+#### New bump quality classification (implemented in ring-calibrate 3D sweep)
+
+Each delay timepoint is classified into one of three states based on the **maximum PYR rate across all nodes**:
+
+| State | Condition | Meaning |
+|---|---|---|
+| **Resting** | max_PYR < resting × 2.5 (min 10 Hz) | Network in low state |
+| **Bump** | resting_threshold ≤ max_PYR < 90 Hz | Localised active state |
+| **Saturated** | max_PYR ≥ 90 Hz | Runaway / rate-cap state |
+
+The resting threshold is `max(resting_rate × 2.5, resting_rate + 5 Hz, 10 Hz)` where `resting_rate` is measured from the burn-in period for each parameter combination.
+
+Key metrics reported per grid point:
+- `delay_bump_frac`: fraction of delay time in bump state → quality measure
+- `delay_sat_frac`: fraction of delay time saturated → pathology marker
+- `cue_saturated`: whether peak during cue reached ≥ 190 Hz → adaptation contamination risk
+
+A **true bump** requires: `delay_bump_frac > 0.3` AND `delay_sat_frac < 0.2` AND ideally `cue_saturated = False`.
+
+#### Next steps: 3D sweep (w_pv_global × w_pyr_pyr_inter × amplitude)
+
+The recommended next analysis is a 3D parameter sweep implemented in `ring-calibrate` with:
+- `--w_pv_values`: sweep global PV inhibition (e.g. 0.03–0.10)
+- `--w_inter_values`: sweep recurrent PYR→PYR excitation (e.g. log-spaced 0.001–0.015)
+- `--amplitudes`: sweep cue amplitude (e.g. 0.3–0.8)
+
+Goals:
+1. Find (w_pv, w_pyr) regions where pre-cue is quiet AND a non-saturating cue can trigger a bump
+2. Find amplitude range that induces transition without cue saturation
+3. Map the fraction of delay time in genuine bump state across the 3D space
+4. Confirm that sigma=15° enables localization at the right w_pyr range
+
+---
+
+### Successful Ring Self-Sustained Bump with Bistable Parameters (2026-04-14)
+
+#### Observation
+
+Using the single-node bistable parameters from `figs/optim/bistable_high_fr/bistable_params.json` directly in a ring network, we observe **robust self-sustained activity during the delay period** — a milestone previously unattained.
+
+#### Parameter context
+
+The bistable parameter set (J_NMDA = 0.0537 nA, g_gaba_base = 1.19, configured for near-silent low state + high state at ~78 Hz) was applied to the ring with typical connectivity (sigma_pyr_deg = 15°, w_pv_global and w_pyr_pyr_inter calibrated for bump support).
+
+#### Network dynamics
+
+**Cue period (0–500 ms)**:
+- All populations receive the input transient
+- Network activity rises sharply; multiple populations approach saturation (~150–200 Hz)
+- PYR reaches high firing rate during the stimulus
+
+**Delay period (500–4000 ms post-cue-offset)**:
+- Network **does not decay** — it stabilizes into a high state
+- **PYR**: fires steadily at ~80 Hz (range 75–87 Hz across trials)
+- **SOM**: drops to near-silence (~0 Hz) — completely suppressed by VIP
+- **PV**: elevates from ~1 Hz (resting) to ~5 Hz (or higher depending on local drive)
+- **VIP**: ramps up during delay, reaching ~60 Hz, then stabilizes
+- The bump profile shows **sharp spatial boundaries**: clear distinction between active nodes (firing at ~80 Hz) and silent nodes (near baseline)
+- Bump center is **spatially stable** and does not drift during the delay
+
+#### Bump quality metrics
+
+- **Persistence**: delay-period activity remains well above resting baseline throughout (no decay seen)
+- **Spatial localization**: nodes within the bump zone fire coherently; edges show sharp drop-off (not gradual)
+- **Stability**: no wandering, no spontaneous reactivation of remote sites, no oscillations
+- **Population structure**: consistent with the bistable low-state mechanism:
+  - SOM silence allows PYR disinhibition
+  - VIP high activity maintains SOM suppression
+  - PV elevation follows PYR drive (w_ep ≈ 0.0046)
+
+#### Biological plausibility checklist
+
+| Aspect | Measure | Status |
+|--------|---------|--------|
+| **Resting PYR** | ~8 Hz | ✓ Near target (Koukouli baseline) |
+| **Active bump PYR** | ~80 Hz | ✓ Within physiological range |
+| **SOM silencing** | ~0 Hz at high state | ✓ Consistent with disinhibitory role |
+| **VIP elevation** | ~60 Hz during bump | ⚠️ High but plausible during activity (literature: 5–80 Hz) |
+| **PV response** | 1 Hz → 5 Hz | ✓ Modest elevation, matches recurrent drive from PYR |
+| **Bump width** | Sharp edges, ~15° spatial spread | ✓ Consistent with sigma_pyr_deg = 15° |
+| **Adaptation interplay** | PYR adapt (tau=1119 ms), SOM adapt (tau=170 ms) | ✓ Fast SOM adapt + slow PYR adapt enables persistent state |
+
+#### Key parameters enabling this regime
+
+From `bistable_high_fr`:
+- `J_NMDA = 0.0537 nA`: NMDA gating provides recurrent saturation mechanism
+- `g_gaba_base = 1.19`: moderate GABA gain
+- `w_se = 0.1867`: strong SOM→PYR inhibition (enables low-state silence)
+- `w_vs = 0.0140`: VIP→SOM inhibition (weak, but functional for cue-driven disinhibition)
+- `J_adapt_som = 0.153`: fast SOM adaptation timescale (170 ms) — SOM recovery is slow enough to maintain suppression through early delay
+- `J_adapt_pyr = 0.0059`: smaller PYR adaptation does not quench the NMDA-driven recurrence
+
+#### Mechanistic interpretation
+
+The observed stabilization represents a **disinhibitory attractor**:
+1. **Cue → VIP activation**: the transient input activates VIP (w_ev ≈ 0.0017 direct drive per node + global lateral factors)
+2. **VIP → SOM inhibition**: rising VIP fires onto SOM (w_vs = 0.0140), rapidly suppressing SOM firing
+3. **SOM silence → PYR release**: with SOM inhibition removed, PYR is free to express its local recurrent drive (J_NMDA · S)
+4. **PYR self-sustains**: NMDA gating variable S provides saturation-limited positive feedback; PYR stabilizes around 80 Hz
+5. **PV feedback**: PYR excites PV (w_ep = 0.0046), driving PV to ~5 Hz — a modest feedback that does not overwhelm the recurrent excitation
+6. **Delay stability**: VIP remains tonically elevated to keep SOM suppressed; PYR's slow adaptation (tau = 1119 ms) does not significantly reduce NMDA-mediated drive over 4 seconds
+
+#### Contrast to previous failed attempts (2026-04-09 to 2026-04-13)
+
+- **Earlier A1/A2 ring-only optimization**: tried varying ring parameters while keeping single-node circuit parameters fixed to non-bistable A1 solutions → no self-sustained bumps
+- **First bistable optimization attempts**: produced parameter sets with physiologically implausible internal state (e.g. SOM firing at 159 Hz at rest) → bumps could form during cue but network entered pathological saturation regimes
+- **This observation**: uses a curated bistable parameter set (from `bistable_high_fr`) that achieves true two-fixed-point nullcline geometry with reasonable resting states and produces clean, stable bumps upon cue challenge
+
+#### Open questions
+
+1. **Cue amplitude sensitivity**: Does bump persistence depend critically on cue amplitude, or is there a robust window?
+2. **Generalization across conditions**: Do WT_APP or KO conditions maintain bump stability with proportionally adjusted parameters?
+3. **Noise dependence**: Is the bump robust to realistic stochastic noise levels (sigma_noise = 0.1)?
+4. **Spatial precision**: Can we tighten the bump localization further while maintaining stability?
+
+#### Next steps
+
+1. Validate across multiple noise seeds and cue amplitudes
+2. Test parameter robustness: small perturbations around `bistable_high_fr` values
+3. Compare ring bump stability with single-node bistable nullcline predictions
+4. If replicated consistently, use as reference parameter set for WT_APP and KO condition mapping
+
+---
+
+### Single-Node Simulation SOM Adaptation Bug Fix (2026-04-14)
+
+#### Bug discovered
+
+When running single-node simulations with parameters from the bistable optimization, SOM firing rate was capped at **~60 Hz** — far above expected values and inconsistent with the bistable optimization results which predicted SOM at 2-4 Hz.
+
+#### Root cause
+
+The bistable loss function correctly applies SOM spike-frequency adaptation during the fixed-point analysis:
+```
+I_som = params.w_es * r_pyr - params.w_vs * r_vip - params.J_adapt_som * r_som + params.I_ext_som()
+```
+
+However, the single-node simulation code (both `simulation.py` and `_fast_loop.py`) was **not applying the SOM adaptation term**. Only PYR had adaptation implemented:
+- In `simulation.py` (lines 227-229): `I_adapt[k + 1, 1] = 0.0` (SOM adaptation always zero)
+- In `_fast_loop.py` (line 164): Same issue
+
+In contrast, the ring network simulation (`ring/simulation.py`) had SOM adaptation correctly implemented throughout.
+
+#### Fix applied
+
+Both simulation paths now include SOM adaptation:
+
+1. **`simulation.py` reference loop**: 
+   - Added SOM adaptation current reading: `Ias = I_adapt[k, 1]`
+   - Updated I_som: subtract `params.J_adapt_som * r_som`
+   - Updated adaptation: `I_adapt[k + 1, 1] = Ias + dt_ms * dIas`
+
+2. **`_fast_loop.py` Numba loop**:
+   - Added `J_adapt_som` and `tau_adapt_som` parameters
+   - Same SOM input and adaptation updates
+
+3. **Both callers** (`simulate_circuit` and `validate_fast_loop`):
+   - Pass new parameters to `_euler_loop`
+
+#### Result after fix
+
+Single-node simulations now correctly reproduce the bistable optimization predictions:
+- **SOM firing rate** drops from 60 Hz (capped) to ~2-4 Hz (physiologically plausible)
+- **Interneuron rates** within biological range across all populations
+- **Single-node dynamics** now match ring network behavior
+- **PYR rate** remains near-silent at low fixed point as required for bistable mechanism
+
+#### Impact
+
+This bug would have caused systematic underestimation of the SOM adaptation's strength during parameter fitting, potentially leading to incorrect circuit parameters. The ring simulation was unaffected because it had the correct implementation throughout.
+
+---

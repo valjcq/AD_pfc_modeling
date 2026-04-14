@@ -29,7 +29,8 @@ class SingleNodeCircuit:
     def __init__(self, params_dict):
         """Initialize from a CircuitParams dictionary."""
         # Synaptic weights
-        self.w_ee = params_dict.get('w_ee', 0.0)
+        # J_NMDA (NMDA recurrent, replaces w_ee); fallback to w_ee for old JSON compatibility
+        self.J_NMDA = params_dict.get('J_NMDA', params_dict.get('w_ee', 0.0))
         self.w_ep = params_dict.get('w_ep', 0.0)
         self.w_pe = params_dict.get('w_pe', 0.0)
         self.w_pp = params_dict.get('w_pp', 0.0)
@@ -177,9 +178,12 @@ class SingleNodeCircuit:
         return r_som, r_pv, r_vip
 
     def pyr_input_current(self, r_pyr, r_som, r_pv):
-        """Compute net PYR input current (DIVISIVE inhibition from PV)."""
+        """Compute net PYR input current (DIVISIVE inhibition from PV) with NMDA gating."""
         g_GABA = self.get_g_GABA()
-        I_pyr = (self.w_ee * r_pyr / (1.0 + g_GABA * self.w_pe * r_pv)
+        # NMDA gating: use steady-state formula S* for fixed-point analysis
+        TAU_NMDA_MS, GAMMA_NMDA = 100.0, 0.641
+        S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
+        I_pyr = (self.J_NMDA * S_star / (1.0 + g_GABA * self.w_pe * r_pv)
                  - g_GABA * self.w_se * r_som
                  - self.J_adapt_pyr * r_pyr
                  + self.I0_pyr)
@@ -270,10 +274,12 @@ class SingleNodeCircuit:
 
         Returns:
             dPhi_dr: slope of transfer function at PYR operating point
-            effective_gain_ee: w_ee / (1 + g_GABA * w_pe * r_pv)
+            effective_gain_ee: J_NMDA * dS*/dr / (1 + g_GABA * w_pe * r_pv) [NMDA saturation]
             adaptation_reduction: J_adapt_pyr
             loop_gain: effective gain * dPhi/dr
         """
+        TAU_NMDA_MS, GAMMA_NMDA = 100.0, 0.641
+
         dPhi_dr = np.zeros_like(r_pyr_sweep)
         effective_gain_ee = np.zeros_like(r_pyr_sweep)
         adaptation_reduction = self.J_adapt_pyr * np.ones_like(r_pyr_sweep)
@@ -293,9 +299,12 @@ class SingleNodeCircuit:
 
             dPhi_dI = (phi_plus - phi_here) / dr
 
-            # dI/dr_pyr at this operating point (accounts for divisive inhibition)
+            # dI/dr_pyr at this operating point (accounts for NMDA saturation and divisive inhibition)
             g_GABA = self.get_g_GABA()
-            dI_dr = self.w_ee / (1.0 + g_GABA * self.w_pe * r_pv)
+            # NMDA saturation derivative: dS*/dr
+            dSdr = GAMMA_NMDA * TAU_NMDA_MS / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS) ** 2
+            # Total effective gain with NMDA gating
+            dI_dr = self.J_NMDA * dSdr / (1.0 + g_GABA * self.w_pe * r_pv)
 
             dPhi_dr[i] = dPhi_dI * dI_dr
             effective_gain_ee[i] = dI_dr
@@ -308,7 +317,9 @@ class SingleNodeCircuit:
 def print_param_summary(params_dict):
     """Print a summary of key loaded parameters."""
     print("\nKey parameters:")
-    print(f"  Recurrent excitation: w_ee={params_dict.get('w_ee', 0):.4f}")
+    # Use J_NMDA if present, else fall back to w_ee for old JSON compatibility
+    J_NMDA_val = params_dict.get('J_NMDA', params_dict.get('w_ee', 0))
+    print(f"  Recurrent excitation: J_NMDA={J_NMDA_val:.4f} nA (NMDA gating, tau=100ms, gamma=0.641)")
     print(f"  Feedback inhibition: w_pe={params_dict.get('w_pe', 0):.4f}, w_ep={params_dict.get('w_ep', 0):.4f}")
     print(f"  Inhibitory recurrence: w_pp={params_dict.get('w_pp', 0):.4f}, w_sp={params_dict.get('w_sp', 0):.4f}")
     print(f"  Disinhibition: w_vs={params_dict.get('w_vs', 0):.4f}, w_vp={params_dict.get('w_vp', 0):.4f}")
@@ -325,7 +336,7 @@ def print_param_summary(params_dict):
           f"I0_vip={params_dict.get('I0_vip', 0):.4f}")
 
 
-def plot_single_condition(circuit, args, params_stem, condition):
+def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path(".")):
     """Plot 3-panel nullcline analysis for a single condition."""
     # Compute nullcline with extended sweep to [0, 250] Hz to capture all stable FPs
     r_pyr_sweep = np.linspace(0, 250, 1500)
@@ -390,8 +401,14 @@ def plot_single_condition(circuit, args, params_stem, condition):
         ax.plot(r_fp, phi_fp, 'o', color='red', markersize=10, fillstyle='none', markeredgewidth=2.5,
                label='Unstable fixed point' if r_fp == unstable_fps[0][0] else '')
 
-    ax.set_xlim(0, 260)
-    ax.set_ylim(0, 260)
+    # Set x-axis limit to extend slightly beyond the rightmost fixed point
+    if fixed_points:
+        max_fp = max([r for r, _ in fixed_points])
+        x_limit = max_fp * 1.1  # Extend 10% beyond the rightmost fixed point
+    else:
+        x_limit = 260
+    ax.set_xlim(0, x_limit)
+    ax.set_ylim(0, max(x_limit, 260))
     ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
     ax.set_ylabel('Phi_PYR(I_net) (Hz)', fontsize=11, fontweight='bold')
     ax.set_title(f'PYR Nullcline — {condition}', fontsize=12, fontweight='bold')
@@ -411,7 +428,7 @@ def plot_single_condition(circuit, args, params_stem, condition):
     for r_fp, _ in fixed_points:
         ax.axvline(r_fp, color='gray', linestyle=':', alpha=0.4, linewidth=1.5)
 
-    ax.set_xlim(0, 120)
+    ax.set_xlim(0, x_limit)
     ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
     ax.set_ylabel('Interneuron rate (Hz)', fontsize=11, fontweight='bold')
     ax.set_title('Interneuron Steady States', fontsize=12, fontweight='bold')
@@ -429,7 +446,7 @@ def plot_single_condition(circuit, args, params_stem, condition):
     for r_fp, _ in fixed_points:
         ax.axvline(r_fp, color='gray', linestyle=':', alpha=0.4, linewidth=1.5)
 
-    ax.set_xlim(0, 120)
+    ax.set_xlim(0, x_limit)
     ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
     ax.set_ylabel('Loop gain', fontsize=11, fontweight='bold')
     ax.set_title('Effective Gain (>1 → bistability)', fontsize=12, fontweight='bold')
@@ -437,14 +454,15 @@ def plot_single_condition(circuit, args, params_stem, condition):
     ax.legend(fontsize=9)
 
     fig.suptitle(f'Single-Node Nullcline Analysis — {params_stem}',
-                fontsize=14, fontweight='bold', y=1.00)
-    fig.tight_layout()
-    fig.savefig(f'nullcline_{condition}_{params_stem}.png', dpi=150, bbox_inches='tight')
-    print(f"Saved: nullcline_{condition}_{params_stem}.png")
+                fontsize=14, fontweight='bold')
+    fig.subplots_adjust(top=0.93, left=0.08, right=0.98, wspace=0.35)
+    out = params_dir / f'nullcline_{condition}_{params_stem}.png'
+    fig.savefig(out, dpi=150)
+    print(f"Saved: {out}")
     plt.show()
 
 
-def plot_all_conditions(params_dict, params_stem):
+def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
     """Plot PYR nullclines for all 4 conditions on one figure."""
     conditions = ['WT', 'alpha7KO', 'beta2KO', 'alpha5KO']
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -496,8 +514,14 @@ def plot_all_conditions(params_dict, params_stem):
             phi_fp = circuit.transfer_function(I_pyr_fp, circuit.Theta_pyr, circuit.alpha_pyr, circuit.g_e)
             ax.plot(r_fp, phi_fp, 'o', color='red', markersize=9, fillstyle='none', markeredgewidth=2)
 
-        ax.set_xlim(0, 120)
-        ax.set_ylim(0, 120)
+        # Set x-axis limit to extend slightly beyond the rightmost fixed point
+        if fixed_points:
+            max_fp = max([r for r, _ in fixed_points])
+            x_limit = max_fp * 1.1  # Extend 10% beyond the rightmost fixed point
+        else:
+            x_limit = 120
+        ax.set_xlim(0, x_limit)
+        ax.set_ylim(0, max(x_limit, 120))
         ax.set_xlabel('r_PYR (Hz)', fontsize=10)
         ax.set_ylabel('Phi_PYR(I_net) (Hz)', fontsize=10)
         ax.set_title(f'{cond} — {regime}', fontsize=11, fontweight='bold')
@@ -509,9 +533,10 @@ def plot_all_conditions(params_dict, params_stem):
 
     fig.suptitle(f'PYR Nullcline — All Conditions — {params_stem}',
                 fontsize=14, fontweight='bold')
-    fig.tight_layout()
-    fig.savefig(f'nullcline_all_conditions_{params_stem}.png', dpi=150, bbox_inches='tight')
-    print(f"\nSaved: nullcline_all_conditions_{params_stem}.png")
+    fig.subplots_adjust(top=0.94, left=0.1, right=0.95, hspace=0.4, wspace=0.3)
+    out = params_dir / f'nullcline_all_conditions_{params_stem}.png'
+    fig.savefig(out, dpi=150)
+    print(f"\nSaved: {out}")
     plt.show()
 
 
@@ -544,6 +569,7 @@ Examples:
         params_dict = json.load(f)
 
     params_stem = params_path.stem
+    params_dir = params_path.parent
 
     print(f"{'='*60}")
     print(f"Loaded: {args.params_json}")
@@ -551,11 +577,11 @@ Examples:
     print(f"{'='*60}")
 
     if args.all_conditions:
-        plot_all_conditions(params_dict, params_stem)
+        plot_all_conditions(params_dict, params_stem, params_dir)
     else:
         circuit = SingleNodeCircuit(params_dict)
         circuit.set_condition(args.condition)
-        plot_single_condition(circuit, args, params_stem, args.condition)
+        plot_single_condition(circuit, args, params_stem, args.condition, params_dir)
 
 
 if __name__ == '__main__':

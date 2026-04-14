@@ -31,6 +31,7 @@ from tqdm import tqdm
 
 from ..params import CircuitParams, ParamBound, default_bounds
 from ..loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty, transfer_function_slope
+from ..constants import GAMMA_NMDA, TAU_NMDA_MS
 from ..optimization import (
     KOMeans,
     _build_optimizer,
@@ -360,8 +361,10 @@ def turing_trace_bistability_loss(
 
     ggaba = params.g_gaba()
     denom = 1.0 + ggaba * params.w_pe * r_pv
+    # NMDA gating: use steady-state formula S* for reconstruction from recorded rates
+    S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
     I_pyr = (
-        (params.w_ee * r_pyr) / np.maximum(denom, 1e-12)
+        (params.J_NMDA * S_star) / np.maximum(denom, 1e-12)
         + I_pyr_inter
         - ggaba * I_pv_inter
         - ggaba * params.w_se * r_som
@@ -916,6 +919,7 @@ def nevergrad_optimize_ring(
     freeze: Optional[set[str]] = None,
     early_stop_loss: Optional[float] = 1e-4,
     plateau_patience: int = 500,
+    de_fraction: float = 0.25,
     log_file: Optional[str] = None,
     log_interval: int = 50,
     save_output_dir: Optional[str] = None,
@@ -961,7 +965,9 @@ def nevergrad_optimize_ring(
         optimizer: 'de', 'cma', 'chaining', or 'auto'
         freeze: Set of CircuitParams field names to freeze during optimization
         early_stop_loss: Stop if loss falls below this threshold
-        plateau_patience: Stop if no improvement for this many steps
+        plateau_patience: Stop if no improvement for this many steps (0 = disable)
+        de_fraction: Fraction of budget for DE phase in chaining mode (default: 0.25).
+            Computed as: de_phase_end = max(500, min(int(budget * de_fraction), 10000))
         log_file: Path to JSONL log file
         log_interval: Log every N steps
         save_output_dir: Directory to save best circuit + ring params during optimization
@@ -1002,20 +1008,33 @@ def nevergrad_optimize_ring(
         else ""
     )
     mode_str = ("Mode 2 (legacy bump term enabled)" if bump_target is not None else "Mode 1 (rates only)") + turing_str
+
+    # Compute DE phase length for chaining mode (needed for print statements below)
+    if optimizer == "chaining":
+        de_phase_end = max(500, min(int(n_samples * de_fraction), 10000))
+    else:
+        de_phase_end = 0  # No DE phase for non-chaining optimizers
+
     print(f"Ring joint optimization — {mode_str}")
     if optimizer == "chaining":
-        print(f"Optimizer: {optimizer} (DE → Nelder-Mead at step 5000)")
+        print(f"Optimizer: {optimizer} (DE for {de_phase_end} steps → Nelder-Mead for {n_samples - de_phase_end} steps)")
     else:
         print(f"Optimizer: {optimizer}")
     print(f"Ring trials per eval: {ring_cfg.n_trials_ring}")
     print("KO conditions on: ring")
-    print(f"Plateau patience: {plateau_patience} steps (switching to Nelder-Mead at step 5000)")
+    if optimizer == "chaining":
+        print(f"Plateau patience: {plateau_patience} steps (plateau guard starts after step {de_phase_end})")
+    else:
+        print(f"Plateau patience: {plateau_patience} steps")
 
     # For dynamic chaining: track if we've switched and current optimizer
     chaining_active = optimizer == "chaining"
     optimizer_switched = False
     current_ng_optimizer = ng_optimizer
     current_optimizer_name = "DE" if chaining_active else optimizer
+
+    # Plateau guard: prevent plateau from triggering during DE phase
+    plateau_start_step = de_phase_end + 1
 
     best: list[RingCandidate] = []
     steps_since_improvement = 0
@@ -1077,11 +1096,11 @@ def nevergrad_optimize_ring(
                     _save_ring_candidate(save_output_dir, best[0])
                 if log_file and best:
                     _log_ring_candidate(log_file, step, best[0], target)
-            else:
+            elif step >= plateau_start_step:
                 steps_since_improvement += 1
 
-            # Chaining: switch to Nelder-Mead after 5000 steps
-            if chaining_active and not optimizer_switched and step == 5000:
+            # Chaining: switch to Nelder-Mead after de_phase_end steps
+            if chaining_active and not optimizer_switched and step == de_phase_end:
                 remaining_budget = n_samples - step
                 if remaining_budget > 0:
                     current_ng_optimizer = ng.optimizers.NelderMead(

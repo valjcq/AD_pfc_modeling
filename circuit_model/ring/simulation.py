@@ -18,6 +18,7 @@ import numpy as np
 from ..params import CircuitParams
 from ..transfer import phi_wong_wang
 from ..simulation import NoiseType
+from ..constants import GAMMA_NMDA, TAU_NMDA_MS
 from ._fast_ring_loop import (
     _ring_euler_loop,
     NUMBA_AVAILABLE as RING_NUMBA_AVAILABLE,
@@ -209,6 +210,7 @@ def simulate_ring(
     r_curr = np.zeros((n_nodes, 4), dtype=float)
     Iap_curr = np.zeros(n_nodes, dtype=float)  # PYR adaptation
     Ias_curr = np.zeros(n_nodes, dtype=float)  # SOM adaptation
+    S_pyr = np.zeros(n_nodes, dtype=float)     # NMDA gating variable
 
     # Set initial conditions
     if r0 is None:
@@ -225,6 +227,10 @@ def simulate_ring(
             raise ValueError(f"I_adapt0 must have shape ({n_nodes}, 2)")
         Iap_curr[:] = I_adapt0[:, 0]
         Ias_curr[:] = I_adapt0[:, 1]
+
+    # Initialize NMDA gating from initial PYR rates
+    S_pyr = (GAMMA_NMDA * r_curr[:, 0] * TAU_NMDA_MS) / \
+            (1.0 + GAMMA_NMDA * r_curr[:, 0] * TAU_NMDA_MS)
 
     # Record initial state
     r_stored[0] = r_curr
@@ -307,7 +313,8 @@ def simulate_ring(
             float(noise_scale_vip),
             float(p.tau_s),
             float(ggaba),
-            float(p.w_ee),
+            float(p.J_NMDA),
+            S_pyr,
             float(p.w_pe),
             float(p.w_se),
             float(p.w_es),
@@ -387,11 +394,15 @@ def simulate_ring(
 
             # === COMPUTE INPUT CURRENTS (vectorized over nodes) ===
 
+            # NMDA gating update (before computing I_pyr)
+            dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+            S_pyr = np.clip(S_pyr + dS, 0.0, 1.0)
+
             # PYR: local + inter-node excitation + stimulus + current-space noise
             # PV provides DIVISIVE (shunting) inhibition
             denom = 1.0 + ggaba * p.w_pe * r_pv
             I_pyr = (
-                (p.w_ee * r_pyr) / denom  # Local recurrent excitation (divided by PV)
+                (p.J_NMDA * S_pyr) / denom  # Local recurrent NMDA gating (divided by PV)
                 + I_pyr_inter  # Inter-node PYR excitation (from neighbors)
                 - ggaba * I_pv_pyr_inter  # Global PV->PYR inhibition (from all nodes)
                 - ggaba * p.w_se * r_som  # SOM dendritic inhibition (subtractive)
@@ -565,7 +576,7 @@ def simulate_ring_batch(
         return np.array([float(attr_fn(p)) for p in local_params_list])[:, None]
 
     ggaba     = _arr(lambda p: p.g_gaba())
-    w_ee      = _arr(lambda p: p.w_ee);   w_pe = _arr(lambda p: p.w_pe)
+    J_NMDA    = _arr(lambda p: p.J_NMDA); w_pe = _arr(lambda p: p.w_pe)
     w_se      = _arr(lambda p: p.w_se);   w_es = _arr(lambda p: p.w_es)
     w_vs = _arr(lambda p: p.w_vs)
     w_ep      = _arr(lambda p: p.w_ep);   w_pp = _arr(lambda p: p.w_pp)
@@ -603,6 +614,10 @@ def simulate_ring_batch(
         Iap = np.tile(I_adapt0_np[:, 0], (n_batch, 1))
         Ias = np.tile(I_adapt0_np[:, 1], (n_batch, 1))
 
+    # NMDA gating: (n_batch, n_nodes) initialized from initial PYR rates
+    S_pyr = (GAMMA_NMDA * r[:, :, 0] * TAU_NMDA_MS) / \
+            (1.0 + GAMMA_NMDA * r[:, :, 0] * TAU_NMDA_MS)
+
     # Noise: one shared RNG — generates (n_batch, n_nodes) per step (all populations)
     use_noise = noise_type == "white" and any(p.sigma_noise != 0.0 for p in local_params_list)
     rng = np.random.default_rng(seeds[0] if seeds else 0) if use_noise else None
@@ -622,6 +637,10 @@ def simulate_ring_batch(
         I_pyr_inter    = r_pyr @ W_pyr_pyr.T   # (n_batch, n_nodes)
         I_pv_pyr_inter = r_pv  @ W_pv_pyr.T
 
+        # NMDA gating update (before computing I_pyr)
+        dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+        S_pyr = np.clip(S_pyr + dS, 0.0, 1.0)
+
         # Per-trial ext currents at step k: (n_batch,) → (n_batch, 1) for broadcasting
         I_ext_pyr_k = I_ext_pyr[k, :, None]  # (n_batch, 1)
         I_ext_som_k = I_ext_som[k, :, None]
@@ -629,7 +648,7 @@ def simulate_ring_batch(
         I_ext_vip_k = I_ext_vip[k, :, None]
 
         denom  = 1.0 + ggaba * w_pe * r_pv   # (n_batch, n_nodes)
-        I_pyr  = (w_ee * r_pyr) / denom + I_pyr_inter \
+        I_pyr  = (J_NMDA * S_pyr) / denom + I_pyr_inter \
                  - ggaba * I_pv_pyr_inter - ggaba * w_se * r_som \
                  - Iap + I_ext_pyr_k + I_stim_all[k]   # broadcasts (n_batch, n_nodes)
         I_som  = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_k

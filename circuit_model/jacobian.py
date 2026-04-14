@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 
 from .params import CircuitParams
+from .constants import GAMMA_NMDA, TAU_NMDA_MS
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,9 @@ def _total_inputs(
         I_ap = i_adapt[0]
 
     denom = 1.0 + ggaba * params.w_pe * r_pv
-    I_pyr = (params.w_ee * r_pyr) / denom - ggaba * params.w_se * r_som - I_ap + params.I_ext_pyr()
+    # NMDA gating: use steady-state formula S* for fixed-point analysis
+    S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
+    I_pyr = (params.J_NMDA * S_star) / denom - ggaba * params.w_se * r_som - I_ap + params.I_ext_pyr()
     I_som = params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som()
     I_pv  = (params.w_ep * r_pyr
              - ggaba * params.w_pp * r_pv
@@ -141,10 +144,14 @@ def compute_jacobian(
     # Partial derivatives ∂I_i/∂r_j  (explicit, adaptation treated as fixed)
     denom = 1.0 + ggaba * params.w_pe * r_pv
 
+    # NMDA gating: S* and its derivative at r_pyr
+    S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
+    dSdr = GAMMA_NMDA * TAU_NMDA_MS / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS) ** 2
+
     # ∂I_pyr / ∂r_j
-    dIpyr_drpyr = params.w_ee / denom
+    dIpyr_drpyr = params.J_NMDA * dSdr / denom  # NMDA saturation term
     dIpyr_drsom = -ggaba * params.w_se
-    dIpyr_drpv  = -params.w_ee * r_pyr * ggaba * params.w_pe / (denom ** 2)
+    dIpyr_drpv  = -params.J_NMDA * S_star * ggaba * params.w_pe / (denom ** 2)  # divisive denom
     dIpyr_drvip = 0.0
 
     # ∂I_som / ∂r_j
@@ -182,7 +189,7 @@ def compute_jacobian(
 # Expected-present connections and their biological role.
 # Each entry: (row_pop, col_pop, weight_attr, description, expected_sign)
 _CONNECTIONS = [
-    (0, 0, "w_ee", "PYR → PYR  (recurrent excitation)",    "+"),
+    (0, 0, "J_NMDA", "PYR → PYR  (NMDA recurrent excitation)",    "+"),
     (1, 0, "w_es", "PYR → SOM  (recruits dendritic inh.)", "+"),
     (2, 0, "w_ep", "PYR → PV   (fast feedback inh.)",      "+"),
     (3, 0, "w_ev", "PYR → VIP  (recruits disinhibition)",  "+"),

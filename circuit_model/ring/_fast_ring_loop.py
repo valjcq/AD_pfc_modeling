@@ -6,6 +6,10 @@ import math
 
 import numpy as np
 
+# NMDA gating constants (fixed physics, not fitted)
+GAMMA_NMDA = 0.641
+TAU_NMDA_MS = 100.0
+
 try:
     from numba import njit as _njit
 
@@ -55,7 +59,8 @@ def _ring_euler_loop(
     noise_scale_vip: float,        # = sigma_noise * I_ext_vip (nA)
     tau_s: float,
     ggaba: float,
-    w_ee: float,
+    J_NMDA: float,
+    S_pyr_init: np.ndarray,    # (n_nodes,) — initial NMDA gating per node
     w_pe: float,
     w_se: float,
     w_es: float,
@@ -122,6 +127,9 @@ def _ring_euler_loop(
     I_pv_inter = np.zeros(n_nodes)
     r_pyr_k = np.zeros(n_nodes)
     r_pv_k = np.zeros(n_nodes)
+    S_pyr_curr = np.zeros(n_nodes)
+    for j in range(n_nodes):
+        S_pyr_curr[j] = S_pyr_init[j]
 
     rec_i = 1  # next recording slot index
 
@@ -142,11 +150,17 @@ def _ring_euler_loop(
             Iap   = Iap_curr[j]
             Ias   = Ias_curr[j]
 
+            # NMDA gating update (before computing I_pyr_j)
+            S_pyr_j = S_pyr_curr[j]
+            dS = (-S_pyr_j + (1.0 - S_pyr_j) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+            S_pyr_j = max(0.0, min(1.0, S_pyr_j + dS))
+            S_pyr_curr[j] = S_pyr_j
+
             denom = 1.0 + ggaba * w_pe * r_pv
 
             xi_j = noise_arr[k, j]  # shared noise sample at this node/step
             I_pyr_j = (
-                (w_ee * r_pyr) / denom
+                (J_NMDA * S_pyr_j) / denom
                 + I_pyr_inter[j]
                 - ggaba * I_pv_inter[j]
                 - ggaba * w_se * r_som

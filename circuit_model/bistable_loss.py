@@ -12,12 +12,12 @@ from typing import Optional, Union
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import fsolve
+from scipy.optimize import fsolve, brentq
 
 from .params import CircuitParams
 from .transfer import phi_wong_wang
 from .jacobian import compute_jacobian
-from .constants import R_MAX_PHYS, R_HIGH_MAX
+from .constants import R_MAX_PHYS, R_HIGH_MAX, GAMMA_NMDA, TAU_NMDA_MS
 
 
 @dataclass
@@ -39,11 +39,17 @@ class BistableConfig:
     # Physiological ceiling: prevents optimizer from pushing high FP into clamp region
     r_high_max: float = R_HIGH_MAX  # Hz (default from constants, ~80)
 
+    # Interneuron physiological ceilings (conservative upper bounds)
+    som_ceiling: float = 50.0       # Hz
+    pv_ceiling: float = 100.0       # Hz
+    vip_ceiling: float = 80.0       # Hz
+
     # Loss weights
     w_bistab: float = 1.0
     w_rate: float = 1.0
     w_margin: float = 0.5
     w_jacobian: float = 0.1         # Regularizer on max |J| entry
+    w_physiol: float = 1.0          # Interneuron ceiling penalty weight
 
     # Condition (for informational purposes)
     condition: str = "WT"
@@ -139,10 +145,12 @@ def _compute_F_sweep(r_sweep: np.ndarray, params: CircuitParams) -> np.ndarray:
         # PYR adaptation at steady state
         I_adapt_pyr = params.J_adapt_pyr * r_pyr
 
-        # PYR net input with divisive PV inhibition
+        # PYR net input with divisive PV inhibition and NMDA gating
         denom = 1.0 + ggaba * params.w_pe * r_pv
+        # NMDA gating: use steady-state formula S* for fixed-point analysis
+        S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
         I_net = (
-            (params.w_ee * r_pyr) / denom
+            (params.J_NMDA * S_star) / denom
             - ggaba * params.w_se * r_som
             - I_adapt_pyr
             + params.I_ext_pyr()
@@ -162,11 +170,14 @@ def bistable_loss(
     """
     Compute the bistability loss for given circuit parameters.
 
-    The loss has four components:
+    The loss has five components:
     - L_bistab: Sign pattern enforcement (F must be positive at low/high targets, negative at mid)
     - L_rate: Rate matching at the low fixed point
     - L_margin: Separation between fixed points
+    - L_physiol: Interneuron physiological ceiling penalty
     - L_jac: Jacobian regularizer to avoid degenerate solutions
+
+    Fixed points are refined using Brentq root-finding for numerical accuracy.
 
     Args:
         params: Circuit parameters to evaluate
@@ -177,9 +188,17 @@ def bistable_loss(
         Loss as float, or (loss, components) dict if return_components=True
     """
     # Compute nullcline sweep (capped at R_MAX_PHYS to exclude clamp-induced artifacts)
-    n_sweep = 500
+    # Use higher resolution (1000 points) for better FP detection
+    n_sweep = 1000
     r_sweep = np.linspace(0.0, min(R_MAX_PHYS, 80.0), n_sweep)
     F = _compute_F_sweep(r_sweep, params)
+
+    # Compute interneuron sweeps across the full r_PYR sweep
+    r_som_sweep = np.zeros_like(r_sweep, dtype=float)
+    r_pv_sweep = np.zeros_like(r_sweep, dtype=float)
+    r_vip_sweep = np.zeros_like(r_sweep, dtype=float)
+    for i, r_pyr in enumerate(r_sweep):
+        r_som_sweep[i], r_pv_sweep[i], r_vip_sweep[i] = _solve_interneurons(float(r_pyr), params)
 
     # ========================================================================
     # A. Bistability component L_bistab
@@ -215,7 +234,7 @@ def bistable_loss(
     # Compute gradient for stability classification (dF/dr)
     dF_dr_sweep = np.gradient(F, r_sweep)
 
-    # Find zero-crossings of F (potential fixed points)
+    # Find zero-crossings of F (potential fixed points) with Brentq refinement
     sign_changes = np.where(np.diff(np.sign(F)))[0]
 
     # Classify each crossing as stable (dF/dr < 0) or unstable (dF/dr > 0)
@@ -224,18 +243,38 @@ def bistable_loss(
     spurious_fps = []  # Crossings above R_MAX_PHYS
 
     for idx in sign_changes:
-        # Refine crossing location via linear interpolation
-        r_cross = float(
-            np.interp(0.0, [F[idx], F[idx + 1]], [r_sweep[idx], r_sweep[idx + 1]])
-        )
+        r_min = r_sweep[idx]
+        r_max = r_sweep[idx + 1]
+
+        # Refine crossing via Brentq for better numerical accuracy
+        try:
+            def f_to_root(r_pyr: float) -> float:
+                r_som, r_pv, r_vip = _solve_interneurons(r_pyr, params)
+                ggaba = params.g_gaba()
+                I_adapt_pyr = params.J_adapt_pyr * r_pyr
+                denom = 1.0 + ggaba * params.w_pe * r_pv
+                S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
+                I_net = (
+                    (params.J_NMDA * S_star) / denom
+                    - ggaba * params.w_se * r_som
+                    - I_adapt_pyr
+                    + params.I_ext_pyr()
+                )
+                return _phi_pyr(I_net, params) - r_pyr
+
+            r_cross = float(brentq(f_to_root, r_min, r_max))
+        except ValueError:
+            # Brentq failed, fall back to interpolation
+            r_cross = float(np.interp(0.0, [F[idx], F[idx + 1]], [r_min, r_max]))
 
         # Filter out crossings above R_MAX_PHYS (clamp artifacts)
         if r_cross >= R_MAX_PHYS:
             spurious_fps.append(r_cross)
             continue
 
-        # Classify by stability: dF/dr at the crossing index
-        dF_dr_at_cross = float(dF_dr_sweep[idx])
+        # Classify by stability: dF/dr at the refined crossing point
+        # Use interpolation for stability, not just the index
+        dF_dr_at_cross = float(np.interp(r_cross, r_sweep, dF_dr_sweep))
         if dF_dr_at_cross < 0:
             stable_fps.append((r_cross, dF_dr_at_cross))
         else:
@@ -305,6 +344,16 @@ def bistable_loss(
     L_jac = relu(max_abs_J - 5.0) ** 2
 
     # ========================================================================
+    # G. Interneuron physiological ceiling penalty L_physiol
+    # ========================================================================
+    # Penalize when interneuron rates exceed physiological ceilings across the full sweep
+    L_physiol = (
+        float(np.mean(np.maximum(r_som_sweep - cfg.som_ceiling, 0.0) ** 2))
+        + float(np.mean(np.maximum(r_pv_sweep - cfg.pv_ceiling, 0.0) ** 2))
+        + float(np.mean(np.maximum(r_vip_sweep - cfg.vip_ceiling, 0.0) ** 2))
+    )
+
+    # ========================================================================
     # Total loss
     # ========================================================================
     L_total = (
@@ -312,6 +361,7 @@ def bistable_loss(
         + cfg.w_rate * L_rate
         + cfg.w_margin * L_margin
         + cfg.w_jacobian * L_jac
+        + cfg.w_physiol * L_physiol
     )
 
     if return_components:
@@ -323,6 +373,7 @@ def bistable_loss(
             "L_ceiling": float(L_ceiling),
             "L_rate": float(L_rate),
             "L_margin": float(L_margin),
+            "L_physiol": float(L_physiol),
             "L_jac": float(L_jac),
             "L_total": float(L_total),
             "r_low_fp": float(r_low_fp),
@@ -376,6 +427,7 @@ def save_bistable_summary(
     lines.append(f"    L_ceiling  (high FP cap):      {components.get('L_ceiling', 0.0):10.4g}")
     lines.append(f"    L_rate     (rate matching):    {components.get('L_rate', 0.0):10.4g}")
     lines.append(f"    L_margin   (FP separation):    {components.get('L_margin', 0.0):10.4g}")
+    lines.append(f"    L_physiol  (interneuron ceil): {components.get('L_physiol', 0.0):10.4g}")
     lines.append(f"    L_jac      (Jacobian reg.):    {components.get('L_jac', 0.0):10.4g}")
     lines.append(f"    ─" * 35)
     lines.append(f"    L_total                        {components.get('L_total', 0.0):10.4g}")

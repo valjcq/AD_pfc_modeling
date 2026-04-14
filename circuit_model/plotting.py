@@ -434,13 +434,14 @@ def plot_transfer_functions(
     return ax
 
 
-def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0) -> dict:
+def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0, params=None) -> dict:
     """
     Print and return a summary of simulation results.
 
     Parameters:
         result: SimulationResult from simulate_circuit
         burn_in_ms: Time to skip for computing statistics
+        params: Optional CircuitParams — if provided, prints external currents section
 
     Returns:
         Dictionary with summary statistics
@@ -451,7 +452,6 @@ def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0
     start_idx = int(np.floor(burn_in_ms / dt))
 
     r_after_burnin = result.r[start_idx:]
-    t_after_burnin = result.t_ms[start_idx:]
 
     means = np.mean(r_after_burnin, axis=0)
     stds = np.std(r_after_burnin, axis=0)
@@ -463,10 +463,24 @@ def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0
     print("=" * 60)
     print(f"Duration: {result.t_ms[-1]:.1f} ms | Burn-in: {burn_in_ms:.1f} ms | dt: {dt:.2f} ms")
     print("-" * 60)
-    print(f"{'Population':<10} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}")
+    print(f"{'Population':<10} {'Mean (Hz)':>10} {'Std':>10} {'Min':>10} {'Max':>10}")
     print("-" * 60)
     for i, name in enumerate(POPULATION_NAMES):
         print(f"{name:<10} {means[i]:>10.3f} {stds[i]:>10.3f} {mins[i]:>10.3f} {maxs[i]:>10.3f}")
+
+    if params is not None:
+        I_ext = [
+            params.I_ext_pyr(),
+            params.I_ext_som(),
+            params.I_ext_pv(),
+            params.I_ext_vip(),
+        ]
+        print("-" * 60)
+        print(f"{'Population':<10} {'I_ext (nA)':>10}")
+        print("-" * 60)
+        for name, I in zip(POPULATION_NAMES, I_ext):
+            print(f"{name:<10} {I:>10.4f}")
+
     print("=" * 60 + "\n")
 
     return {

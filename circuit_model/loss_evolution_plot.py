@@ -14,21 +14,49 @@ import numpy as np
 
 
 def _extract_component_values(breakdown: dict) -> dict[str, float]:
-    """Extract loss components from both legacy and ring log formats."""
+    """Extract canonical loss components from legacy, ring and bistable logs."""
+    def _getf(key: str, default: float = 0.0) -> float:
+        val = breakdown.get(key, default)
+        if val is None:
+            return float(default)
+        return float(val)
+
+    # New bistable naming uses L_* keys; fall back to older formats when absent.
+    rate = _getf("L_rate", _getf("firing_rate", 0.0) + _getf("ring_rate", 0.0))
+    ko = _getf("ko_firing_rate", 0.0) + _getf("ko_penalty", 0.0)
+    jac = _getf("L_jac", _getf("jacobian", 0.0))
+
     return {
-        # Legacy optimize naming
-        "firing_rate": float(breakdown.get("firing_rate", 0.0)),
-        "ko_firing_rate": float(breakdown.get("ko_firing_rate", 0.0)),
-        # Ring optimize naming
-        "ring_rate": float(breakdown.get("ring_rate", 0.0)),
-        "ko_penalty": float(breakdown.get("ko_penalty", 0.0)),
-        # Shared / optional terms
-        "jacobian": float(breakdown.get("jacobian", 0.0)),
-        "turing": float(breakdown.get("turing", 0.0)),
-        "ach_ratio": float(breakdown.get("ach_ratio", 0.0)),
-        "spatial_uniformity": float(breakdown.get("spatial_uniformity", 0.0)),
-        "bump": float(breakdown.get("bump", 0.0)),
+        # Canonical components used by plotting functions
+        "rate": rate,
+        "ko": ko,
+        "jacobian": jac,
+        "turing": _getf("turing", 0.0),
+        "ach_ratio": _getf("ach_ratio", 0.0),
+        "spatial_uniformity": _getf("spatial_uniformity", 0.0),
+        "bump": _getf("bump", 0.0),
+        # Bistable-specific terms
+        "bistability": _getf("L_bistab", 0.0),
+        "margin": _getf("L_margin", 0.0),
+        "physiology": _getf("L_physiol", 0.0),
+        "ceiling": _getf("L_ceiling", 0.0),
     }
+
+
+def _pretty_component_name(name: str) -> str:
+    return {
+        "rate": "Rate",
+        "ko": "KO",
+        "jacobian": "Jacobian",
+        "turing": "Turing",
+        "ach_ratio": "ACh Ratio",
+        "spatial_uniformity": "Spatial Uniformity",
+        "bump": "Bump",
+        "bistability": "Bistability",
+        "margin": "Margin",
+        "physiology": "Physiology",
+        "ceiling": "Ceiling",
+    }.get(name, name.replace("_", " ").title())
 
 
 def _drop_aberrant_initial_steps(
@@ -97,7 +125,6 @@ def plot_loss_evolution(
     import matplotlib
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import MaxNLocator
     
     if figsize is None:
         figsize = (16, 12)
@@ -111,8 +138,8 @@ def plot_loss_evolution(
     steps = []
     total_losses = []
     comp_keys = [
-        "firing_rate", "ko_firing_rate", "ring_rate", "ko_penalty",
-        "jacobian", "turing", "ach_ratio", "spatial_uniformity", "bump",
+        "rate", "ko", "jacobian", "turing", "ach_ratio", "spatial_uniformity",
+        "bump", "bistability", "margin", "physiology", "ceiling",
     ]
     comp_lists = {k: [] for k in comp_keys}
     
@@ -132,24 +159,27 @@ def plot_loss_evolution(
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
-    # Legacy aliases for this figure layout
-    fr_losses = components["firing_rate"] + components["ring_rate"]
-    ko_losses = components["ko_firing_rate"] + components["ko_penalty"]
-    jac_losses = components["jacobian"]
-    turing_losses = components["turing"]
-    ach_losses = components["ach_ratio"]
+    active_names = [k for k in comp_keys if np.any(components[k] > 0)]
+    if not active_names:
+        active_names = ["rate", "ko", "jacobian", "turing"]
     
     # Create figure with subplots
     fig = plt.figure(figsize=figsize, dpi=dpi)
     
     # Define colors for each component
     colors = {
-        'firing_rate': '#1f77b4',      # blue
-        'ko_firing_rate': '#ff7f0e',   # orange
-        'jacobian': '#2ca02c',         # green
-        'turing': '#d62728',           # red
-        'ach_ratio': '#9467bd',        # purple
-        'total': '#000000',            # black
+        'rate': '#1f77b4',
+        'ko': '#ff7f0e',
+        'jacobian': '#2ca02c',
+        'turing': '#d62728',
+        'ach_ratio': '#9467bd',
+        'spatial_uniformity': '#8c564b',
+        'bump': '#17becf',
+        'bistability': '#e377c2',
+        'margin': '#bcbd22',
+        'physiology': '#7f7f7f',
+        'ceiling': '#aec7e8',
+        'total': '#000000',
     }
     
     # 1. Main plot: Total loss evolution
@@ -163,16 +193,10 @@ def plot_loss_evolution(
     
     # 2. Stacked area plot: Loss components
     ax2 = plt.subplot(3, 3, 2)
-    ax2.fill_between(steps, 0, fr_losses, alpha=0.5, label='Firing Rate', color=colors['firing_rate'])
-    ax2.fill_between(steps, fr_losses, fr_losses + ko_losses, alpha=0.5, label='KO Firing Rate', color=colors['ko_firing_rate'])
-    ax2.fill_between(steps, fr_losses + ko_losses, fr_losses + ko_losses + jac_losses, alpha=0.5, label='Jacobian', color=colors['jacobian'])
-    ax2.fill_between(steps, fr_losses + ko_losses + jac_losses, 
-                     fr_losses + ko_losses + jac_losses + turing_losses, 
-                     alpha=0.5, label='Turing', color=colors['turing'])
-    if np.any(ach_losses > 0):
-        ax2.fill_between(steps, fr_losses + ko_losses + jac_losses + turing_losses,
-                         fr_losses + ko_losses + jac_losses + turing_losses + ach_losses,
-                         alpha=0.5, label='ACh Ratio', color=colors['ach_ratio'])
+    stack_arrays = [components[name] for name in active_names]
+    stack_labels = [_pretty_component_name(name) for name in active_names]
+    stack_colors = [colors.get(name, '#7f7f7f') for name in active_names]
+    ax2.stackplot(steps, *stack_arrays, labels=stack_labels, colors=stack_colors, alpha=0.6)
     ax2.set_xlabel('Optimization Step')
     ax2.set_ylabel('Loss (Stacked)')
     ax2.set_title('Loss Components (Stacked)', fontsize=12, fontweight='bold')
@@ -181,12 +205,14 @@ def plot_loss_evolution(
     
     # 3. Individual component lines
     ax3 = plt.subplot(3, 3, 3)
-    ax3.plot(steps, fr_losses, label='Firing Rate', color=colors['firing_rate'], linewidth=1.5)
-    ax3.plot(steps, ko_losses, label='KO Firing Rate', color=colors['ko_firing_rate'], linewidth=1.5)
-    ax3.plot(steps, jac_losses, label='Jacobian', color=colors['jacobian'], linewidth=1.5)
-    ax3.plot(steps, turing_losses, label='Turing', color=colors['turing'], linewidth=1.5)
-    if np.any(ach_losses > 0):
-        ax3.plot(steps, ach_losses, label='ACh Ratio', color=colors['ach_ratio'], linewidth=1.5)
+    for name in active_names:
+        ax3.plot(
+            steps,
+            components[name],
+            label=_pretty_component_name(name),
+            color=colors.get(name, '#7f7f7f'),
+            linewidth=1.5,
+        )
     ax3.set_xlabel('Optimization Step')
     ax3.set_ylabel('Loss Component Value')
     ax3.set_title('Individual Loss Components', fontsize=12, fontweight='bold')
@@ -194,80 +220,26 @@ def plot_loss_evolution(
     ax3.grid(True, alpha=0.3)
     ax3.set_yscale('log')
     
-    # Calculate ratios (avoid division by zero)
-    total_losses_safe = np.maximum(total_losses, 1e-10)
-    fr_ratio = 100 * fr_losses / total_losses_safe
-    ko_ratio = 100 * ko_losses / total_losses_safe
-    jac_ratio = 100 * jac_losses / total_losses_safe
-    turing_ratio = 100 * turing_losses / total_losses_safe
-    ach_ratio = 100 * ach_losses / total_losses_safe
-    
-    # 4. Firing Rate component
-    ax4 = plt.subplot(3, 3, 4)
-    ax4.plot(steps, fr_losses, color=colors['firing_rate'], linewidth=2)
-    ax4.fill_between(steps, 0, fr_losses, alpha=0.3, color=colors['firing_rate'])
-    ax4.set_xlabel('Optimization Step')
-    ax4.set_ylabel('Loss Value')
-    ax4.set_title('Firing Rate Loss', fontsize=12, fontweight='bold')
-    ax4.grid(True, alpha=0.3)
-    
-    # 5. KO Firing Rate component
-    ax5 = plt.subplot(3, 3, 5)
-    ax5.plot(steps, ko_losses, color=colors['ko_firing_rate'], linewidth=2)
-    ax5.fill_between(steps, 0, ko_losses, alpha=0.3, color=colors['ko_firing_rate'])
-    ax5.set_xlabel('Optimization Step')
-    ax5.set_ylabel('Loss Value')
-    ax5.set_title('KO Firing Rate Loss', fontsize=12, fontweight='bold')
-    ax5.grid(True, alpha=0.3)
-    
-    # 6. Jacobian component
-    ax6 = plt.subplot(3, 3, 6)
-    ax6.plot(steps, jac_losses, color=colors['jacobian'], linewidth=2)
-    ax6.fill_between(steps, 0, jac_losses, alpha=0.3, color=colors['jacobian'])
-    ax6.set_xlabel('Optimization Step')
-    ax6.set_ylabel('Loss Value')
-    ax6.set_title('Jacobian Loss', fontsize=12, fontweight='bold')
-    ax6.grid(True, alpha=0.3)
-    
-    # 7. Turing component
-    ax7 = plt.subplot(3, 3, 7)
-    ax7.plot(steps, turing_losses, color=colors['turing'], linewidth=2)
-    ax7.fill_between(steps, 0, turing_losses, alpha=0.3, color=colors['turing'])
-    ax7.set_xlabel('Optimization Step')
-    ax7.set_ylabel('Loss Value')
-    ax7.set_title('Turing Loss', fontsize=12, fontweight='bold')
-    ax7.grid(True, alpha=0.3)
-    
-    # 8. ACh Ratio component (if present)
-    ax8 = plt.subplot(3, 3, 8)
-    if np.any(ach_losses > 0):
-        ax8.plot(steps, ach_losses, color=colors['ach_ratio'], linewidth=2)
-        ax8.fill_between(steps, 0, ach_losses, alpha=0.3, color=colors['ach_ratio'])
-        ax8.set_xlabel('Optimization Step')
-        ax8.set_ylabel('Loss Value')
-        ax8.set_title('ACh Ratio Loss', fontsize=12, fontweight='bold')
-        ax8.grid(True, alpha=0.3)
-    else:
-        ax8.text(0.5, 0.5, 'No ACh Ratio Loss', ha='center', va='center', transform=ax8.transAxes)
-        ax8.set_title('ACh Ratio Loss (not active)', fontsize=12, fontweight='bold')
-        ax8.axis('off')
+    # 4-8. Top-5 active components as individual panels
+    final_vals = {name: float(components[name][-1]) for name in active_names}
+    top_components = sorted(active_names, key=lambda n: final_vals[n], reverse=True)[:5]
+    panel_axes = [plt.subplot(3, 3, i) for i in (4, 5, 6, 7, 8)]
+    for ax, name in zip(panel_axes, top_components):
+        series = components[name]
+        ax.plot(steps, series, color=colors.get(name, '#7f7f7f'), linewidth=2)
+        ax.fill_between(steps, 0, series, alpha=0.3, color=colors.get(name, '#7f7f7f'))
+        ax.set_xlabel('Optimization Step')
+        ax.set_ylabel('Loss Value')
+        ax.set_title(f'{_pretty_component_name(name)} Loss', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+    for ax in panel_axes[len(top_components):]:
+        ax.axis('off')
     
     # 9. Ratio pie chart (final state)
     ax9 = plt.subplot(3, 3, 9)
-    final_fr = fr_losses[-1]
-    final_ko = ko_losses[-1]
-    final_jac = jac_losses[-1]
-    final_tur = turing_losses[-1]
-    final_ach = ach_losses[-1]
-    
-    final_values = [final_fr, final_ko, final_jac, final_tur]
-    final_labels = ['Firing Rate', 'KO Firing Rate', 'Jacobian', 'Turing']
-    final_colors_list = [colors['firing_rate'], colors['ko_firing_rate'], colors['jacobian'], colors['turing']]
-    
-    if final_ach > 0:
-        final_values.append(final_ach)
-        final_labels.append('ACh Ratio')
-        final_colors_list.append(colors['ach_ratio'])
+    final_values = [float(components[name][-1]) for name in active_names]
+    final_labels = [_pretty_component_name(name) for name in active_names]
+    final_colors_list = [colors.get(name, '#7f7f7f') for name in active_names]
     
     # Filter out zero/small values for cleaner pie chart
     nonzero_idx = np.array(final_values) > 1e-6
@@ -332,8 +304,8 @@ def plot_loss_evolution_ratios(
     steps = []
     total_losses = []
     comp_keys = [
-        "firing_rate", "ko_firing_rate", "ring_rate", "ko_penalty",
-        "jacobian", "turing", "ach_ratio", "spatial_uniformity", "bump",
+        "rate", "ko", "jacobian", "turing", "ach_ratio", "spatial_uniformity",
+        "bump", "bistability", "margin", "physiology", "ceiling",
     ]
     comp_lists = {k: [] for k in comp_keys}
     
@@ -353,23 +325,12 @@ def plot_loss_evolution_ratios(
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
-    # Merge legacy+ring aliases so ratio plots work for both log formats
-    merged_components = {
-        "rate": components["firing_rate"] + components["ring_rate"],
-        "ko": components["ko_firing_rate"] + components["ko_penalty"],
-        "jacobian": components["jacobian"],
-        "turing": components["turing"],
-        "ach_ratio": components["ach_ratio"],
-        "spatial_uniformity": components["spatial_uniformity"],
-        "bump": components["bump"],
-    }
-
-    active_names = [k for k, v in merged_components.items() if np.any(v > 0)]
+    active_names = [k for k in comp_keys if np.any(components[k] > 0)]
     if not active_names:
         active_names = ["rate", "ko", "jacobian", "turing"]
 
     total_losses_safe = np.maximum(total_losses, 1e-10)
-    ratio = {k: 100.0 * merged_components[k] / total_losses_safe for k in active_names}
+    ratio = {k: 100.0 * components[k] / total_losses_safe for k in active_names}
     
     # Define colors
     colors = {
@@ -380,6 +341,10 @@ def plot_loss_evolution_ratios(
         'ach_ratio': '#9467bd',
         'spatial_uniformity': '#8c564b',
         'bump': '#17becf',
+        'bistability': '#e377c2',
+        'margin': '#bcbd22',
+        'physiology': '#7f7f7f',
+        'ceiling': '#aec7e8',
     }
     
     fig, axes = plt.subplots(2, 2, figsize=figsize, dpi=dpi)
@@ -387,7 +352,7 @@ def plot_loss_evolution_ratios(
     # 1. Stacked area chart of ratios
     ax = axes[0, 0]
     stack_arrays = [ratio[name] for name in active_names]
-    stack_labels = [name.replace('_', ' ').title() for name in active_names]
+    stack_labels = [_pretty_component_name(name) for name in active_names]
     stack_colors = [colors.get(name, '#7f7f7f') for name in active_names]
     ax.stackplot(steps, *stack_arrays, labels=stack_labels, colors=stack_colors, alpha=0.7)
     ax.set_xlabel('Optimization Step')
@@ -400,7 +365,7 @@ def plot_loss_evolution_ratios(
     # 2. Individual ratio lines (full scale)
     ax = axes[0, 1]
     for name in active_names:
-        ax.plot(steps, ratio[name], label=name.replace('_', ' ').title(), color=colors.get(name, '#7f7f7f'), linewidth=2)
+        ax.plot(steps, ratio[name], label=_pretty_component_name(name), color=colors.get(name, '#7f7f7f'), linewidth=2)
     ax.set_xlabel('Optimization Step')
     ax.set_ylabel('Percentage of Total Loss (%)')
     ax.set_title('Loss Component Ratios (Line)', fontsize=12, fontweight='bold')
@@ -411,7 +376,7 @@ def plot_loss_evolution_ratios(
     # 3. Zoomed ratio lines for small components (auto scale)
     ax = axes[1, 0]
     for name in active_names:
-        ax.plot(steps, ratio[name], label=name.replace('_', ' ').title(), color=colors.get(name, '#7f7f7f'), linewidth=2)
+        ax.plot(steps, ratio[name], label=_pretty_component_name(name), color=colors.get(name, '#7f7f7f'), linewidth=2)
     # Auto zoom: ignore the largest median contributor to reveal smaller curves
     medians = {k: float(np.median(v)) for k, v in ratio.items()}
     dominant = max(medians, key=medians.get)

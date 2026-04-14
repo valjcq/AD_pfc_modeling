@@ -64,7 +64,7 @@ DEFAULT_FIT_INIT_KWARGS = {
     "trans_enabled": False,
     "trans_factor": 0.2,
     "trans_start_ms": 1000.0,
-    "w_ee": 0.002,
+    "J_NMDA": 0.3,
     "w_ep": 0.002,
     "w_es": 0.002,
     "w_ev": 0.002,
@@ -215,7 +215,7 @@ def print_parameter_status(
         "Time constants": ["tau_s", "tau_adapt_pyr"],
         "Adaptation": ["J_adapt_pyr"],
         "Noise & GABA": ["sigma_noise", "g_gaba_base", "g_alpha7"],
-        "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
+        "Weights (excitatory)": ["J_NMDA", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
@@ -248,7 +248,7 @@ def _print_opt_init_summary(params: CircuitParams, means: np.ndarray, breakdown:
     """Print effective optimization initialization and its predicted rates."""
     print("Initial condition (effective after --set/--no_adapt):")
     print(f"  I0: pyr={params.I0_pyr:.6g}, som={params.I0_som:.6g}, pv={params.I0_pv:.6g}, vip={params.I0_vip:.6g}")
-    print(f"  W:  w_ee={params.w_ee:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
+    print(f"  W:  J_NMDA={params.J_NMDA:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
     print(f"      w_pe={params.w_pe:.6g}, w_pp={params.w_pp:.6g}, w_se={params.w_se:.6g}, w_sp={params.w_sp:.6g}, w_vp={params.w_vp:.6g}, w_vs={params.w_vs:.6g}")
     print(f"  Transfer: tau_s={params.tau_s:.6g}, alpha_pyr={params.alpha_pyr:.6g}, alpha_som={params.alpha_som:.6g}, alpha_pv={params.alpha_pv:.6g}, alpha_vip={params.alpha_vip:.6g}")
     print(f"            Theta_pyr={params.Theta_pyr:.6g}, Theta_som={params.Theta_som:.6g}, Theta_pv={params.Theta_pv:.6g}, Theta_vip={params.Theta_vip:.6g}")
@@ -422,6 +422,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  trans_factor = {params.trans_factor:.2f} (fraction of I0)")
         print(f"  Window: {params.trans_start_ms:.1f} - {trans_end:.1f} ms")
 
+    # Parse initial rates
+    r0 = None
+    if getattr(args, "r0", ""):
+        parts = [float(x) for x in args.r0.split(",")]
+        if len(parts) != 4:
+            raise ValueError("--r0 must have exactly 4 values: pyr,som,pv,vip")
+        r0 = np.array(parts, dtype=float)
+        print(f"  r0 = PYR={r0[0]:.1f}, SOM={r0[1]:.1f}, PV={r0[2]:.1f}, VIP={r0[3]:.1f} Hz")
+
     # Run simulation
     print(f"\nRunning simulation: T={args.T_ms} ms, dt={args.dt_ms} ms, noise={args.noise_type}")
 
@@ -429,6 +438,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         params,
         T_ms=args.T_ms,
         dt_ms=args.dt_ms,
+        r0=r0,
         seed=args.seed,
         noise_type=args.noise_type,
         tau_noise_ms=args.tau_noise_ms,
@@ -437,7 +447,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # Print summary
     burn_in = args.burn_in_ms if hasattr(args, "burn_in_ms") else args.T_ms * 0.5
-    print_simulation_summary(result, burn_in_ms=burn_in)
+    print_simulation_summary(result, burn_in_ms=burn_in, params=params)
 
     # Plot
     if args.time_range:
@@ -685,6 +695,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             w_bistab=args.w_bistab,
             w_rate=args.w_rate_bistab,
             w_margin=args.w_margin,
+            w_physiol=args.w_physiol,
+            som_ceiling=args.som_ceiling,
+            pv_ceiling=args.pv_ceiling,
+            vip_ceiling=args.vip_ceiling,
             condition=getattr(args, "condition", "WT"),
         )
 
@@ -724,6 +738,27 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
 
+    # Determine output directory for logging
+    out_dir_for_logs = args.output_dir or (Path(args.save_best_json).parent if args.save_best_json else ".")
+
+    # If output_dir is specified and save_best_json is the default, put best_params.json in output_dir
+    save_best_json_to_use = args.save_best_json
+    if args.output_dir and args.save_best_json == "best_params.json":
+        # User didn't explicitly set --save_best_json, so put it in output_dir
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        save_best_json_to_use = str(Path(args.output_dir) / "best_params.json")
+
+    # Automatically set up log file if output_dir is specified and log_file is not
+    log_file_to_use = args.log_file
+    if not log_file_to_use and out_dir_for_logs:
+        log_dir = Path(out_dir_for_logs)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_to_use = str(log_dir / "log.jsonl")
+        # Also set a better log_interval default if not explicitly set by user
+        log_interval_to_use = args.log_interval if args.log_interval != 500 else 50
+    else:
+        log_interval_to_use = args.log_interval
+
     if mode == "standard":
         init_seed = args.seed if args.seed is not None else 0
         init_rng = np.random.default_rng(init_seed)
@@ -748,11 +783,17 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         init_loss, init_components = _bistable_loss(base, bistable_cfg, return_components=True)
         print("\nInitial bistability loss components:")
         print(f"  L_bistab:  {init_components.get('L_bistab', 0.0):.4g}")
+        print(f"  L_ceiling: {init_components.get('L_ceiling', 0.0):.4g}")
         print(f"  L_rate:    {init_components.get('L_rate', 0.0):.4g}")
         print(f"  L_margin:  {init_components.get('L_margin', 0.0):.4g}")
+        print(f"  L_physiol: {init_components.get('L_physiol', 0.0):.4g}")
         print(f"  L_jac:     {init_components.get('L_jac', 0.0):.4g}")
         print(f"  L_total:   {init_components.get('L_total', 0.0):.4g}")
         print()
+
+    if log_file_to_use:
+        print(f"Logging optimization progress to: {log_file_to_use}")
+        print(f"Log interval: every {log_interval_to_use} steps\n")
 
     # Run optimization
     best = nevergrad_optimize(
@@ -767,9 +808,9 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         freeze=freeze,
         early_stop_loss=args.early_stop_loss,
         plateau_patience=args.plateau_patience,
-        log_file=args.log_file or None,
-        log_interval=args.log_interval,
-        save_best_json=args.save_best_json or None,
+        log_file=log_file_to_use,
+        log_interval=log_interval_to_use,
+        save_best_json=save_best_json_to_use or None,
         step_offset=step_offset,
         append_log=append_log,
         squared_loss=args.squared_loss,
@@ -818,10 +859,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print_comparison_table(best[0].means, best[0].ko_means, target, best[0].loss)
 
         # Final save with metadata (overrides the incremental params-only saves done during optimization)
-        if args.save_best_json:
-            save_params_json(args.save_best_json, best[0].params, fit_meta=fit_meta)
-            save_fit_summary_txt(args.save_best_json, fit_meta, params=best[0].params)
-            print(f"Best params saved to: {args.save_best_json}")
+        if save_best_json_to_use:
+            save_params_json(save_best_json_to_use, best[0].params, fit_meta=fit_meta)
+            save_fit_summary_txt(save_best_json_to_use, fit_meta, params=best[0].params)
+            print(f"Best params saved to: {save_best_json_to_use}")
     else:
         # Bistable mode: save bistable-specific outputs
         from .bistable_loss import bistable_loss as _bistable_loss, save_bistable_summary
@@ -842,15 +883,15 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print("\nBest bistable parameters and summary saved:")
         print(f"  Params:  {bistable_json}")
         print(f"  Summary: {os.path.join(out_dir, 'bistable_summary.txt')}")
-        print(f"\n  Final bistability regime: {'BISTABLE' if components.get('n_crossings', 0) >= 2 else 'MONOSTABLE'}")
+        print(f"\n  Final bistability regime: {'BISTABLE' if components.get('n_stable', 0) >= 2 else 'MONOSTABLE'}")
     
     # Generate loss evolution plots
-    if args.log_file:
+    if log_file_to_use:
         try:
             from .loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
-            log_dir = Path(args.log_file).parent
-            plot_loss_evolution(args.log_file, output_dir=str(log_dir))
-            plot_loss_evolution_ratios(args.log_file, output_dir=str(log_dir))
+            log_dir = Path(log_file_to_use).parent
+            plot_loss_evolution(log_file_to_use, output_dir=str(log_dir))
+            plot_loss_evolution_ratios(log_file_to_use, output_dir=str(log_dir))
         except Exception as e:
             print(f"Warning: could not generate loss evolution plots: {e}")
 
@@ -905,6 +946,8 @@ Examples:
     add_simulation_args(run_parser)
     run_parser.add_argument("--burn_in_ms", type=float, default=500.0,
                             help="Burn-in period for statistics (ms)")
+    run_parser.add_argument("--r0", type=str, default="",
+                            help="Initial firing rates as 'pyr,som,pv,vip' in Hz (e.g. '80,2,3,7')")
     run_parser.add_argument("--time_range", type=str, default="",
                             help="Time range to plot: 'start,end' in ms (e.g., '1000,2000')")
     run_parser.add_argument("--save_plot", type=str, default="",
@@ -1057,12 +1100,20 @@ Examples:
                             help="Weight of rate matching loss in bistable mode (default: 1.0)")
     opt_parser.add_argument("--w_margin", type=float, default=0.5,
                             help="Weight of fixed point separation margin loss (default: 0.5)")
+    opt_parser.add_argument("--w_physiol", type=float, default=1.0,
+                            help="Weight of interneuron physiological ceiling loss (default: 1.0)")
+    opt_parser.add_argument("--som_ceiling", type=float, default=50.0,
+                            help="SOM physiological ceiling (Hz, default: 50.0)")
+    opt_parser.add_argument("--pv_ceiling", type=float, default=100.0,
+                            help="PV physiological ceiling (Hz, default: 100.0)")
+    opt_parser.add_argument("--vip_ceiling", type=float, default=80.0,
+                            help="VIP physiological ceiling (Hz, default: 80.0)")
 
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
                             help="Save best parameters to JSON file")
-    opt_parser.add_argument("--log_file", type=str, default="results_log.jsonl",
-                            help="Log results to JSONL file")
+    opt_parser.add_argument("--log_file", type=str, default=None,
+                            help="Log results to JSONL file (default: auto-generated in figs/optim/)")
     opt_parser.add_argument("--log_interval", type=int, default=500,
                             help="Log every N steps")
     opt_parser.add_argument("--resume", action="store_true",
@@ -1529,11 +1580,12 @@ Examples:
     # =========================================================================
     ring_cal_parser = subparsers.add_parser(
         "ring-calibrate",
-        help="Run 2D parameter calibration (amplitude x w_inter) for the ring attractor",
-        description="Sweep a 2D grid of (stimulus_amplitude, w_pyr_pyr_inter) to find "
-                    "parameter combinations that produce a stable memory bump. "
-                    "Requires noise floor data (baseline_A_hat.csv) — auto-runs "
-                    "ring-noise-floor with default parameters if it is missing.",
+        help="3D parameter sweep (w_pv_global × w_pyr_pyr_inter × amplitude) for the ring attractor",
+        description="Sweep a 3D grid of (w_pv_global, w_pyr_pyr_inter, stimulus_amplitude) "
+                    "to find parameter combinations that produce a stable, localised memory bump. "
+                    "Classifies delay period into resting/bump/saturated states and reports "
+                    "the fraction of delay time in each state. "
+                    "Burn-in is computed once per (cond, w_pv, w_pyr) and reused across amplitudes.",
     )
     _add_ring_common(ring_cal_parser)
     # w_pyr_pyr_inter is swept via --w_inter_values; make the base value optional
@@ -1544,19 +1596,19 @@ Examples:
             break
     ring_cal_parser.add_argument(
         "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to calibrate (default: WT only).",
+        help="Conditions to calibrate (default: WT only). Use 'all' for all conditions.",
     )
     ring_cal_parser.add_argument(
         "--amplitudes", type=float, nargs="+",
-        default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0],
-        help="Stimulus amplitude factors to sweep (default: 5 10 15 20 25 30)",
+        default=[0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80],
+        help="Stimulus amplitudes to sweep (default: 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.70 0.80)",
     )
     ring_cal_parser.add_argument(
         "--w_inter_values", type=float, nargs="+",
         default=None,
         help="w_pyr_pyr_inter values to sweep (explicit list). "
              "Mutually exclusive with --w_inter_min/--w_inter_max/--n_inter. "
-             "Default when none specified: 2.0 3.0 4.0 5.0 6.0",
+             "Default when none specified: 0.002 0.003 0.004 0.005 0.006 0.008 0.010",
     )
     ring_cal_parser.add_argument(
         "--w_inter_min", type=float, default=None,
@@ -1572,34 +1624,20 @@ Examples:
     )
     ring_cal_parser.add_argument(
         "--w_pv_values", type=float, nargs="+", default=None,
-        help="w_pv_global values to sweep. If provided, runs one calibration per value "
-             "and saves a 2D summary across (w_inter, w_pv_global).",
+        help="w_pv_global values to sweep (default: uses --w_pv_global single value). "
+             "Provide multiple values for a full 3D sweep across w_pv dimension.",
     )
     ring_cal_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per grid point (default: 50)",
-    )
-    ring_cal_parser.add_argument(
-        "--noise_percentile", type=float, default=95.0,
-        help="Percentile of baseline A_hat used as noise floor threshold (default: 95). "
-             "Applied when reading cached baseline data.",
+        "--n_trials", type=int, default=20,
+        help="Number of trials per grid point (default: 20)",
     )
     ring_cal_parser.add_argument(
         "--n_workers", type=int, default=None,
         help="Number of parallel workers (default: min(4, cpu_count))",
     )
     ring_cal_parser.add_argument(
-        "--error_band", type=str, default="sem", choices=["sem", "sd"],
-        help="Error band type for plots: 'sem' (default) or 'sd'.",
-    )
-    ring_cal_parser.add_argument(
         "--no_cache", action="store_true",
         help="Ignore existing CSV cache and recompute all conditions from scratch.",
-    )
-    ring_cal_parser.add_argument(
-        "--batch_chunk_size", type=int, default=50,
-        help="Max trials per simulation batch chunk to limit peak RAM usage (default: 50). "
-             "Lower values use less memory but may be slower.",
     )
 
     # =========================================================================

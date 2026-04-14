@@ -5252,3 +5252,261 @@ def plot_bump_decay_heatmap(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
+
+
+# ============================================================================
+# 3D SWEEP PLOTS: w_pv_global × w_pyr_pyr_inter × amplitude
+# ============================================================================
+
+def _heatmap_panel(
+    ax,
+    mat: "np.ndarray",
+    row_labels: list,
+    col_labels: list,
+    title: str,
+    cmap: str,
+    vmin: float,
+    vmax: float,
+    fmt: str = ".2f",
+    annot_thresh: float = 0.55,
+    contour_val: Optional[float] = None,
+    contour_color: str = "cyan",
+    sat_mask: Optional["np.ndarray"] = None,
+):
+    """Draw one annotated heatmap panel. Internal helper."""
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    im = ax.imshow(mat, aspect="auto", vmin=vmin, vmax=vmax,
+                   cmap=cmap, origin="lower", interpolation="nearest")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    n_row, n_col = mat.shape
+    ax.set_xticks(range(n_col))
+    ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(n_row))
+    ax.set_yticklabels(row_labels, fontsize=8)
+    ax.set_title(title, fontweight="bold", fontsize=10)
+
+    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    for i in range(n_row):
+        for j in range(n_col):
+            v = mat[i, j]
+            if np.isnan(v):
+                continue
+            tc = "white" if norm(v) > annot_thresh else "black"
+            ax.text(j, i, f"{v:{fmt}}", ha="center", va="center",
+                    fontsize=7, color=tc, fontweight="bold")
+
+    if contour_val is not None and not np.all(np.isnan(mat)):
+        try:
+            ax.contour((mat >= contour_val).astype(float), levels=[0.5],
+                       colors=contour_color, linewidths=1.5, linestyles="--")
+        except Exception:
+            pass
+
+    if sat_mask is not None:
+        try:
+            for i in range(n_row):
+                for j in range(n_col):
+                    if sat_mask[i, j]:
+                        ax.add_patch(
+                            matplotlib.patches.Rectangle(
+                                (j - 0.5, i - 0.5), 1, 1,
+                                fill=False, hatch="////", edgecolor="red",
+                                linewidth=0, alpha=0.6,
+                            )
+                        )
+        except Exception:
+            pass
+
+
+def plot_3d_sweep_slice(
+    grid_data: dict,
+    w_pyr: float,
+    w_pv_values: list,
+    amplitude_values: list,
+    sigma_deg: float,
+    condition_key: str,
+    n_trials: int,
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """5-panel figure for one w_pyr_pyr_inter slice of the 3D sweep.
+
+    Panels (rows=w_pv_global, cols=amplitude):
+      1. Pre-cue resting rate (Hz)
+      2. Cue peak rate (Hz) — hatched where cue saturated (>=190 Hz)
+      3. Fraction of trials with cue saturated
+      4. Delay bump fraction  ← main quality metric
+      5. Delay saturated fraction
+
+    Parameters:
+        grid_data: dict mapping (w_pv, amp) -> aggregated metrics dict.
+        w_pyr: w_pyr_pyr_inter value for this slice (title only).
+        w_pv_values: list of w_pv_global values (y-axis / rows).
+        amplitude_values: list of amplitude values (x-axis / cols).
+        sigma_deg, condition_key, n_trials: displayed in title.
+    """
+    import matplotlib.pyplot as plt
+
+    n_wpv = len(w_pv_values)
+    n_amp = len(amplitude_values)
+
+    resting = np.full((n_wpv, n_amp), np.nan)
+    cue_peak = np.full((n_wpv, n_amp), np.nan)
+    cue_sat_frac = np.full((n_wpv, n_amp), np.nan)
+    bump_frac = np.full((n_wpv, n_amp), np.nan)
+    delay_sat = np.full((n_wpv, n_amp), np.nan)
+
+    for i, wpv in enumerate(w_pv_values):
+        for j, amp in enumerate(amplitude_values):
+            d = grid_data.get((wpv, amp), {})
+            resting[i, j] = d.get("resting_hz", np.nan)
+            cue_peak[i, j] = d.get("cue_peak_hz_mean", np.nan)
+            cue_sat_frac[i, j] = d.get("cue_sat_frac", np.nan)
+            bump_frac[i, j] = d.get("delay_bump_frac_mean", np.nan)
+            delay_sat[i, j] = d.get("delay_sat_frac_mean", np.nan)
+
+    wpv_labels = [f"{v:.3g}" for v in w_pv_values]
+    amp_labels = [f"{v:.2g}" for v in amplitude_values]
+
+    fig, axes = plt.subplots(1, 5, figsize=(22, max(3, n_wpv * 0.9 + 2)))
+
+    rest_max = max(float(np.nanmax(resting)) if not np.all(np.isnan(resting)) else 10.0, 10.0)
+    _heatmap_panel(axes[0], resting, wpv_labels, amp_labels,
+                   "Pre-cue resting (Hz)\n[target: ≈ 0–5]",
+                   "YlOrRd", 0, rest_max, fmt=".1f")
+    axes[0].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+    axes[0].set_ylabel("w_pv_global", fontsize=8)
+
+    cue_sat_bool = (cue_sat_frac > 0.5) if not np.all(np.isnan(cue_sat_frac)) else None
+    _heatmap_panel(axes[1], np.clip(cue_peak, 0, 200), wpv_labels, amp_labels,
+                   "Cue peak PYR (Hz)\n[200 = rate-cap]",
+                   "RdYlGn_r", 0, 200, fmt=".0f",
+                   contour_val=190.0, contour_color="cyan",
+                   sat_mask=cue_sat_bool)
+    axes[1].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    _heatmap_panel(axes[2], cue_sat_frac, wpv_labels, amp_labels,
+                   "Cue sat fraction\n[1 = always saturated]",
+                   "Reds", 0, 1, fmt=".2f")
+    axes[2].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    _heatmap_panel(axes[3], bump_frac, wpv_labels, amp_labels,
+                   "Delay BUMP frac ✓\n[high = sustained bump]",
+                   "YlGn", 0, 1, fmt=".2f",
+                   contour_val=0.3, contour_color="blue")
+    axes[3].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    _heatmap_panel(axes[4], delay_sat, wpv_labels, amp_labels,
+                   "Delay SAT frac ✗\n[low = clean]",
+                   "OrRd", 0, 1, fmt=".2f",
+                   contour_val=0.2, contour_color="blue")
+    axes[4].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    title = suptitle or (
+        f"3D Sweep  —  w_pyr={w_pyr:.5g}  |  sigma={sigma_deg:.0f}°  |  "
+        f"{condition_key}  |  n_trials={n_trials}"
+    )
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_3d_sweep_summary(
+    all_data: dict,
+    w_pyr_values: list,
+    w_pv_values: list,
+    amplitude_values: list,
+    sigma_deg: float,
+    condition_key: str,
+    n_trials: int,
+    save_path: Optional[str] = None,
+    suptitle: Optional[str] = None,
+):
+    """Summary figure: best bump fraction over all w_pyr for each (w_pv, amp).
+
+    4 panels (rows=w_pv, cols=amp):
+      1. Max delay_bump_frac over w_pyr
+      2. w_pyr giving that maximum
+      3. Min delay_sat_frac over w_pyr
+      4. Quality score = max(bump_frac × (1-sat_frac)) over w_pyr
+
+    Parameters:
+        all_data: dict mapping (w_pyr, w_pv, amp) -> metrics dict.
+    """
+    import matplotlib.pyplot as plt
+
+    n_wpv = len(w_pv_values)
+    n_amp = len(amplitude_values)
+
+    best_bump = np.full((n_wpv, n_amp), np.nan)
+    best_wpyr = np.full((n_wpv, n_amp), np.nan)
+    min_sat = np.full((n_wpv, n_amp), np.nan)
+    quality = np.full((n_wpv, n_amp), np.nan)
+
+    for i, wpv in enumerate(w_pv_values):
+        for j, amp in enumerate(amplitude_values):
+            bumps, sats, wpyrs = [], [], []
+            for wpyr in w_pyr_values:
+                d = all_data.get((wpyr, wpv, amp), {})
+                bf = d.get("delay_bump_frac_mean", np.nan)
+                sf = d.get("delay_sat_frac_mean", np.nan)
+                if not np.isnan(bf):
+                    bumps.append(bf)
+                    sats.append(sf if not np.isnan(sf) else 0.0)
+                    wpyrs.append(wpyr)
+            if bumps:
+                best_idx = int(np.argmax(bumps))
+                best_bump[i, j] = bumps[best_idx]
+                best_wpyr[i, j] = wpyrs[best_idx]
+                min_sat[i, j] = float(min(sats))
+                quality[i, j] = float(max(b * (1.0 - s) for b, s in zip(bumps, sats)))
+
+    wpv_labels = [f"{v:.3g}" for v in w_pv_values]
+    amp_labels = [f"{v:.2g}" for v in amplitude_values]
+
+    fig, axes = plt.subplots(1, 4, figsize=(18, max(3, n_wpv * 0.9 + 2)))
+
+    _heatmap_panel(axes[0], best_bump, wpv_labels, amp_labels,
+                   "Best bump frac\n(max over w_pyr)",
+                   "YlGn", 0, 1, fmt=".2f",
+                   contour_val=0.3, contour_color="blue")
+    axes[0].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+    axes[0].set_ylabel("w_pv_global", fontsize=8)
+
+    wpyr_lo = float(np.nanmin(best_wpyr)) if not np.all(np.isnan(best_wpyr)) else 0.0
+    wpyr_hi = float(np.nanmax(best_wpyr)) if not np.all(np.isnan(best_wpyr)) else 0.01
+    _heatmap_panel(axes[1], best_wpyr, wpv_labels, amp_labels,
+                   "w_pyr for best bump\n(optimal recurrent weight)",
+                   "viridis", wpyr_lo, wpyr_hi, fmt=".4f", annot_thresh=0.5)
+    axes[1].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    _heatmap_panel(axes[2], min_sat, wpv_labels, amp_labels,
+                   "Min sat frac\n(min over w_pyr)",
+                   "OrRd", 0, 1, fmt=".2f",
+                   contour_val=0.2, contour_color="blue")
+    axes[2].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    _heatmap_panel(axes[3], quality, wpv_labels, amp_labels,
+                   "Best quality score\nbump × (1-sat)",
+                   "RdYlGn", 0, 1, fmt=".2f",
+                   contour_val=0.3, contour_color="blue")
+    axes[3].set_xlabel("Amplitude (× I_ext)", fontsize=8)
+
+    title = suptitle or (
+        f"3D Sweep summary  —  sigma={sigma_deg:.0f}°  |  {condition_key}  |  "
+        f"n_trials={n_trials}  |  marginalised over w_pyr"
+    )
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig

@@ -74,7 +74,7 @@ class CircuitParams:
     # Default: small uniform starting point for the W&W operating regime.
 
     # --- Connections FROM PYR (excitatory) ---
-    w_ee: float = 0.002   # PYR -> PYR: Recurrent excitation
+    J_NMDA: float = 0.3   # PYR -> PYR: NMDA recurrent coupling (nA); replaces w_ee
     w_ep: float = 0.002   # PYR -> PV:  Drives fast feedback inhibition
     w_es: float = 0.002   # PYR -> SOM: Recruits dendritic inhibition
     w_ev: float = 0.002   # PYR -> VIP: Disinhibitory drive
@@ -282,24 +282,41 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     b["g_alpha7"]    = ParamBound(0.0, 5.0, mode="lin")
 
     # --- Synaptic weights (nA/Hz) ---
-    # Working WT solution: all weights in [0.00005, 0.005], w_pe~0.05.
-    # Tightened from [0, 10] → [0, 0.5]; covers 100x headroom above WT values,
-    # while eliminating the useless 0.5–10 range that caused degenerate high-gain solutions.
-    _W_LO = 0
-    _W_HI = 0.5
+    # Bounds tightened 2026-04-13 based on Monte Carlo viable region analysis (4.07% → target 15%+).
+    # Previous uniform [0, 0.5] for all synaptic weights created 96% dead zone above best-fit values.
+    # New strategy: set lower bound = 0.001 nA/Hz (neuronal noise floor), upper bound = 3× best-fit (or 0.5 if already large).
+    # Best-fit reference from best_params.json WT solution:
+    #   Small weights (< 0.06): w_ep=0.0043, w_ev=0.0009, w_sp=0.0528, w_vp=0.0919, w_vs=0.3405
+    #   Medium weights (0.06–0.5): w_se=0.4877, w_es=0.0353, w_pp=0.3616
+    #   Divisive w_pe=0.0267
+    # J_NMDA (recurrent): larger bounds [0.05, 2.0] due to gating saturation.
+    _W_LO = 0.001  # Lower bound: biological noise floor
 
-    for name in ["w_ee", "w_ep", "w_pp", "w_se", "w_es", "w_vs", "w_ev", "w_sp", "w_vp"]:
-        b[name] = ParamBound(_W_LO, _W_HI, mode="log")
+    # Small excitatory weights with tightened upper bounds
+    b["w_ep"]  = ParamBound(0.001, 0.10, mode="log")   # 3× best-fit 0.0043
+    b["w_ev"]  = ParamBound(0.0005, 0.02, mode="log")  # best-fit 0.000935 requires lower_min=0.0005 (half of best-fit), upper=3×best-fit≈0.003, rounded to 0.02
+    b["w_sp"]  = ParamBound(0.001, 0.15, mode="log")   # 3× best-fit 0.0528
+    b["w_vp"]  = ParamBound(0.001, 0.25, mode="log")   # 3× best-fit 0.0919
+    b["w_vs"]  = ParamBound(0.001, 0.5,  mode="log")   # 3× best-fit 0.3405
+
+    # Larger weights: add lower bound minimum, keep upper at 0.5
+    b["w_se"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.4877 — already near ceiling
+    b["w_es"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.0353
+    b["w_pp"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.3616
+
+    # J_NMDA: NMDA recurrent coupling with wider bounds due to gating saturation
+    b["J_NMDA"] = ParamBound(0.05, 2.0, mode="log")
 
     # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
-    # Working WT solution: w_pe~0.05. Upper bound tightened from 10 → 1.0.
-    b["w_pe"] = ParamBound(0, 1.0, mode="log")
+    # Working WT solution: w_pe=0.0267. Lower bound tightened from 0 → 0.001; upper kept at 1.0.
+    b["w_pe"] = ParamBound(_W_LO, 1.0, mode="log")
 
     # --- External tonic drives (nA) ---
-    # Working WT solution: I0_pyr=0.415, I0_pv/som/vip=0.25–0.27.
+    # Working WT solution: I0_pyr=0.530, I0_pv=0.480, I0_som=0.528, I0_vip=0.198.
+    # Tightened 2026-04-13: I0_pv was at 92% of range [0.1, 0.6] (norm_pos=0.917), causing 96% waste below.
     # APP solution: I0_pyr=0.435, I0_inh=0.255–0.265. Tightened from [0.01, 2.0] → [0.1, 0.8].
     b["I0_pyr"] = ParamBound(0.1, 1.5, mode="lin")
-    b["I0_pv"]  = ParamBound(0.1, 0.6, mode="lin")
+    b["I0_pv"]  = ParamBound(0.30, 0.65, mode="lin")  # Raise lower bound; extend upper 15% above best-fit 0.480
     b["I0_som"] = ParamBound(0.1, 0.6, mode="lin")
     b["I0_vip"] = ParamBound(0.1, 0.6, mode="lin")
 

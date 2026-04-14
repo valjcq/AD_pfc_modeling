@@ -36,12 +36,21 @@ def output_dir(base_dir: str, params_json: str) -> str:
 def load_params_json(path: str) -> "CircuitParams":
     """Load CircuitParams from a JSON file."""
     from .params import CircuitParams
+    import warnings
 
     with open(path, "r", encoding="utf-8") as f:
         d = json.load(f)
     # Handle nested {"params": {...}} format (e.g. from log_best_result)
     if "params" in d and isinstance(d["params"], dict):
         d = d["params"]
+
+    # Migrate old w_ee → J_NMDA (pre-NMDA gating JSON files)
+    if "w_ee" in d and "J_NMDA" not in d:
+        warnings.warn("JSON uses deprecated 'w_ee'; migrating to J_NMDA = w_ee * 10", stacklevel=2)
+        d["J_NMDA"] = d.pop("w_ee") * 10
+    elif "w_ee" in d:
+        d.pop("w_ee")  # discard stale key if J_NMDA already present
+
     base = CircuitParams()
     allowed = {fld.name for fld in fields(CircuitParams)}
     clean = {k: d[k] for k in d if k in allowed}

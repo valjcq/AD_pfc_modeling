@@ -28,6 +28,10 @@ import math
 
 import numpy as np
 
+# NMDA gating constants (fixed physics, not fitted)
+GAMMA_NMDA = 0.641
+TAU_NMDA_MS = 100.0
+
 # ---------------------------------------------------------------------------
 # Numba import — graceful fallback
 # ---------------------------------------------------------------------------
@@ -84,13 +88,15 @@ def _euler_loop(
     # GABA scaling
     ggaba: float,
     # Synaptic weights
-    w_ee: float, w_pe: float, w_se: float,
+    J_NMDA: float, S_pyr_init: float, w_pe: float, w_se: float,
     w_es: float, w_vs: float,
     w_ep: float, w_pp: float, w_sp: float, w_vp: float,
     w_ev: float,
     # Adaptation
     J_adapt_pyr: float,
     tau_adapt_pyr: float,
+    J_adapt_som: float,
+    tau_adapt_som: float,
     # External currents (static — precomputed from params)
     I_ext_pyr: float, I_ext_som: float, I_ext_pv: float, I_ext_vip: float,
     # Transfer function parameters
@@ -105,24 +111,32 @@ def _euler_loop(
     All operations are scalar floats. Numba compiles this to native machine code
     with zero Python interpreter overhead per iteration.
     """
+    S_pyr = S_pyr_init  # NMDA gating variable
+
     for k in range(n_steps - 1):
         r_pyr = r_out[k, 0]
         r_som = r_out[k, 1]
         r_pv  = r_out[k, 2]
         r_vip = r_out[k, 3]
         Iap   = I_adapt_out[k, 0]
+        Ias   = I_adapt_out[k, 1]
+
+        # NMDA gating update (before computing I_pyr)
+        dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+        S_pyr = max(0.0, min(1.0, S_pyr + dS))
 
         # Shunting (divisive) inhibition denominator — PV on PYR
         denom = 1.0 + ggaba * w_pe * r_pv
 
-        # Input currents
-        I_pyr = (w_ee * r_pyr) / denom \
+        # Input currents (with NMDA gating)
+        I_pyr = (J_NMDA * S_pyr) / denom \
                 - ggaba * w_se * r_som \
                 - Iap \
                 + I_ext_pyr \
                 + noise_scale * noise_arr[k]  # current-space noise (PYR only)
         I_som = w_es * r_pyr \
                 - w_vs * r_vip \
+                - J_adapt_som * r_som \
                 + I_ext_som
         I_pv  = w_ep * r_pyr \
                 - ggaba * w_pp * r_pv \
@@ -151,4 +165,4 @@ def _euler_loop(
 
         # Euler update: adaptation currents
         I_adapt_out[k + 1, 0] = Iap + dt_ms * (-Iap + J_adapt_pyr * r_pyr) / tau_adapt_pyr
-        I_adapt_out[k + 1, 1] = 0.0
+        I_adapt_out[k + 1, 1] = Ias + dt_ms * (-Ias + J_adapt_som * r_som) / tau_adapt_som

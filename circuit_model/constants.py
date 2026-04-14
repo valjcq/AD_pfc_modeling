@@ -14,3 +14,7 @@ R_MAX_PHYS = 100.0  # Hz
 # The optimizer should not be allowed to "solve" bistability by pushing the
 # upper fixed point into the clamp region (above R_MAX_PHYS).
 R_HIGH_MAX = 80.0  # Hz
+
+# NMDA gating constants (Wong & Wang 2006) — fixed physics, not fitted
+TAU_NMDA_MS = 100.0   # ms
+GAMMA_NMDA = 0.641    # dimensionless

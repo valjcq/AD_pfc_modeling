@@ -18,6 +18,7 @@ import numpy as np
 from .params import CircuitParams
 from .transfer import phi_wong_wang
 from ._fast_loop import _euler_loop, NUMBA_AVAILABLE
+from .constants import GAMMA_NMDA, TAU_NMDA_MS
 
 
 NoiseType = Literal["none", "white", "ou"]
@@ -88,7 +89,7 @@ def simulate_circuit(
         r[0] = r0
 
     if I_adapt0 is None:
-        I_adapt[0] = 0.0
+        I_adapt[0] = np.array([0.0, 0.0], dtype=float)
     else:
         I_adapt0 = np.asarray(I_adapt0, dtype=float)
         if I_adapt0.shape != (2,):
@@ -101,6 +102,10 @@ def simulate_circuit(
         rng = np.random.default_rng()
 
     ggaba = params.g_gaba()
+
+    # Compute initial NMDA gating variable from initial PYR rate
+    r_pyr_init = float(r[0, 0])
+    S_pyr_init = (GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS)
 
     # =========================================================================
     # FAST PATH — Numba JIT or pure-scalar fallback (both avoid NumPy overhead)
@@ -121,12 +126,14 @@ def simulate_circuit(
             r, I_adapt, noise_arr,
             n_steps, dt_ms, float(noise_scale), float(params.tau_s),
             float(ggaba),
-            float(params.w_ee), float(params.w_pe), float(params.w_se),
+            float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
             float(params.w_es), float(params.w_vs),
             float(params.w_ep), float(params.w_pp), float(params.w_sp),
             float(params.w_vp), float(params.w_ev),
             float(params.J_adapt_pyr),
             float(params.tau_adapt_pyr),
+            float(params.J_adapt_som),
+            float(params.tau_adapt_som),
             float(params.I_ext_pyr()), float(params.I_ext_som()),
             float(params.I_ext_pv()),  float(params.I_ext_vip()),
             float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_exc),
@@ -142,10 +149,12 @@ def simulate_circuit(
         # =====================================================================
         noise_scale = params.sigma_noise * params.I_ext_pyr()
         xi_state = 0.0  # scalar OU state for PYR
+        S_pyr = S_pyr_init  # NMDA gating variable (scalar)
 
         for k in range(n_steps - 1):
             r_pyr, r_som, r_pv, r_vip = r[k]
-            Iap = I_adapt[k, 0]  # Adaptation current for PYR only
+            Iap = I_adapt[k, 0]  # Adaptation current for PYR
+            Ias = I_adapt[k, 1]  # Adaptation current for SOM
 
             # NOISE GENERATION (PYR only, current-space)
             if noise_scale == 0.0 or noise_type == "none":
@@ -174,11 +183,15 @@ def simulate_circuit(
                 I_ext_pv_val = params.I_ext_pv()
                 I_ext_vip_val = params.I_ext_vip()
 
+            # NMDA GATING UPDATE (before computing I_pyr)
+            dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+            S_pyr = float(np.clip(S_pyr + dS, 0.0, 1.0))
+
             # INPUT CURRENTS
             # PV provides DIVISIVE (shunting) inhibition: models perisomatic GABA
             denom = 1.0 + ggaba * params.w_pe * r_pv
             I_pyr = (
-                (params.w_ee * r_pyr) / denom
+                (params.J_NMDA * S_pyr) / denom
                 - ggaba * params.w_se * r_som
                 - Iap
                 + I_ext_pyr_val
@@ -187,6 +200,7 @@ def simulate_circuit(
             I_som = (
                 params.w_es * r_pyr
                 - params.w_vs * r_vip
+                - params.J_adapt_som * r_som
                 + I_ext_som_val
             )
             I_pv = (
@@ -216,7 +230,8 @@ def simulate_circuit(
             # EULER UPDATE: ADAPTATION CURRENTS
             dIap = (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
             I_adapt[k + 1, 0] = Iap + dt_ms * dIap
-            I_adapt[k + 1, 1] = 0.0
+            dIas = (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
+            I_adapt[k + 1, 1] = Ias + dt_ms * dIas
 
     # Compute transient window for plotting if enabled
     transient_window = None
@@ -260,14 +275,23 @@ def validate_fast_loop(
     noise_ref = rng_ref.standard_normal(n_steps - 1)
     noise_scale = params.sigma_noise * params.I_ext_pyr()
 
+    # Compute initial NMDA gating variable
+    r_pyr_init = float(r0[0])
+    S_pyr_init = (GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS)
+    S_pyr = S_pyr_init
+
     ggaba = params.g_gaba()
     for k in range(n_steps - 1):
         r_pyr, r_som, r_pv, r_vip = r_ref[k]
         Iap = I_adapt_ref[k, 0]
+        Ias = I_adapt_ref[k, 1]
         xi_pyr = noise_ref[k]
+        # NMDA gating update
+        dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
+        S_pyr = float(np.clip(S_pyr + dS, 0.0, 1.0))
         denom = 1.0 + ggaba * params.w_pe * r_pv
-        I_pyr = (params.w_ee * r_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr() + noise_scale * xi_pyr
-        I_som = params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som()
+        I_pyr = (params.J_NMDA * S_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr() + noise_scale * xi_pyr
+        I_som = params.w_es * r_pyr - params.w_vs * r_vip - params.J_adapt_som * r_som + params.I_ext_som()
         I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv()
         I_vip = params.w_ev * r_pyr + params.I_ext_vip()
         Phi = np.array([
@@ -279,7 +303,7 @@ def validate_fast_loop(
         dr = (-r_ref[k] + Phi) / params.tau_s  # noise already in I_pyr
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
         I_adapt_ref[k + 1, 0] = Iap + dt_ms * (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
-        I_adapt_ref[k + 1, 1] = 0.0
+        I_adapt_ref[k + 1, 1] = Ias + dt_ms * (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
 
     # ---- Fast path ----
     r_fast = np.zeros((n_steps, 4), dtype=float)
@@ -295,12 +319,14 @@ def validate_fast_loop(
         r_fast, I_adapt_fast, noise_fast,
         n_steps, dt_ms, float(noise_scale), float(params.tau_s),
         float(ggaba),
-        float(params.w_ee), float(params.w_pe), float(params.w_se),
+        float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
         float(params.w_es), float(params.w_vs),
         float(params.w_ep), float(params.w_pp), float(params.w_sp),
         float(params.w_vp), float(params.w_ev),
         float(params.J_adapt_pyr),
         float(params.tau_adapt_pyr),
+        float(params.J_adapt_som),
+        float(params.tau_adapt_som),
         float(params.I_ext_pyr()), float(params.I_ext_som()),
         float(params.I_ext_pv()),  float(params.I_ext_vip()),
         float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_exc),

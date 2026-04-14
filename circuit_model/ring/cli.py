@@ -105,6 +105,12 @@ STIM_SIGMA_DEG = 18.0
 RATE_CAP_HZ = 200.0
 CAP_WARNING_FRACTION = 0.10
 
+# 3D calibration sweep: bump state thresholds
+CAL3D_SAT_THRESH_HZ = 90.0     # max PYR >= this -> saturated state
+CAL3D_RESTING_MULT = 2.5       # bump lower bound = resting_hz * this
+CAL3D_BUMP_MIN_HZ = 10.0       # minimum bump threshold regardless of resting
+CAL3D_CUE_SAT_THRESH_HZ = 190.0  # cue peak >= this -> cue saturated
+
 BUMP_DECAY_REF_OFFSET_MS: float = 400.0  # ms after cue offset used as normalization reference
 
 DEFAULT_FIT_INIT_KWARGS = {
@@ -142,7 +148,7 @@ DEFAULT_FIT_INIT_KWARGS = {
     "trans_enabled": False,
     "trans_factor": 0.2,
     "trans_start_ms": 1000.0,
-    "w_ee": 0.002,
+    "J_NMDA": 0.3,
     "w_ep": 0.002,
     "w_es": 0.002,
     "w_ev": 0.002,
@@ -490,7 +496,7 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
          f"   act_alpha5 = {base_params.act_alpha5:.4g}")
 
     emit("  ── Synaptic weights")
-    emit(f"       w_ee={base_params.w_ee:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
+    emit(f"       J_NMDA={base_params.J_NMDA:<8.4g}  w_ep={base_params.w_ep:<8.4g}"
          f"  w_es={base_params.w_es:<8.4g}  w_ev={base_params.w_ev:.2e}")
     emit(f"       w_pe={base_params.w_pe:<8.4g}  w_pp={base_params.w_pp:.4g}")
     emit(f"       w_se={base_params.w_se:<8.4g}  w_sp={base_params.w_sp:.2e}")
@@ -5801,6 +5807,204 @@ def _load_calibrate_grid_results(cond_dir: str, cond_key: str) -> list[dict]:
     return rows
 
 
+# ============================================================================
+# 3D CALIBRATION SWEEP HELPERS
+# ============================================================================
+
+def _compute_delay_state_fracs(
+    pyr: np.ndarray,
+    t_ms: np.ndarray,
+    resting_hz: float,
+    stim_onset_ms: float,
+    stim_offset_ms: float,
+) -> dict:
+    """Classify each delay timepoint as resting / bump / saturated.
+
+    The bump lower bound is resting_hz * CAL3D_RESTING_MULT, clamped to
+    at least resting_hz + 5 Hz and CAL3D_BUMP_MIN_HZ absolute.
+
+    Parameters:
+        pyr: (n_times, n_nodes) PYR firing rates from simulation.
+        t_ms: time axis (ms), zero-based from the short simulation.
+        resting_hz: Mean PYR rate from the burn-in (pre-cue baseline).
+        stim_onset_ms, stim_offset_ms: cue window in short-sim time.
+
+    Returns:
+        dict with keys: cue_peak_hz, cue_saturated, delay_rest_frac,
+        delay_bump_frac, delay_sat_frac, delay_mean_peak_hz, bump_lo_hz.
+    """
+    bump_lo = max(
+        resting_hz * CAL3D_RESTING_MULT,
+        resting_hz + 5.0,
+        CAL3D_BUMP_MIN_HZ,
+    )
+
+    # --- Cue ---
+    cue_mask = (t_ms >= stim_onset_ms) & (t_ms <= stim_offset_ms)
+    if cue_mask.any():
+        cue_peak = float(pyr[cue_mask].max())
+    else:
+        cue_peak = float("nan")
+    cue_sat = cue_peak >= CAL3D_CUE_SAT_THRESH_HZ
+
+    # --- Delay ---
+    delay_mask = t_ms > stim_offset_ms
+    if not delay_mask.any():
+        return {
+            "cue_peak_hz": cue_peak, "cue_saturated": cue_sat,
+            "delay_rest_frac": float("nan"), "delay_bump_frac": float("nan"),
+            "delay_sat_frac": float("nan"), "delay_mean_peak_hz": float("nan"),
+            "bump_lo_hz": bump_lo,
+        }
+
+    # max PYR across all nodes at each delay time step
+    peak_t = pyr[delay_mask].max(axis=1)
+    rest_m = peak_t < bump_lo
+    bump_m = (peak_t >= bump_lo) & (peak_t < CAL3D_SAT_THRESH_HZ)
+    sat_m = peak_t >= CAL3D_SAT_THRESH_HZ
+
+    return {
+        "cue_peak_hz": cue_peak,
+        "cue_saturated": bool(cue_sat),
+        "delay_rest_frac": float(rest_m.mean()),
+        "delay_bump_frac": float(bump_m.mean()),
+        "delay_sat_frac": float(sat_m.mean()),
+        "delay_mean_peak_hz": float(peak_t.mean()),
+        "bump_lo_hz": float(bump_lo),
+    }
+
+
+_cal3d_worker_args: Optional[dict] = None
+
+
+def _cal3d_init_worker(
+    local_params_by_cond: "dict[str, CircuitParams]",
+    ring_params_by_key: "dict[tuple[float, float], RingParams]",
+    conn_by_key: "dict[tuple[float, float], RingConnectivity]",
+    burnin_by_key: "dict[tuple[str, float, float], tuple[np.ndarray, np.ndarray]]",
+    resting_by_key: "dict[tuple[str, float, float], float]",
+    base_I_ext: float,
+    stim_onset_ms: float,
+    stim_offset_ms: float,
+    T_ms_short: float,
+    record_dt_ms: float,
+) -> None:
+    """Initialise per-worker state for the 3D calibration sweep."""
+    global _cal3d_worker_args
+    _cal3d_worker_args = {
+        "local_params": local_params_by_cond,
+        "ring_params": ring_params_by_key,
+        "conn": conn_by_key,
+        "burnin": burnin_by_key,
+        "resting": resting_by_key,
+        "base_I_ext": base_I_ext,
+        "stim_onset_ms": stim_onset_ms,
+        "stim_offset_ms": stim_offset_ms,
+        "T_ms_short": T_ms_short,
+        "record_dt_ms": record_dt_ms,
+    }
+
+
+def _cal3d_run_single(job: tuple) -> dict:
+    """Run one trial of the 3D calibration sweep."""
+    global _cal3d_worker_args
+    cfg = _cal3d_worker_args
+    ck, w_pv, w_pyr, amp, trial_idx, seed = job
+
+    rp = cfg["ring_params"][(w_pv, w_pyr)]
+    conn = cfg["conn"][(w_pv, w_pyr)]
+    r0, Ia0 = cfg["burnin"][(ck, w_pv, w_pyr)]
+    resting_hz = cfg["resting"][(ck, w_pv, w_pyr)]
+    local_params = cfg["local_params"][ck]
+
+    actual_current = float(amp) * float(cfg["base_I_ext"])
+    stimuli = [
+        RingStimulus(
+            center_deg=STIM_CENTER_DEG,
+            amplitude=actual_current,
+            sigma_deg=STIM_SIGMA_DEG,
+            onset_ms=float(cfg["stim_onset_ms"]),
+            duration_ms=STIM_DURATION_MS,
+        )
+    ]
+
+    res = simulate_ring(
+        local_params, rp,
+        T_ms=float(cfg["T_ms_short"]),
+        stimuli=stimuli,
+        r0=r0,
+        I_adapt0=Ia0,
+        seed=int(seed),
+        noise_type="white",
+        connectivity=conn,
+        record_dt_ms=float(cfg["record_dt_ms"]),
+    )
+
+    pyr = res.r[:, :, 0]  # (n_times, n_nodes)
+    state = _compute_delay_state_fracs(
+        pyr, res.t_ms,
+        resting_hz=resting_hz,
+        stim_onset_ms=float(cfg["stim_onset_ms"]),
+        stim_offset_ms=float(cfg["stim_offset_ms"]),
+    )
+
+    return {
+        "cond_key": ck,
+        "w_pv": float(w_pv),
+        "w_pyr": float(w_pyr),
+        "amp": float(amp),
+        "trial_idx": int(trial_idx),
+        "seed": int(seed),
+        "resting_hz": float(resting_hz),
+        **state,
+    }
+
+
+def _cal3d_is_cached(csv_path: str, w_pv_values: list, w_pyr_values: list,
+                     amplitude_values: list, n_trials: int) -> bool:
+    """Return True if the 3D sweep CSV has all requested grid points."""
+    if not os.path.exists(csv_path):
+        return False
+    needed = {(float(wv), float(wy), float(a))
+              for wv in w_pv_values for wy in w_pyr_values for a in amplitude_values}
+    found: set[tuple[float, float, float]] = set()
+    try:
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                key = (float(row["w_pv"]), float(row["w_pyr"]), float(row["amp"]))
+                if key in needed and int(float(row.get("n_trials", 0))) >= n_trials:
+                    found.add(key)
+    except Exception:
+        return False
+    return found == needed
+
+
+def _cal3d_load_cached(csv_path: str) -> list[dict]:
+    """Load per-trial 3D sweep results from CSV."""
+    if not os.path.exists(csv_path):
+        return []
+    rows = []
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            rows.append({
+                "cond_key": row.get("cond_key", "WT"),
+                "w_pv": float(row["w_pv"]),
+                "w_pyr": float(row["w_pyr"]),
+                "amp": float(row["amp"]),
+                "trial_idx": int(float(row.get("trial_idx", 0))),
+                "seed": int(float(row.get("seed", 0))),
+                "resting_hz": float(row.get("resting_hz", "nan")),
+                "cue_peak_hz": float(row.get("cue_peak_hz", "nan")),
+                "cue_saturated": row.get("cue_saturated", "False").lower() in ("1", "true"),
+                "delay_rest_frac": float(row.get("delay_rest_frac", "nan")),
+                "delay_bump_frac": float(row.get("delay_bump_frac", "nan")),
+                "delay_sat_frac": float(row.get("delay_sat_frac", "nan")),
+                "delay_mean_peak_hz": float(row.get("delay_mean_peak_hz", "nan")),
+                "bump_lo_hz": float(row.get("bump_lo_hz", "nan")),
+            })
+    return rows
+
+
 ASYM_SETTLING_MS: float = 1000.0
 ASYM_PRE_CUE_WINDOW_MS: float = 200.0
 
@@ -5921,25 +6125,24 @@ def _asym_run_single(job: tuple) -> dict:
     }
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
-    """Run 2D parameter calibration (amplitude x w_inter)."""
+    """3D parameter calibration sweep: w_pv_global × w_pyr_pyr_inter × amplitude.
+
+    For each grid point, runs n_trials short ring simulations from a
+    pre-computed burn-in state and classifies the delay period into three
+    states based on the maximum PYR firing rate across all nodes:
+      - RESTING   : max_PYR < resting × 2.5  (or < 10 Hz)
+      - BUMP      : resting_threshold ≤ max_PYR < 90 Hz
+      - SATURATED : max_PYR ≥ 90 Hz
+
+    The key quality metric is delay_bump_frac (fraction of delay time in
+    bump state). A true bump requires high bump_frac AND low sat_frac.
+    """
+    from .plotting import plot_3d_sweep_slice, plot_3d_sweep_summary
     _resolve_seed(args)
 
-    # If --w_pv_values given, run once per w_pv_global value
-    w_pv_values = getattr(args, 'w_pv_values', None)
-    if w_pv_values:
-        import copy
-        for wpv in w_pv_values:
-            args_copy = copy.copy(args)
-            args_copy.w_pv_global = float(wpv)
-            args_copy.w_pv_values = None  # prevent infinite recursion
-            print(f"\n{'='*60}")
-            print(f"  w_pv_global = {wpv}")
-            print(f"{'='*60}")
-            cmd_calibrate(args_copy)
-        return
-
-    import json
+    import json as _json
     from tqdm import tqdm
+
     import matplotlib
     if args.no_show:
         matplotlib.use("Agg")
@@ -5949,550 +6152,394 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     base_params, load_msg = _load_base_params_for_ring(args.params_json, args)
     print(load_msg)
 
-    ring_params_base = RingParams(
-        n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
-        sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
-    )
-
-    if args.conditions is None:
-        condition_keys = ["WT"]
-    else:
-        if "all" in args.conditions:
-            condition_keys = list(STUDY_CONDITIONS.keys())
-        else:
-            condition_keys = args.conditions
-            for k in condition_keys:
-                if k not in STUDY_CONDITIONS:
-                    print(f"Error: unknown condition '{k}'.\n"
-                        f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
-                    sys.exit(1)
-
-    amplitudes = args.amplitudes
+    # --- Grid ---
+    w_pv_values: list[float] = list(getattr(args, 'w_pv_values', None) or [args.w_pv_global])
+    # w_pyr values
+    _w_inter_explicit = getattr(args, 'w_inter_values', None)
     _w_min = getattr(args, 'w_inter_min', None)
     _w_max = getattr(args, 'w_inter_max', None)
     _n_inter = getattr(args, 'n_inter', None)
-    if args.w_inter_values is not None:
-        w_inter_values = args.w_inter_values
+    if _w_inter_explicit is not None:
+        w_pyr_values: list[float] = list(_w_inter_explicit)
     elif _w_min is not None and _w_max is not None and _n_inter is not None:
-        import numpy as np
-        w_inter_values = list(np.linspace(_w_min, _w_max, _n_inter))
+        w_pyr_values = list(np.linspace(_w_min, _w_max, _n_inter))
     else:
-        w_inter_values = [2.0, 3.0, 4.0, 5.0, 6.0]
-    n_trials = args.n_trials
-    noise_percentile = args.noise_percentile
-    no_cache = getattr(args, 'no_cache', False)
-    batch_chunk_size = getattr(args, 'batch_chunk_size', 50)
-    del batch_chunk_size
-    n_workers = _resolve_workers(args)
+        w_pyr_values = [0.002, 0.003, 0.004, 0.005, 0.006, 0.008, 0.010]
 
-    # Conservative worker cap for per-trial execution.
-    n_workers = max(1, int(n_workers))
+    amplitudes: list[float] = list(args.amplitudes)
+    n_trials: int = int(args.n_trials)
+    n_workers: int = max(1, _resolve_workers(args))
+    no_cache: bool = getattr(args, 'no_cache', False)
+    record_dt_ms: float = getattr(args, 'record_dt_ms', 5.0)
+    sigma_deg: float = float(args.sigma_pyr_deg)
 
-    conn_label = _calibration_network_label(ring_params_base)
+    # --- Conditions ---
+    if args.conditions is None:
+        condition_keys = ["WT"]
+    elif "all" in args.conditions:
+        condition_keys = list(STUDY_CONDITIONS.keys())
+    else:
+        condition_keys = list(args.conditions)
+        for k in condition_keys:
+            if k not in STUDY_CONDITIONS:
+                print(f"Error: unknown condition '{k}'.\n"
+                      f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
+                sys.exit(1)
+
+    # --- Output directory (sigma-only label since both w_pv and w_pyr are swept) ---
+    base_rp = RingParams(
+        n_nodes=args.n_nodes,
+        w_pyr_pyr_inter=w_pyr_values[0],
+        sigma_pyr_deg=sigma_deg,
+        w_pv_global=w_pv_values[0],
+    )
+    sigma_label = f"{args.n_nodes}_sigma_{_fmt(sigma_deg)}"
     out_dir = os.path.join(
         _output_dir("figs/ring/calibration", args.params_json),
-        conn_label,
+        sigma_label,
     )
     os.makedirs(out_dir, exist_ok=True)
 
     # Timing
-    stim_offset_ms = STIM_ONSET_MS + STIM_DURATION_MS
-    delay_end_ms = stim_offset_ms + args.delay_ms
-    T_ms_full = delay_end_ms
+    stim_onset_ms_short = STIM_ONSET_MS - BURN_IN_MS   # 500 ms in short sim
+    stim_offset_ms_short = stim_onset_ms_short + STIM_DURATION_MS
+    delay_ms = float(args.delay_ms)
+    T_ms_short = stim_offset_ms_short + delay_ms
+    T_ms_full = BURN_IN_MS + T_ms_short
 
-    # Evaluation times during delay (every 200ms after stim offset)
-    eval_step_ms = 200.0
-    eval_times_ms = []
-    t = stim_offset_ms + eval_step_ms
-    while t <= delay_end_ms:
-        eval_times_ms.append(t)
-        t += eval_step_ms
-    eval_times_s = np.array([(et - stim_offset_ms) / 1000.0 for et in eval_times_ms])
+    n_grid = len(w_pv_values) * len(w_pyr_values) * len(amplitudes)
+    n_burnin = len(condition_keys) * len(w_pv_values) * len(w_pyr_values)
+    n_total_trials = n_grid * len(condition_keys) * n_trials
 
-    # --- Cache check: which conditions already have complete CSV results? ---
-    cached_conditions: set[str] = set()
-    if not no_cache:
-        for ck in condition_keys:
-            cond_dir_check = os.path.join(out_dir, ck)
-            if _is_calibrate_cached(cond_dir_check, ck, amplitudes, w_inter_values, n_trials):
-                cached_conditions.add(ck)
+    print(f"\n3D Calibration sweep configuration:")
+    print(f"  Conditions:       {', '.join(condition_keys)}")
+    print(f"  w_pv_global:      {w_pv_values}")
+    print(f"  w_pyr_pyr_inter:  {[f'{v:.4g}' for v in w_pyr_values]}")
+    print(f"  amplitudes:       {amplitudes}")
+    print(f"  Grid points:      {len(w_pv_values)} × {len(w_pyr_values)} × {len(amplitudes)} = {n_grid}")
+    print(f"  Trials/point:     {n_trials}")
+    print(f"  Total trials:     {n_total_trials} × {len(condition_keys)} cond")
+    print(f"  delay_ms:         {delay_ms:.0f}")
+    print(f"  Workers:          {n_workers}")
+    print(f"  Sat threshold:    {CAL3D_SAT_THRESH_HZ} Hz")
+    print(f"  Cue sat thresh:   {CAL3D_CUE_SAT_THRESH_HZ} Hz")
+    print(f"  Output dir:       {out_dir}")
 
-    conditions_to_run = [ck for ck in condition_keys if ck not in cached_conditions]
-
-    print(f"\nCalibration configuration:")
-    print(f"  Conditions: {', '.join(condition_keys)}")
-    if cached_conditions:
-        print(f"  Cache hit:  {', '.join(sorted(cached_conditions))} — skipping simulation")
-    if conditions_to_run:
-        print(f"  To simulate: {', '.join(conditions_to_run)}")
-    print(f"  Amplitudes (x I_ext_pyr): {', '.join(_fmt(a) for a in amplitudes)}")
-    print(f"  w_inter values: {', '.join(_fmt(w) for w in w_inter_values)}")
-    print(f"  Grid points: {len(amplitudes)} x {len(w_inter_values)} = {len(amplitudes) * len(w_inter_values)}")
-    print(f"  Trials per grid point: {n_trials}")
-    print(f"  Delay = {args.delay_ms:.0f} ms")
-    print(f"  Workers: {n_workers}")
-
-    if conditions_to_run:
-        total_sims = len(conditions_to_run) * len(amplitudes) * len(w_inter_values) * n_trials
-        print(f"  Total grid simulations: {total_sims}")
-
-    # Shared containers — populated by simulation OR loaded from cache below
-    baseline_A_hat_data: dict[tuple[str, float], np.ndarray] = {}
-    noise_thresholds: dict[tuple[str, float], float] = {}
-    cap_hit_fraction_data: dict[tuple[str, float], float] = {}
-    burnin_rates: dict[tuple[str, float], dict] = {}  # steady-state pop rates
-    grid_results: list[dict] = []
-
-    if conditions_to_run:
-        # --- Pre-compute connectivity for each w_inter ---
-        print("\nBuilding connectivity matrices...")
-        connectivity_cache: dict[float, RingConnectivity] = {}
-        for w in tqdm(w_inter_values, desc="Connectivity", unit="w"):
-            rp = replace(ring_params_base, w_pyr_pyr_inter=w)
-            connectivity_cache[w] = RingConnectivity.from_params(rp)
-
-        # --- Pre-compute burn-in for each (condition, w_inter) ---
-        print("Computing burn-in states...")
-        burnin_cache: dict[tuple[str, float], tuple[np.ndarray, np.ndarray]] = {}
-        for w in tqdm(w_inter_values, desc="Burn-in", unit="w_inter"):
-            rp = replace(ring_params_base, w_pyr_pyr_inter=w)
-            conn = connectivity_cache[w]
-            for ck in conditions_to_run:
-                local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
-                res = simulate_ring(
-                    local_params,
-                    rp,
-                    T_ms=BURN_IN_MS,
-                    noise_type="white",
-                    record_dt_ms=1000.0,
-                    connectivity=conn,
-                    seed=args.seed,
-                )
-                burnin_cache[(ck, w)] = (res.r[-1].copy(), res.I_adapt_final.copy())
-                # Mean rate across all nodes at end of burn-in (last recorded frame)
-                r_final = res.r[-1]  # shape (n_nodes, 4)
-                mean_pyr = float(np.mean(r_final[:, 0]))
-                burnin_rates[(ck, w)] = {
-                    'ss_pyr_hz': mean_pyr,
-                    'ss_som_hz': float(np.mean(r_final[:, 1])),
-                    'ss_pv_hz':  float(np.mean(r_final[:, 2])),
-                    'ss_vip_hz': float(np.mean(r_final[:, 3])),
-                    'ss_pyr_cv': float(np.std(r_final[:, 0]) / (mean_pyr + 1e-8)),
-                }
-
-        # Save burnin_rates so cached re-runs can reload them without re-simulating
-        _burnin_json_path = os.path.join(out_dir, "burnin_rates.json")
-        if burnin_rates:
-            _serialisable = {f"{ck}__{w}": v for (ck, w), v in burnin_rates.items()}
-            with open(_burnin_json_path, 'w') as _f:
-                json.dump(_serialisable, _f)
-
-        # --- Trial seeds ---
-        trial_seeds = _generate_trial_seeds(args.seed, n_trials)
-        record_dt_ms = getattr(args, 'record_dt_ms', 5.0)
-        T_ms_short = T_ms_full - BURN_IN_MS
-
-        # --- Noise floor: auto-trigger ring-noise-floor if baseline is missing/incomplete ---
-        baseline_n_trials_target = max(1, int(n_trials))
-        conditions_missing_baseline: list[str] = []
-        condition_missing_w: dict[str, list[float]] = {}
-        trials_to_add_by_key: dict[tuple[str, float], int] = {}
-        trial_start_idx_by_key: dict[tuple[str, float], int] = {}
-
-        # Preload cached baselines for all conditions to run
-        for ck in conditions_to_run:
-            cond_dir_load = os.path.join(out_dir, ck)
-            cached_nt, cached_base, _, cached_cap_frac = _load_calibrate_baseline(
-                cond_dir_load, ck, w_inter_values, noise_percentile)
-            noise_thresholds.update(cached_nt)
-            baseline_A_hat_data.update(cached_base)
-            cap_hit_fraction_data.update(cached_cap_frac)
-
-        for ck in conditions_to_run:
-            cond_dir_check = os.path.join(out_dir, ck)
-            trial_counts, has_trial_metadata = _load_baseline_trial_counts(cond_dir_check, ck)
-            missing_ws: list[float] = []
-
-            for w in w_inter_values:
-                key = (ck, w)
-                if key not in noise_thresholds:
-                    missing_ws.append(w)
-                    trials_to_add_by_key[key] = baseline_n_trials_target
-                    trial_start_idx_by_key[key] = 0
-                    continue
-
-                if has_trial_metadata:
-                    cached_trials = int(trial_counts.get(key, 0))
-                    if cached_trials < baseline_n_trials_target:
-                        missing_ws.append(w)
-                        trials_to_add_by_key[key] = baseline_n_trials_target - cached_trials
-                        trial_start_idx_by_key[key] = cached_trials
-
-            if missing_ws:
-                conditions_missing_baseline.append(ck)
-                condition_missing_w[ck] = missing_ws
-
-        if conditions_missing_baseline:
-            missing_desc = [
-                f"{ck} (missing w_inter: {', '.join(_fmt(w) for w in condition_missing_w.get(ck, []))})"
-                for ck in conditions_missing_baseline
-            ]
-            print(
-                f"\nNoise floor cache incomplete for: "
-                f"{'; '.join(missing_desc)}\n"
-                f"  Auto-running ring-noise-floor with default parameters "
-                f"(n_baseline={baseline_n_trials_target}, noise_percentile={noise_percentile}).\n"
-                f"  Run 'ring-noise-floor' separately to customise these."
-            )
-            new_nt, new_base, new_cap_frac = _run_noise_floor_for_conditions(
-                conditions_to_run=conditions_missing_baseline,
-                w_inter_values=w_inter_values,
-                ring_params_base=ring_params_base,
-                base_params=base_params,
-                n_baseline=baseline_n_trials_target,
-                noise_percentile=noise_percentile,
-                out_dir=out_dir,
-                n_workers=n_workers,
-                batch_chunk_size=1,
-                seed=args.seed,
-                delay_ms=args.delay_ms,
-                record_dt_ms=record_dt_ms,
-                w_inter_values_by_condition=condition_missing_w,
-                trials_to_add_by_key=trials_to_add_by_key,
-                trial_start_idx_by_key=trial_start_idx_by_key,
-                preserve_existing_cache=True,
-            )
-            noise_thresholds.update(new_nt)
-            baseline_A_hat_data.update(new_base)
-            cap_hit_fraction_data.update(new_cap_frac)
+    # --- Cache check ---
+    all_trial_results: list[dict] = []
+    for ck in condition_keys:
+        cond_csv = os.path.join(out_dir, f"cal3d_trials_{ck}.csv")
+        if not no_cache and _cal3d_is_cached(cond_csv, w_pv_values, w_pyr_values,
+                                              amplitudes, n_trials):
+            print(f"\n  Cache hit: {ck} — loading {cond_csv}")
+            all_trial_results.extend(_cal3d_load_cached(cond_csv))
         else:
-            print("  All noise floor baselines cached — skipping noise floor simulation")
+            # Need to simulate this condition
+            pass
 
-        # Report cached / loaded baselines
-        for ck in conditions_to_run:
-            cond_label = STUDY_CONDITIONS[ck].name
-            for w in w_inter_values:
-                key = (ck, w)
-                nt = noise_thresholds.get(key, float('nan'))
-                n_samples = len(baseline_A_hat_data.get(key, []))
-                print(f"  {cond_label}, w={w:.2f}: threshold = {nt:.4f} "
-                      f"(p{noise_percentile:.0f}, n={n_samples}) [baseline cached]")
+    cached_conds = {r["cond_key"] for r in all_trial_results}
+    conds_to_run = [ck for ck in condition_keys if ck not in cached_conds]
 
-        # --- Phase 2: Grid exploration ---
-        print("\n--- Phase 2: Grid exploration ---")
-        n_grid_groups = len(conditions_to_run) * len(amplitudes) * len(w_inter_values)
-        print(f"  {n_trials} trials × {n_grid_groups} groups = {n_trials * n_grid_groups} total grid sims")
+    if conds_to_run:
+        # ----------------------------------------------------------------
+        # Phase 1: Pre-compute burn-in states
+        # ----------------------------------------------------------------
+        print(f"\n--- Phase 1: Burn-in states ({n_burnin} per condition) ---")
+        burnin_cache: dict[tuple[str, float, float], tuple[np.ndarray, np.ndarray]] = {}
+        resting_cache: dict[tuple[str, float, float], float] = {}
+        connectivity_cache: dict[tuple[float, float], RingConnectivity] = {}
+        ring_params_cache: dict[tuple[float, float], RingParams] = {}
 
-        grid_seeds = trial_seeds[:n_trials]
+        # Pre-build connectivity and ring params (reused across conditions)
+        print("  Building connectivity matrices...")
+        for w_pv in w_pv_values:
+            for w_pyr in w_pyr_values:
+                rp = RingParams(
+                    n_nodes=args.n_nodes,
+                    w_pyr_pyr_inter=float(w_pyr),
+                    sigma_pyr_deg=sigma_deg,
+                    w_pv_global=float(w_pv),
+                )
+                ring_params_cache[(w_pv, w_pyr)] = rp
+                connectivity_cache[(w_pv, w_pyr)] = RingConnectivity.from_params(rp)
+
+        burnin_total = len(conds_to_run) * len(w_pv_values) * len(w_pyr_values)
+        import time as _time
+        t0_burnin = _time.time()
+        with tqdm(total=burnin_total, desc="Burn-in", unit="sim", smoothing=0) as pbar:
+            for ck in conds_to_run:
+                local_params = apply_condition(base_params, STUDY_CONDITIONS[ck])
+                for w_pv in w_pv_values:
+                    for w_pyr in w_pyr_values:
+                        rp = ring_params_cache[(w_pv, w_pyr)]
+                        conn = connectivity_cache[(w_pv, w_pyr)]
+                        res = simulate_ring(
+                            local_params, rp,
+                            T_ms=BURN_IN_MS,
+                            noise_type="white",
+                            record_dt_ms=BURN_IN_MS,  # only final snapshot
+                            connectivity=conn,
+                            seed=args.seed,
+                        )
+                        burnin_cache[(ck, w_pv, w_pyr)] = (
+                            res.r[-1].copy(), res.I_adapt_final.copy()
+                        )
+                        resting_cache[(ck, w_pv, w_pyr)] = float(np.mean(res.r[-1, :, 0]))
+                        pbar.update()
+        t_burnin = _time.time() - t0_burnin
+        print(f"  Burn-in complete in {t_burnin:.1f}s "
+              f"({t_burnin / burnin_total:.2f}s/sim)")
+
+        # ----------------------------------------------------------------
+        # Phase 2: Grid trials
+        # ----------------------------------------------------------------
+        print(f"\n--- Phase 2: Grid trials ---")
+        trial_seeds = _generate_trial_seeds(args.seed, n_trials)
         local_params_by_cond = {
             ck: apply_condition(base_params, STUDY_CONDITIONS[ck])
-            for ck in conditions_to_run
+            for ck in conds_to_run
         }
+
         jobs = [
-            (ck, amp, w, ti, int(grid_seeds[ti]))
-            for ck in conditions_to_run
+            (ck, w_pv, w_pyr, amp, ti, int(trial_seeds[ti]))
+            for ck in conds_to_run
+            for w_pv in w_pv_values
+            for w_pyr in w_pyr_values
             for amp in amplitudes
-            for w in w_inter_values
             for ti in range(n_trials)
         ]
+        print(f"  {len(jobs)} trials across {len(conds_to_run)} conditions")
 
         init_args = (
             local_params_by_cond,
-            ring_params_base,
+            ring_params_cache,
             connectivity_cache,
             burnin_cache,
-            eval_times_ms,
-            args.delay_ms,
-            record_dt_ms,
-            T_ms_short,
+            resting_cache,
             base_params.I_ext_pyr(),
+            stim_onset_ms_short,
+            stim_offset_ms_short,
+            T_ms_short,
+            record_dt_ms,
         )
 
+        new_results: list[dict] = []
+        t0_grid = _time.time()
         if n_workers > 1 and len(jobs) > 1:
             with ProcessPoolExecutor(
                 mp_context=_MP_CONTEXT,
                 max_workers=n_workers,
-                initializer=_calibrate_init_worker,
+                initializer=_cal3d_init_worker,
                 initargs=init_args,
             ) as executor:
-                with tqdm(total=len(jobs), desc="Grid", unit="trial", smoothing=0) as pbar:
+                with tqdm(total=len(jobs), desc="Trials", unit="trial",
+                          smoothing=0) as pbar:
                     job_iter = iter(jobs)
                     max_in_flight = max(1, n_workers * 4)
                     in_flight: dict = {}
-
                     for _ in range(min(max_in_flight, len(jobs))):
                         try:
                             job = next(job_iter)
                         except StopIteration:
                             break
-                        fut = executor.submit(_calibrate_run_single, job)
+                        fut = executor.submit(_cal3d_run_single, job)
                         in_flight[fut] = job
-
                     while in_flight:
                         for future in as_completed(list(in_flight.keys()), timeout=None):
                             in_flight.pop(future, None)
-                            grid_results.append(future.result())
-                            pbar.update(1)
-
+                            new_results.append(future.result())
+                            pbar.update()
                             try:
                                 job = next(job_iter)
-                                fut = executor.submit(_calibrate_run_single, job)
+                                fut = executor.submit(_cal3d_run_single, job)
                                 in_flight[fut] = job
                             except StopIteration:
                                 pass
                             break
         else:
-            _calibrate_init_worker(*init_args)
-            for job in tqdm(jobs, desc="Grid", unit="trial"):
-                grid_results.append(_calibrate_run_single(job))
+            _cal3d_init_worker(*init_args)
+            for job in tqdm(jobs, desc="Trials", unit="trial", smoothing=0):
+                new_results.append(_cal3d_run_single(job))
 
-    # --- Load cached conditions ---
-    # Try to restore burnin_rates from JSON saved by a previous run (avoids NaN ss columns)
-    _burnin_json_path = os.path.join(out_dir, "burnin_rates.json")
-    if cached_conditions and os.path.exists(_burnin_json_path):
-        try:
-            with open(_burnin_json_path) as _f:
-                _loaded = json.load(_f)
-            for _key_str, _val in _loaded.items():
-                _ck, _w_str = _key_str.split("__", 1)
-                burnin_rates[(_ck, float(_w_str))] = _val
-        except Exception:
-            pass  # silently ignore; ss columns will be NaN
+        t_grid = _time.time() - t0_grid
+        print(f"  Grid complete in {t_grid:.1f}s "
+              f"({t_grid / max(len(jobs), 1):.2f}s/trial)")
 
-    if cached_conditions:
-        print(f"\nLoading cached results for: {', '.join(sorted(cached_conditions))}")
-    for ck in cached_conditions:
-        cond_dir_load = os.path.join(out_dir, ck)
-        cached_rows = _load_calibrate_grid_results(cond_dir_load, ck)
-        grid_results.extend(cached_rows)
-        cached_nt, cached_base, _, cached_cap_frac = _load_calibrate_baseline(
-            cond_dir_load, ck, w_inter_values, noise_percentile)
-        noise_thresholds.update(cached_nt)
-        baseline_A_hat_data.update(cached_base)
-        cap_hit_fraction_data.update(cached_cap_frac)
-        cond_label = STUDY_CONDITIONS[ck].name
-        for w in w_inter_values:
-            key = (ck, w)
-            nt = noise_thresholds.get(key, float('nan'))
-            n_samples = len(baseline_A_hat_data.get(key, []))
-            src = "full dist" if n_samples > 0 else "summary CSV"
-            print(f"  {cond_label}, w={w:.2f}: threshold = {nt:.4f} "
-                  f"(p{noise_percentile:.0f}, {src}) [cached]")
+        # ----------------------------------------------------------------
+        # Save per-trial CSV per condition
+        # ----------------------------------------------------------------
+        for ck in conds_to_run:
+            cond_results = [r for r in new_results if r["cond_key"] == ck]
+            cond_csv = os.path.join(out_dir, f"cal3d_trials_{ck}.csv")
+            fieldnames = [
+                "cond_key", "w_pv", "w_pyr", "amp", "trial_idx", "seed",
+                "resting_hz", "cue_peak_hz", "cue_saturated",
+                "delay_rest_frac", "delay_bump_frac", "delay_sat_frac",
+                "delay_mean_peak_hz", "bump_lo_hz",
+            ]
+            with open(cond_csv, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in cond_results:
+                    writer.writerow({k: r.get(k, "") for k in fieldnames})
+            print(f"  Saved {len(cond_results)} trials → {cond_csv}")
 
-    # --- Aggregate per condition ---
-    error_band = getattr(args, 'error_band', 'sem')
+        all_trial_results.extend(new_results)
 
-    # Collected across conditions for cross-condition summary plots
-    all_cond_noise_data: dict[str, dict] = {}
-    all_cond_cap_hit_fraction_data: dict[str, dict[float, float]] = {}
+    # ----------------------------------------------------------------
+    # Phase 3: Aggregate per grid point
+    # ----------------------------------------------------------------
+    print("\n--- Phase 3: Aggregating results ---")
+    # Structure: (ck, w_pyr, w_pv, amp) -> {metrics}
+    agg: dict[tuple, dict] = {}
+    for ck in condition_keys:
+        for w_pyr in w_pyr_values:
+            for w_pv in w_pv_values:
+                for amp in amplitudes:
+                    trials = [r for r in all_trial_results
+                              if r["cond_key"] == ck
+                              and abs(r["w_pyr"] - w_pyr) < 1e-9
+                              and abs(r["w_pv"] - w_pv) < 1e-9
+                              and abs(r["amp"] - amp) < 1e-9]
+                    if not trials:
+                        continue
+                    def _mean(key):
+                        vals = [r[key] for r in trials if not np.isnan(float(r.get(key, float("nan"))))]
+                        return float(np.mean(vals)) if vals else float("nan")
+                    cue_sats = [r["cue_saturated"] for r in trials]
+                    agg[(ck, w_pyr, w_pv, amp)] = {
+                        "cond_key": ck,
+                        "w_pyr": w_pyr,
+                        "w_pv": w_pv,
+                        "amp": amp,
+                        "n_trials": len(trials),
+                        "resting_hz": _mean("resting_hz"),
+                        "cue_peak_hz_mean": _mean("cue_peak_hz"),
+                        "cue_sat_frac": float(np.mean(cue_sats)) if cue_sats else float("nan"),
+                        "delay_rest_frac_mean": _mean("delay_rest_frac"),
+                        "delay_bump_frac_mean": _mean("delay_bump_frac"),
+                        "delay_sat_frac_mean": _mean("delay_sat_frac"),
+                        "delay_mean_peak_hz_mean": _mean("delay_mean_peak_hz"),
+                        "bump_lo_hz": _mean("bump_lo_hz"),
+                        # Quality score: bump fraction penalized by saturation
+                        "quality_score": _mean("delay_bump_frac") * (1.0 - _mean("delay_sat_frac"))
+                            if not np.isnan(_mean("delay_bump_frac")) else float("nan"),
+                    }
 
+    # Save aggregated summary CSV (one row per grid point per condition)
+    summary_csv = os.path.join(out_dir, "cal3d_summary.csv")
+    agg_fieldnames = [
+        "cond_key", "w_pyr", "w_pv", "amp", "n_trials",
+        "resting_hz", "cue_peak_hz_mean", "cue_sat_frac",
+        "delay_rest_frac_mean", "delay_bump_frac_mean", "delay_sat_frac_mean",
+        "delay_mean_peak_hz_mean", "bump_lo_hz", "quality_score",
+    ]
+    with open(summary_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=agg_fieldnames)
+        writer.writeheader()
+        for d in sorted(agg.values(), key=lambda x: (x["cond_key"], x["w_pyr"], x["w_pv"], x["amp"])):
+            writer.writerow({k: d.get(k, "") for k in agg_fieldnames})
+    print(f"  Summary CSV: {summary_csv}")
+
+    # Save JSON (easy to load programmatically)
+    json_out = {
+        "sweep_config": {
+            "w_pv_values": w_pv_values,
+            "w_pyr_values": w_pyr_values,
+            "amplitude_values": amplitudes,
+            "conditions": condition_keys,
+            "n_trials": n_trials,
+            "delay_ms": delay_ms,
+            "sigma_deg": sigma_deg,
+            "sat_thresh_hz": CAL3D_SAT_THRESH_HZ,
+            "cue_sat_thresh_hz": CAL3D_CUE_SAT_THRESH_HZ,
+            "resting_mult": CAL3D_RESTING_MULT,
+        },
+        "results": {
+            f"{ck}_wpyr{w_pyr:.5g}_wpv{w_pv:.4g}_amp{amp:.3g}": d
+            for (ck, w_pyr, w_pv, amp), d in agg.items()
+        },
+    }
+    json_path = os.path.join(out_dir, "cal3d_summary.json")
+    with open(json_path, "w") as f:
+        _json.dump(json_out, f, indent=2)
+    print(f"  Summary JSON: {json_path}")
+
+    # ----------------------------------------------------------------
+    # Phase 4: Figures
+    # ----------------------------------------------------------------
+    print("\n--- Phase 4: Generating figures ---")
     for ck in condition_keys:
         cond_label = STUDY_CONDITIONS[ck].name
-        print(f"\n=== Results for {cond_label} ===")
-
-        # Per-condition output subdirectory
         cond_dir = os.path.join(out_dir, ck)
         os.makedirs(cond_dir, exist_ok=True)
 
-        grid_data: dict[tuple[float, float], dict] = {}
-        timecourse_data: dict[tuple[float, float], dict] = {}
+        # Per w_pyr slice
+        for w_pyr in w_pyr_values:
+            slice_data = {
+                (w_pv, amp): agg.get((ck, w_pyr, w_pv, amp), {})
+                for w_pv in w_pv_values
+                for amp in amplitudes
+            }
+            wpyr_str = f"{w_pyr:.5g}".replace(".", "_")
+            slice_dir = os.path.join(cond_dir, f"wpyr_{wpyr_str}")
+            os.makedirs(slice_dir, exist_ok=True)
+            fig = plot_3d_sweep_slice(
+                slice_data,
+                w_pyr=w_pyr,
+                w_pv_values=w_pv_values,
+                amplitude_values=amplitudes,
+                sigma_deg=sigma_deg,
+                condition_key=cond_label,
+                n_trials=n_trials,
+                save_path=os.path.join(slice_dir, "slice_heatmaps.png"),
+            )
+            plt.close(fig)
+            print(f"  Slice figure: {slice_dir}/slice_heatmaps.png")
 
-        for amp in amplitudes:
-            for w in w_inter_values:
-                trials = [r for r in grid_results
-                          if r['cond_key'] == ck and r['amplitude'] == amp
-                          and r['w_inter'] == w]
-                if not trials:
-                    continue
-
-                threshold = noise_thresholds.get((ck, w), 0.0)
-                A_hat_finals = np.array([r['A_hat_final'] for r in trials])
-                success_rate = float(np.mean(A_hat_finals > threshold))
-                mean_A_hat = float(np.mean(A_hat_finals))
-                peak_rates = np.array([r['peak_pyr_rate'] for r in trials])
-                errors = np.array([r['error_from_cue_deg'] for r in trials])
-
-                ss = burnin_rates.get((ck, w), {})
-                grid_data[(amp, w)] = {
-                    'success_rate': success_rate,
-                    'mean_A_hat': mean_A_hat,
-                    'peak_pyr_rate': float(np.mean(peak_rates)),
-                    'mean_error_deg': float(np.nanmean(errors)),
-                    'n_trials': len(trials),
-                    'ss_pyr_hz': ss.get('ss_pyr_hz', float('nan')),
-                    'ss_som_hz': ss.get('ss_som_hz', float('nan')),
-                    'ss_pv_hz':  ss.get('ss_pv_hz',  float('nan')),
-                    'ss_vip_hz': ss.get('ss_vip_hz', float('nan')),
-                    'ss_pyr_cv': ss.get('ss_pyr_cv', float('nan')),
-                }
-
-                # Timecourse data is only available when a_hat_timecourse is in the CSV
-                n_t = len(trials)
-                if trials[0]['A_hat_timecourse']:  # non-empty: new CSV format
-                    tc_array = np.array([r['A_hat_timecourse'] for r in trials])
-                    timecourse_data[(amp, w)] = {
-                        'A_hat_mean': np.mean(tc_array, axis=0),
-                        'A_hat_sem': np.std(tc_array, axis=0, ddof=1) / np.sqrt(n_t)
-                        if n_t > 1 else np.zeros(tc_array.shape[1]),
-                        'A_hat_sd': np.std(tc_array, axis=0, ddof=1)
-                        if n_t > 1 else np.zeros(tc_array.shape[1]),
-                        'success_rate': grid_data[(amp, w)]['success_rate'],
-                    }
-
-        # Collect for cross-condition summary
-        all_cond_noise_data[ck] = {w: noise_thresholds[(ck, w)]
-                                   for w in w_inter_values if (ck, w) in noise_thresholds}
-        all_cond_cap_hit_fraction_data[ck] = {
-            w: cap_hit_fraction_data[(ck, w)]
-            for w in w_inter_values
-            if (ck, w) in cap_hit_fraction_data
+        # Summary across all w_pyr
+        all_data_for_cond = {
+            (w_pyr, w_pv, amp): agg.get((ck, w_pyr, w_pv, amp), {})
+            for w_pyr in w_pyr_values
+            for w_pv in w_pv_values
+            for amp in amplitudes
         }
-
-        # --- Save CSVs (in per-condition subdir; skip for cached conditions) ---
-        if ck not in cached_conditions:
-            trial_csv = os.path.join(cond_dir, "calibration_results.csv")
-            with open(trial_csv, 'w', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    'condition_key', 'amplitude', 'w_inter', 'trial_idx', 'seed',
-                    'A_hat_final', 'a_hat_timecourse',
-                    'peak_pyr_rate', 'center_final_deg', 'error_from_cue_deg',
-                ])
-                writer.writeheader()
-                for r in grid_results:
-                    if r['cond_key'] != ck:
-                        continue
-                    writer.writerow({
-                        'condition_key': r['cond_key'],
-                        'amplitude': r['amplitude'],
-                        'w_inter': r['w_inter'],
-                        'trial_idx': r['trial_idx'],
-                        'seed': r['seed'],
-                        'A_hat_final': r['A_hat_final'],
-                        'a_hat_timecourse': ' '.join(f'{v:.6f}' for v in r['A_hat_timecourse']),
-                        'peak_pyr_rate': r['peak_pyr_rate'],
-                        'center_final_deg': r['center_final_deg'],
-                        'error_from_cue_deg': r['error_from_cue_deg'],
-                    })
-
-        summary_csv = os.path.join(cond_dir, "calibration_summary.csv")
-        with open(summary_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                'condition_key', 'amplitude', 'w_inter', 'success_rate',
-                'mean_A_hat', 'peak_pyr_rate', 'mean_error_deg',
-                'noise_threshold', 'n_trials',
-                'ss_pyr_hz', 'ss_som_hz', 'ss_pv_hz', 'ss_vip_hz', 'ss_pyr_cv',
-            ])
-            writer.writeheader()
-            for (amp, w), d in sorted(grid_data.items()):
-                writer.writerow({
-                    'condition_key': ck,
-                    'amplitude': amp,
-                    'w_inter': w,
-                    'success_rate': d['success_rate'],
-                    'mean_A_hat': d['mean_A_hat'],
-                    'peak_pyr_rate': d['peak_pyr_rate'],
-                    'mean_error_deg': d['mean_error_deg'],
-                    'noise_threshold': noise_thresholds.get((ck, w), 0.0),
-                    'n_trials': d['n_trials'],
-                    'ss_pyr_hz': d.get('ss_pyr_hz', ''),
-                    'ss_som_hz': d.get('ss_som_hz', ''),
-                    'ss_pv_hz':  d.get('ss_pv_hz', ''),
-                    'ss_vip_hz': d.get('ss_vip_hz', ''),
-                    'ss_pyr_cv': d.get('ss_pyr_cv', ''),
-                })
-
-        # --- Per-condition plots (in cond_dir) ---
-        saturated_w_cond = [w for w in w_inter_values if (ck, w) not in noise_thresholds]
-        baseline_for_plot = {w: baseline_A_hat_data.get((ck, w), np.array([]))
-                             for w in w_inter_values if (ck, w) in noise_thresholds}
-        thresholds_for_plot = {w: noise_thresholds[(ck, w)]
-                               for w in w_inter_values if (ck, w) in noise_thresholds}
-        # Noise floor histogram requires the full A_hat distribution (not available from old CSVs)
-        if any(len(v) > 0 for v in baseline_for_plot.values()):
-            baseline_n_samples = int(sum(len(v) for v in baseline_for_plot.values()))
-            plot_noise_floor_histogram(
-                baseline_for_plot, thresholds_for_plot,
-                save_path=_unique_path(os.path.join(cond_dir, "noise_floor.png")),
-                suptitle=f"Noise Floor ({cond_label}, n={baseline_n_samples} samples, p{noise_percentile:.0f})",
-                skipped_w_values=saturated_w_cond if saturated_w_cond else None,
-            )
-            plt.close()
-        else:
-            print(f"  Skipping noise floor histogram for {cond_label} (re-run to generate)")
-
-        plot_calibration_heatmap(
-            grid_data, "success_rate", amplitudes, w_inter_values,
-            cmap="RdYlGn", vmin=0, vmax=1,
-            save_path=_unique_path(os.path.join(cond_dir, "heatmap_success_rate.png")),
-            suptitle=f"Success Rate ({cond_label}, {n_trials} trials)",
+        fig = plot_3d_sweep_summary(
+            all_data_for_cond,
+            w_pyr_values=w_pyr_values,
+            w_pv_values=w_pv_values,
+            amplitude_values=amplitudes,
+            sigma_deg=sigma_deg,
+            condition_key=cond_label,
+            n_trials=n_trials,
+            save_path=os.path.join(cond_dir, "summary_best_bump.png"),
         )
-        plt.close()
+        plt.close(fig)
+        print(f"  Summary figure: {cond_dir}/summary_best_bump.png")
 
-        plot_calibration_heatmap(
-            grid_data, "mean_A_hat", amplitudes, w_inter_values,
-            cmap="viridis", vmin=0, vmax=1,
-            save_path=_unique_path(os.path.join(cond_dir, "heatmap_A_hat.png")),
-            suptitle=f"Mean A_hat ({cond_label}, {n_trials} trials)",
-        )
-        plt.close()
+    # Print top results
+    print("\n--- Top parameter sets by quality score ---")
+    top = sorted(
+        [d for d in agg.values() if not np.isnan(d.get("quality_score", float("nan")))],
+        key=lambda d: d["quality_score"],
+        reverse=True,
+    )[:10]
+    if top:
+        print(f"  {'cond':6} {'w_pv':8} {'w_pyr':8} {'amp':6} "
+              f"{'rest':6} {'bump%':6} {'sat%':6} {'score':6}")
+        print("  " + "-" * 62)
+        for d in top:
+            print(f"  {d['cond_key']:6} {d['w_pv']:.4f}  {d['w_pyr']:.5g}  "
+                  f"{d['amp']:.3f}  "
+                  f"{d['resting_hz']:5.1f}  "
+                  f"{d['delay_bump_frac_mean']:5.2f}  "
+                  f"{d['delay_sat_frac_mean']:5.2f}  "
+                  f"{d['quality_score']:5.2f}")
 
-        plot_calibration_heatmap(
-            grid_data, "peak_pyr_rate", amplitudes, w_inter_values,
-            cmap="hot",
-            save_path=_unique_path(os.path.join(cond_dir, "heatmap_peak_pyr.png")),
-            suptitle=f"Peak PYR Rate ({cond_label}, {n_trials} trials)",
-        )
-        plt.close()
+    print(f"\nDone. Output: {out_dir}")
 
-        # Steady-state heatmap: only has w_inter axis (ss independent of amplitude)
-        # Build a fake single-amplitude grid_data using first amplitude
-        _ss_grid = {(amplitudes[0], w): grid_data[(amplitudes[0], w)]
-                    for w in w_inter_values if (amplitudes[0], w) in grid_data}
-        if any(not np.isnan(d.get('ss_pyr_hz', float('nan'))) for d in _ss_grid.values()):
-            plot_calibration_heatmap(
-                _ss_grid, "ss_pyr_hz", [amplitudes[0]], w_inter_values,
-                cmap="coolwarm", vmin=0, vmax=30,
-                save_path=_unique_path(os.path.join(cond_dir, "heatmap_ss_pyr.png")),
-                suptitle=f"Steady-State PYR Rate Hz ({cond_label}) — target: 8–12 Hz",
-            )
-            plt.close()
-            plot_calibration_heatmap(
-                _ss_grid, "ss_pyr_cv", [amplitudes[0]], w_inter_values,
-                cmap="Reds", vmin=0, vmax=0.5,
-                save_path=_unique_path(os.path.join(cond_dir, "heatmap_ss_pyr_cv.png")),
-                suptitle=f"Resting-State PYR Spatial CV ({cond_label}) — low = uniform rest",
-            )
-            plt.close()
-
-        if timecourse_data:
-            tc_keys = sorted(
-                k for k in timecourse_data
-                if grid_data.get(k, {}).get('success_rate', 0.0) >= 0.9
-            )
-            tc_subset = {k: timecourse_data[k] for k in tc_keys}
-            band_tag = f"+/-{error_band.upper()}" if n_trials > 1 else ""
-            plot_calibration_timecourses(
-                tc_subset, eval_times_s, error_band=error_band,
-                save_path=_unique_path(os.path.join(cond_dir, f"timecourses_{error_band}.png")),
-                suptitle=f"A_hat Time Courses — success ≥ 90% ({cond_label}, {n_trials} trials, {band_tag})",
-            )
-            plt.close()
-        else:
-            print(f"  Skipping timecourse plot for {cond_label} (re-run to generate)")
-
-    # --- Cross-condition summary plots (in parent out_dir) ---
-    n_cond_label = f"{len(condition_keys)} condition{'s' if len(condition_keys) > 1 else ''}"
-    plot_noise_summary(
-        all_cond_noise_data,
-        cap_hit_fraction_data=all_cond_cap_hit_fraction_data,
-        cap_warning_threshold=CAP_WARNING_FRACTION,
-        cap_rate_hz=RATE_CAP_HZ,
-        save_path=_unique_path(os.path.join(out_dir, "noise_summary.png")),
-        suptitle=f"Noise Floor ({n_cond_label}, p{noise_percentile:.0f})",
-    )
-    plt.close()
+    if not args.no_show:
+        plt.show()
 
 
 # ============================================================================
@@ -8968,6 +9015,9 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Stop early if loss falls below this value (default: 1e-4)")
     parser.add_argument("--plateau_patience", type=int, default=500,
                         help="Stop if no improvement for this many steps (0=disable, default: 500)")
+    parser.add_argument("--de_fraction", type=float, default=0.25,
+                        help="Fraction of budget for DE phase in chaining mode (default: 0.25). "
+                             "Computed as de_steps = max(500, min(int(budget * de_fraction), 10000))")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed (default: 0)")
     parser.add_argument("--freeze", type=str, default="",
@@ -9255,6 +9305,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         freeze=freeze,
         early_stop_loss=args.early_stop_loss,
         plateau_patience=args.plateau_patience,
+        de_fraction=args.de_fraction,
         log_file=args.log_file or None,
         log_interval=args.log_interval,
         save_output_dir=args.output_dir or None,
