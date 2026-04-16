@@ -14,8 +14,9 @@ overhead per call).
 
 Design notes:
   - noise_arr must be pre-generated outside (shape (n_steps-1,), all-zeros
-    if sigma_noise == 0 or noise_type == "none"). Only PYR receives noise;
-    noise_scale = sigma_noise * I_ext_pyr is passed as a precomputed scalar.
+    if sigma_noise == 0 or noise_type == "none"). All 4 populations receive
+    the same xi sample per step; noise_scale_* = sigma_noise * I_ext_pop
+    controls the amplitude per population (same design as the ring loop).
   - External currents are passed as static floats; the transient case is
     handled at the caller level (not here).
   - cache=True persists compiled bytecode across Python sessions (~1-2 s
@@ -80,10 +81,13 @@ def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
 def _euler_loop(
     r_out: np.ndarray,       # (n_steps, 4) — r_out[0] = r0 on entry
     I_adapt_out: np.ndarray, # (n_steps, 2) — I_adapt_out[0] = I_adapt0 on entry
-    noise_arr: np.ndarray,   # (n_steps-1,) — pre-generated PYR noise, or zeros
+    noise_arr: np.ndarray,   # (n_steps-1,) — shared xi per step (same for all pops), or zeros
     n_steps: int,
     dt_ms: float,
-    noise_scale: float,      # = sigma_noise * I_ext_pyr (precomputed, nA)
+    noise_scale_pyr: float,  # = sigma_noise * I_ext_pyr (precomputed, nA)
+    noise_scale_som: float,  # = sigma_noise * I_ext_som
+    noise_scale_pv: float,   # = sigma_noise * I_ext_pv
+    noise_scale_vip: float,  # = sigma_noise * I_ext_vip
     tau_s: float,
     # GABA scaling
     ggaba: float,
@@ -129,21 +133,25 @@ def _euler_loop(
         denom = 1.0 + ggaba * w_pe * r_pv
 
         # Input currents (with NMDA gating)
+        xi = noise_arr[k]  # shared noise sample for this step (all pops)
         I_pyr = (J_NMDA * S_pyr) / denom \
                 - ggaba * w_se * r_som \
                 - Iap \
                 + I_ext_pyr \
-                + noise_scale * noise_arr[k]  # current-space noise (PYR only)
+                + noise_scale_pyr * xi
         I_som = w_es * r_pyr \
                 - w_vs * r_vip \
                 - J_adapt_som * r_som \
-                + I_ext_som
+                + I_ext_som \
+                + noise_scale_som * xi
         I_pv  = w_ep * r_pyr \
                 - ggaba * w_pp * r_pv \
                 - ggaba * w_sp * r_som \
                 - w_vp * r_vip \
-                + I_ext_pv
-        I_vip = w_ev * r_pyr + I_ext_vip
+                + I_ext_pv \
+                + noise_scale_pv * xi
+        I_vip = w_ev * r_pyr + I_ext_vip \
+                + noise_scale_vip * xi
 
         # Transfer function (scalar, zero overhead)
         phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_exc)

@@ -399,6 +399,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
     print(load_msg)
 
+    # Apply sigma_noise override if provided
+    if getattr(args, "sigma_noise", None) is not None:
+        from dataclasses import replace as _replace
+        params = _replace(params, sigma_noise=args.sigma_noise)
+        print(f"sigma_noise overridden to: {args.sigma_noise}")
+
     # Apply transient settings if enabled
     use_transient = args.enable_transient
     if use_transient:
@@ -460,22 +466,24 @@ def cmd_run(args: argparse.Namespace) -> None:
         # Skip burn-in by default to avoid the initial transient spike
         time_range = (burn_in, result.t_ms[-1])
 
-    title = f"Circuit Model Simulation (noise={args.noise_type})"
+    sigma_str = f"σ={params.sigma_noise:.3g}" if args.noise_type != "none" else ""
+    title = f"Circuit Model Simulation (noise={args.noise_type}{', ' + sigma_str if sigma_str else ''})"
     if use_transient:
         title += f" [Transient: {params.trans_start_ms:.0f}-{params.trans_start_ms + params.trans_duration_ms:.0f} ms]"
 
     # Determine save path
+    noise_tag = f"{args.noise_type}_sigma{params.sigma_noise:.3g}" if args.noise_type != "none" else "none"
     if args.save_plot:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/single_node/runs", args.params_json)
         if condition_key:
-            fname = f"circuit_simulation_{args.noise_type}_{condition_key}.png"
+            fname = f"circuit_simulation_{noise_tag}_{condition_key}.png"
         elif args.params_json:
             stem = Path(args.params_json).stem
-            fname = f"circuit_simulation_{args.noise_type}_{stem}.png"
+            fname = f"circuit_simulation_{noise_tag}_{stem}.png"
         else:
-            fname = f"circuit_simulation_{args.noise_type}.png"
+            fname = f"circuit_simulation_{noise_tag}.png"
         save_path = os.path.join(out_dir, fname)
 
     plot_simulation_dashboard(
@@ -946,6 +954,8 @@ Examples:
         description="Run a simulation with given parameters and visualize the results."
     )
     add_simulation_args(run_parser)
+    run_parser.add_argument("--sigma_noise", type=float, default=None,
+                            help="Override sigma_noise from params (noise ratio, e.g. 0.1)")
     run_parser.add_argument("--burn_in_ms", type=float, default=500.0,
                             help="Burn-in period for statistics (ms)")
     run_parser.add_argument("--r0", type=str, default="",

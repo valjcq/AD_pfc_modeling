@@ -1117,6 +1117,108 @@ The explicit `L_peak` penalty is still useful (it provides direct, tunable contr
 
 ---
 
+### High-State Firing Rates in Ring Run: SOM and PV Far from Target (2026-04-16)
+
+#### Observation
+
+The bistable single-node parameters (`bistable_high_fr`) placed in the ring network yield a low
+(resting) state that is broadly consistent with experimental values (Koukouli/Rooy) — with
+σ = 0.1 noise over 100 s the population means are:
+
+| Population | Ring mean (Hz) | Observed (Hz) |
+|---|---|---|
+| PYR | 0.003 | ~1–8 |
+| SOM | 2.238 | ~1–4 |
+| PV | 2.703 | ~1–4 |
+| VIP | 8.323 | ~5–8 |
+
+This is reasonable: resting state is near-silent with moderate interneuron activity.
+
+However, the **high state** observed in nodes that are in the active bump during a ring run is:
+
+| Population | Ring high state (Hz) | Expected (Hz, Rooy 2021 active) |
+|---|---|---|
+| PYR | ~70 | ~60–70 ✓ |
+| SOM | ~0 | ~35 ✗ |
+| PV | ~4.2 | ~10–20 ✗ |
+| VIP | ~70 | — |
+
+SOM is completely silenced in the high state (driven to 0 Hz by VIP→SOM disinhibition) while it
+should be firing at ~35 Hz. PV is also far below expected values in the active bump.
+
+#### Root cause: loss has no high-state rate targets
+
+Looking at `bistable_loss.py`, the `L_rate` component evaluates **only the low fixed point**:
+
+```python
+L_rate = (
+    ((r_low_fp  - cfg.r_low_target)  / cfg.r_low_target)  ** 2
+    + ((r_pv_fp  - cfg.r_pv_target)  / cfg.r_pv_target)  ** 2
+    + ((r_som_fp - cfg.r_som_target) / cfg.r_som_target) ** 2
+    + ((r_vip_fp - cfg.r_vip_target) / cfg.r_vip_target) ** 2
+)
+```
+
+There is no analogous term for the **high fixed point**. The optimizer is therefore free to place
+the high attractor anywhere as long as two stable fixed points exist and their separation
+exceeds `delta_r_min`. The VIP→SOM disinhibitory mechanism that creates bistability naturally
+drives SOM to 0 Hz in the high state — this is the cheapest way to maintain bistability, and the
+optimizer finds it every time.
+
+The `L_bistab` constraint (three-point sign check + zone penalties) only guarantees the nullcline
+shape; it says nothing about which interneuron configuration supports the high state.
+
+#### What the current loss is actually optimizing
+
+`L_total = w_bistab*(L_bistab + L_ceiling) + w_rate*L_rate + w_margin*L_margin + w_jac*L_jac + w_physiol*L_physiol + w_peak*L_peak`
+
+- **L_bistab**: Forces the PYR nullcline to have the right sign pattern (two stable FPs exist)
+- **L_rate**: Matches resting-state (low FP) firing rates for all four populations
+- **L_margin**: Enforces minimum separation between the two FPs (default 15 Hz)
+- **L_ceiling**: Prevents high FP above ~80 Hz
+- **L_physiol**: Penalizes supraphysiological interneuron rates *across the whole sweep*, but
+  this is a soft ceiling (only kicks in above 50 Hz for SOM, 80 Hz for VIP) — it does not target
+  any specific value at the high FP
+- **L_jac / L_peak**: Regularizers, do not constrain high-state rates
+
+There is no term that says "at the high fixed point, SOM should be ~35 Hz and PV should be
+~10–20 Hz."
+
+#### Proposed loss refinement
+
+Add a `L_rate_high` term that evaluates interneuron rates at the high fixed point, symmetric
+to `L_rate`:
+
+```python
+r_som_high, r_pv_high, r_vip_high = _solve_interneurons(r_high_fp, params)
+L_rate_high = (
+    ((r_pyr_high_fp - cfg.r_high_target) / cfg.r_high_target) ** 2
+    + ((r_pv_high    - cfg.r_pv_high_target)  / cfg.r_pv_high_target)  ** 2
+    + ((r_som_high   - cfg.r_som_high_target) / cfg.r_som_high_target) ** 2
+    + ((r_vip_high   - cfg.r_vip_high_target) / cfg.r_vip_high_target) ** 2
+)
+```
+
+New fields in `BistableConfig`:
+- `r_high_target`: PYR high-state target (already exists, currently only used for L_bistab sign check)
+- `r_som_high_target`: SOM high-state target (new, ~35 Hz from Rooy 2021)
+- `r_pv_high_target`: PV high-state target (new, ~10–15 Hz)
+- `r_vip_high_target`: VIP high-state target (new, optional — literature less clear)
+- `w_rate_high`: weight for this term (new)
+
+This term only has a meaningful value when the regime is bistable (i.e., `r_high_fp` is
+defined). When monostable, set `L_rate_high = 0` (the bistability constraint already penalises
+this case heavily). This avoids gradient conflicts during early optimization when no second stable
+FP exists yet.
+
+Simultaneously, it may be appropriate to **relax L_bistab** (lower `w_bistab`) in favour of
+`w_rate_high` — the goal is not just to have two fixed points, but to have two fixed points with
+the right firing rates. Overly tight bistability constraints with no high-state rate guidance
+push the optimizer toward the degenerate (SOM-silent high state) solution that satisfies
+geometry but not biology.
+
+---
+
 ### Low_fr ring network: bifurcation threshold is insensitive to w_pyr_pyr_inter (2026-04-15)
 
 #### What was done

@@ -1550,12 +1550,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         record_adaptation=True,
     )
 
+    sigma_tag = f"sigma{local_params.sigma_noise:.3g}"
     if getattr(args, "output_dir", ""):
         out_dir = args.output_dir
     else:
         out_dir = os.path.join(
             _output_dir("figs/ring/run", args.params_json),
             _run_type_label(args),
+            sigma_tag,
             _network_label(ring_params),
             f"amp_{_fmt(amp_factor)}",
             cond_key,
@@ -1566,7 +1568,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     _write_run_metrics(result, args, ring_params, out_dir, delay_end_ms)
 
     suptitle = (
-        f"{condition.label} -- {_stim_label(amp_factor)}, {_weights_label(ring_params)}"
+        f"{condition.label} -- {_stim_label(amp_factor)}, {_weights_label(ring_params)}, σ={local_params.sigma_noise:.3g}"
     )
     t_offset = BURN_IN_MS
     time_range = (BURN_IN_MS, result.t_ms[-1])

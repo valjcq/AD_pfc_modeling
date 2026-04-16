@@ -116,15 +116,23 @@ def simulate_circuit(
 
     if _can_use_fast:
         # Pre-generate noise array — one vectorized call, no per-step overhead
-        noise_scale = params.sigma_noise * params.I_ext_pyr()
-        if noise_scale == 0.0 or noise_type == "none":
+        # Shape (n_steps-1, 4): independent noise for each population
+        noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
+        noise_scale_som = params.sigma_noise * params.I_ext_som()
+        noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
+        noise_scale_vip = params.sigma_noise * params.I_ext_vip()
+        any_noise = any(s != 0.0 for s in (noise_scale_pyr, noise_scale_som, noise_scale_pv, noise_scale_vip))
+        if not any_noise or noise_type == "none":
             noise_arr = np.zeros(n_steps - 1, dtype=np.float64)
         else:
             noise_arr = rng.standard_normal(n_steps - 1)
 
         _euler_loop(
             r, I_adapt, noise_arr,
-            n_steps, dt_ms, float(noise_scale), float(params.tau_s),
+            n_steps, dt_ms,
+            float(noise_scale_pyr), float(noise_scale_som),
+            float(noise_scale_pv),  float(noise_scale_vip),
+            float(params.tau_s),
             float(ggaba),
             float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
             float(params.w_es), float(params.w_vs),
@@ -147,8 +155,11 @@ def simulate_circuit(
         # =====================================================================
         # REFERENCE PATH — original NumPy loop (OU noise or transient cases)
         # =====================================================================
-        noise_scale = params.sigma_noise * params.I_ext_pyr()
-        xi_state = 0.0  # scalar OU state for PYR
+        noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
+        noise_scale_som = params.sigma_noise * params.I_ext_som()
+        noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
+        noise_scale_vip = params.sigma_noise * params.I_ext_vip()
+        xi_state_pyr = 0.0  # OU state (shared across populations)
         S_pyr = S_pyr_init  # NMDA gating variable (scalar)
 
         for k in range(n_steps - 1):
@@ -156,18 +167,18 @@ def simulate_circuit(
             Iap = I_adapt[k, 0]  # Adaptation current for PYR
             Ias = I_adapt[k, 1]  # Adaptation current for SOM
 
-            # NOISE GENERATION (PYR only, current-space)
-            if noise_scale == 0.0 or noise_type == "none":
-                xi_pyr = 0.0
+            # NOISE GENERATION — single shared xi, scaled per population
+            if noise_type == "none":
+                xi = 0.0
             elif noise_type == "white":
-                xi_pyr = float(rng.standard_normal())
+                xi = float(rng.standard_normal())
             elif noise_type == "ou":
                 if tau_noise_ms <= 0:
                     raise ValueError("tau_noise_ms must be > 0 for OU noise")
-                xi_state += (-xi_state / tau_noise_ms) * dt_ms + np.sqrt(
+                xi_state_pyr += (-xi_state_pyr / tau_noise_ms) * dt_ms + np.sqrt(
                     2.0 * dt_ms / tau_noise_ms
                 ) * float(rng.standard_normal())
-                xi_pyr = xi_state
+                xi = xi_state_pyr
             else:
                 raise ValueError(f"Unknown noise_type: {noise_type!r}")
 
@@ -195,13 +206,14 @@ def simulate_circuit(
                 - ggaba * params.w_se * r_som
                 - Iap
                 + I_ext_pyr_val
-                + noise_scale * xi_pyr  # current-space noise proportional to baseline PYR drive
+                + noise_scale_pyr * xi
             )
             I_som = (
                 params.w_es * r_pyr
                 - params.w_vs * r_vip
                 - params.J_adapt_som * r_som
                 + I_ext_som_val
+                + noise_scale_som * xi
             )
             I_pv = (
                 params.w_ep * r_pyr
@@ -209,8 +221,9 @@ def simulate_circuit(
                 - ggaba * params.w_sp * r_som
                 - params.w_vp * r_vip
                 + I_ext_pv_val
+                + noise_scale_pv * xi
             )
-            I_vip = params.w_ev * r_pyr + I_ext_vip_val
+            I_vip = params.w_ev * r_pyr + I_ext_vip_val + noise_scale_vip * xi
 
             # TRANSFER FUNCTION
             Phi = np.array(
@@ -271,9 +284,13 @@ def validate_fast_loop(
     r_ref[0] = r0
     I_adapt_ref[0] = I_adapt0
 
+    noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
+    noise_scale_som = params.sigma_noise * params.I_ext_som()
+    noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
+    noise_scale_vip = params.sigma_noise * params.I_ext_vip()
+
     rng_ref = np.random.default_rng(seed)
     noise_ref = rng_ref.standard_normal(n_steps - 1)
-    noise_scale = params.sigma_noise * params.I_ext_pyr()
 
     # Compute initial NMDA gating variable
     r_pyr_init = float(r0[0])
@@ -285,22 +302,22 @@ def validate_fast_loop(
         r_pyr, r_som, r_pv, r_vip = r_ref[k]
         Iap = I_adapt_ref[k, 0]
         Ias = I_adapt_ref[k, 1]
-        xi_pyr = noise_ref[k]
         # NMDA gating update
         dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
         S_pyr = float(np.clip(S_pyr + dS, 0.0, 1.0))
         denom = 1.0 + ggaba * params.w_pe * r_pv
-        I_pyr = (params.J_NMDA * S_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr() + noise_scale * xi_pyr
-        I_som = params.w_es * r_pyr - params.w_vs * r_vip - params.J_adapt_som * r_som + params.I_ext_som()
-        I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv()
-        I_vip = params.w_ev * r_pyr + params.I_ext_vip()
+        xi = noise_ref[k]
+        I_pyr = (params.J_NMDA * S_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr() + noise_scale_pyr * xi
+        I_som = params.w_es * r_pyr - params.w_vs * r_vip - params.J_adapt_som * r_som + params.I_ext_som() + noise_scale_som * xi
+        I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv() + noise_scale_pv * xi
+        I_vip = params.w_ev * r_pyr + params.I_ext_vip() + noise_scale_vip * xi
         Phi = np.array([
             phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
             phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
             phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
             phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
         ])
-        dr = (-r_ref[k] + Phi) / params.tau_s  # noise already in I_pyr
+        dr = (-r_ref[k] + Phi) / params.tau_s
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
         I_adapt_ref[k + 1, 0] = Iap + dt_ms * (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
         I_adapt_ref[k + 1, 1] = Ias + dt_ms * (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
@@ -317,7 +334,10 @@ def validate_fast_loop(
 
     _euler_loop(
         r_fast, I_adapt_fast, noise_fast,
-        n_steps, dt_ms, float(noise_scale), float(params.tau_s),
+        n_steps, dt_ms,
+        float(noise_scale_pyr), float(noise_scale_som),
+        float(noise_scale_pv),  float(noise_scale_vip),
+        float(params.tau_s),
         float(ggaba),
         float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
         float(params.w_es), float(params.w_vs),

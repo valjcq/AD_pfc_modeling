@@ -15,6 +15,8 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
    - [2.3 PV → PYR Global Inhibition](#23-pv--pyr-global-inhibition)
    - [2.4 Connectivity Parameters](#24-connectivity-parameters)
 3. [Local Circuit Dynamics](#3-local-circuit-dynamics)
+   - [3.1 NMDA Gating Variable](#31-nmda-gating-variable)
+   - [3.2 Input Current Equations](#32-input-current-equations)
 4. [Spike-Frequency Adaptation](#4-spike-frequency-adaptation)
 5. [Transfer Function](#5-transfer-function)
 6. [Stimulus & Distractor Protocol](#6-stimulus--distractor-protocol)
@@ -76,7 +78,7 @@ For both profiles, the inter-node excitatory input to PYR at node $i$ is:
 
 $$I_{\text{inter},i}^{\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{PYR}\to\text{PYR}} \cdot r_j^{\text{PYR}}$$
 
-Self-connections ($i = j$) are always zero because local PYR $\to$ PYR recurrence is handled by the within-node weight $w_{ee}$.
+Self-connections ($i = j$) are always zero because local PYR $\to$ PYR recurrence is handled by the within-node NMDA gating term $J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}$.
 
 ### 2.3 PV $\to$ PYR Global Inhibition
 
@@ -113,13 +115,38 @@ where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function 
 
 Firing rates are clamped to $r_i^X \in [0,\, 200]$ Hz at each integration step. The upper bound acts as a safety net against numerical overflow in large networks while remaining well above physiological firing rates.
 
-### 3.1 Input Current Equations
+### 3.1 NMDA Gating Variable
 
-**PYR** receives local recurrent excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, stimulus, and noise:
+Local recurrent self-excitation in PYR is mediated through NMDA receptors. Instead of an instantaneous weight $w_{ee} \cdot r_i^{\text{PYR}}$, the recurrent drive is proportional to a **saturable NMDA gating variable** $S_i^{\text{NMDA}} \in [0, 1]$ that evolves according to:
 
-$$I_i^{\text{PYR}} = \frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
+$$\tau_{\text{NMDA}} \frac{dS_i^{\text{NMDA}}}{dt} = -S_i^{\text{NMDA}} + (1 - S_i^{\text{NMDA}}) \cdot \gamma_{\text{NMDA}} \cdot r_i^{\text{PYR}}$$
 
-The term $\frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}}$ implements **divisive (shunting) inhibition** from PV interneurons, modeling the effect of perisomatic GABAergic synapses on input resistance.
+The $(1 - S_i^{\text{NMDA}})$ factor captures **saturation**: at high firing rates, the fraction of open NMDA channels approaches 1 and the gating variable cannot increase further. This is the kinetic model from Wong & Wang (2006).
+
+| Constant | Symbol | Value | Description |
+|----------|--------|-------|-------------|
+| `GAMMA_NMDA` | $\gamma_{\text{NMDA}}$ | 0.641 | Kinetic opening rate (dimensionless) |
+| `TAU_NMDA_MS` | $\tau_{\text{NMDA}}$ | 100 ms | NMDA decay time constant |
+
+These are **fixed physics constants**, not fitted parameters. The fitted parameter is $J_{\text{NMDA}}$ (the synaptic coupling strength).
+
+**Steady state:** At a fixed firing rate $r^*$, the gating variable converges to:
+
+$$S^* = \frac{\gamma_{\text{NMDA}} \cdot \tau_{\text{NMDA}} \cdot r^*}{1 + \gamma_{\text{NMDA}} \cdot \tau_{\text{NMDA}} \cdot r^*}$$
+
+This saturating nonlinearity is what replaces the linear $w_{ee} \cdot r_i^{\text{PYR}}$ used in earlier versions of the model.
+
+**Initialization:** $S_i^{\text{NMDA}}(0)$ is set to the steady-state value $S^*$ computed from the initial PYR firing rates, so the network starts without a NMDA transient.
+
+### 3.2 Input Current Equations
+
+**PYR** receives local recurrent NMDA excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, stimulus, and noise:
+
+$$I_i^{\text{PYR}} = \frac{J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
+
+The term $\frac{J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}}$ combines two effects:
+- **NMDA saturation** (via $S_i^{\text{NMDA}}$): recurrent drive saturates at high firing rates instead of growing unboundedly.
+- **Divisive (shunting) PV inhibition** (denominator): models the effect of perisomatic GABAergic synapses on input resistance.
 
 The noise term $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$ injects stochastic current into each PYR node. Injecting noise at the current level (before the transfer function $\Phi^{\text{PYR}}$) means its effect on firing rate is naturally filtered by the transfer function slope $\Phi'$, consistent with a diffusion-approximation interpretation of Poisson spiking variability. The proportionality to $I_{\text{ext}}^{\text{PYR}}$ ensures noise scales automatically across experimental conditions.
 
@@ -135,13 +162,14 @@ $$I_i^{\text{PV}} = w_{ep} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{pp} \, r_
 
 $$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{VIP}} \cdot \xi_i(t)$$
 
-### 3.2 Weight Notation
+### 3.3 Weight Notation
 
 Weights follow the convention $w_{XY}$ = connection **from** population $Y$ **to** population $X$:
 - e = PYR (excitatory), p = PV, s = SOM, v = VIP
 - Example: $w_{ep}$ = weight from PYR to PV
+- $J_{\text{NMDA}}$ is the recurrent PYR→PYR NMDA coupling strength (replaces the former $w_{ee}$)
 
-### 3.3 GABA Scaling
+### 3.4 GABA Scaling
 
 Inhibitory weights are multiplied by a GABA scaling factor:
 
@@ -149,7 +177,7 @@ $$g_{\text{GABA}} = g_{\text{GABA}}^{\text{base}} + \text{act}_{\alpha 7} \cdot 
 
 where $\text{act}_{\alpha 7} \in [0, 1]$ is the alpha7 nAChR activation level (0 under knockout).
 
-### 3.4 External Currents
+### 3.5 External Currents
 
 Each population receives baseline tonic drive plus receptor-mediated currents:
 
@@ -161,7 +189,7 @@ $$I_{\text{ext}}^{\text{SOM}} = I_0^{\text{SOM}} + \text{act}_{\alpha 7} \cdot I
 
 $$I_{\text{ext}}^{\text{VIP}} = I_0^{\text{VIP}} + \text{act}_{\alpha 5} \cdot I_{\alpha 5}^{\text{VIP}}$$
 
-### 3.5 Transient Current
+### 3.6 Transient Current
 
 An optional nonspecific transient current can be applied to all populations simultaneously during a window $[t_{\text{start}}, t_{\text{start}} + \Delta t_{\text{trans}})$:
 
