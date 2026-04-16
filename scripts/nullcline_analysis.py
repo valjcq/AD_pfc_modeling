@@ -336,8 +336,55 @@ def print_param_summary(params_dict):
           f"I0_vip={params_dict.get('I0_vip', 0):.4f}")
 
 
+def save_nullcline_json(circuit, r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F,
+                        fixed_points, condition, params_stem, params_dir=Path(".")):
+    """Save nullcline evolution and fixed points to JSON."""
+    # Classify regime
+    stable_fps = [(r, s) for r, s in fixed_points if s == 'stable']
+    unstable_fps = [(r, s) for r, s in fixed_points if s == 'unstable']
+    n_stable = len(stable_fps)
+
+    if n_stable >= 2:
+        regime = 'BISTABLE'
+    elif n_stable == 1:
+        regime = 'MONOSTABLE'
+    else:
+        regime = 'NO STABLE FIXED POINTS'
+
+    # Build fixed points list with interneuron rates at each FP
+    fps_list = []
+    for r_fp, stability in sorted(fixed_points):
+        r_som_fp, r_pv_fp, r_vip_fp = circuit.interneuron_steady_state(r_fp)
+        fps_list.append({
+            "rate_hz": round(float(r_fp), 4),
+            "stability": stability,
+            "r_pv_hz": round(float(r_pv_fp), 4),
+            "r_som_hz": round(float(r_som_fp), 4),
+            "r_vip_hz": round(float(r_vip_fp), 4)
+        })
+
+    data = {
+        "condition": condition,
+        "regime": regime,
+        "params_file": params_stem,
+        "fixed_points": fps_list,
+        "nullcline_sweep": {
+            "r_pyr_hz": [round(float(x), 4) for x in r_pyr_sweep],
+            "phi_pyr_hz": [round(float(x), 4) for x in phi_pyr],
+            "r_pv_hz": [round(float(x), 4) for x in r_pv],
+            "r_som_hz": [round(float(x), 4) for x in r_som],
+            "r_vip_hz": [round(float(x), 4) for x in r_vip]
+        }
+    }
+
+    out = params_dir / f'nullcline_{condition}_{params_stem}.json'
+    with open(out, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"Saved JSON: {out}")
+
+
 def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path(".")):
-    """Plot 3-panel nullcline analysis for a single condition."""
+    """Plot 2-panel nullcline analysis for a single condition."""
     # Compute nullcline with extended sweep to [0, 250] Hz to capture all stable FPs
     r_pyr_sweep = np.linspace(0, 250, 1500)
     r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F = circuit.compute_nullcline(r_pyr_sweep)
@@ -357,9 +404,6 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
     else:
         regime = 'NO STABLE FIXED POINTS'
 
-    # Compute loop gain
-    dPhi_dr, eff_gain, adapt_red, loop_gain = circuit.compute_loop_gain(r_pyr_sweep, r_som, r_pv)
-
     # Print detailed summary
     print(f"\n{'='*60}")
     print(f"Regime: {regime}")
@@ -371,8 +415,12 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
         print(f"Note: {spurious_count} crossing(s) above R_MAX_PHYS Hz ignored (clamp artifact)")
     print(f"{'='*60}\n")
 
-    # Create 3-panel figure
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    # Save JSON with nullcline evolution and fixed points
+    save_nullcline_json(circuit, r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F,
+                        fixed_points, condition, params_stem, params_dir)
+
+    # Create 2-panel figure
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Subplot 1: PYR nullcline
     ax = axes[0]
@@ -435,24 +483,6 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=10)
 
-    # Subplot 3: Loop gain decomposition
-    ax = axes[2]
-    ax.plot(r_pyr_sweep, loop_gain, 'b-', linewidth=2.5, label='Loop gain (dPhi/dr)')
-    ax.axhline(1.0, color='red', linestyle='--', linewidth=2, label='Bistability threshold')
-    ax.fill_between(r_pyr_sweep, 0, 1, alpha=0.1, color='green', label='Monostable region')
-    ax.fill_between(r_pyr_sweep, 1, loop_gain.max() * 1.1, alpha=0.1, color='orange', label='Bistable region')
-
-    # Mark fixed point locations
-    for r_fp, _ in fixed_points:
-        ax.axvline(r_fp, color='gray', linestyle=':', alpha=0.4, linewidth=1.5)
-
-    ax.set_xlim(0, x_limit)
-    ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Loop gain', fontsize=11, fontweight='bold')
-    ax.set_title('Effective Gain (>1 → bistability)', fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=9)
-
     fig.suptitle(f'Single-Node Nullcline Analysis — {params_stem}',
                 fontsize=14, fontweight='bold')
     fig.subplots_adjust(top=0.93, left=0.08, right=0.98, wspace=0.35)
@@ -463,7 +493,7 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
 
 
 def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
-    """Plot PYR nullclines for all 4 conditions on one figure."""
+    """Plot PYR nullclines for all 4 conditions on one figure and save JSON for each."""
     conditions = ['WT', 'alpha7KO', 'beta2KO', 'alpha5KO']
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     axes = axes.flatten()
@@ -490,6 +520,10 @@ def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
             regime = 'MONOSTABLE'
         else:
             regime = 'NO STABLE FIXED POINTS'
+
+        # Save JSON for this condition
+        save_nullcline_json(circuit, r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F,
+                           fixed_points, cond, params_stem, params_dir)
 
         # Plot on subplot
         ax = axes[cond_idx]

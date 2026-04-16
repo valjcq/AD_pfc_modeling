@@ -699,6 +699,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             som_ceiling=args.som_ceiling,
             pv_ceiling=args.pv_ceiling,
             vip_ceiling=args.vip_ceiling,
+            nullcline_peak_max=args.nullcline_peak_max,
+            w_peak=args.w_peak,
             condition=getattr(args, "condition", "WT"),
         )
 
@@ -1108,6 +1110,11 @@ Examples:
                             help="PV physiological ceiling (Hz, default: 100.0)")
     opt_parser.add_argument("--vip_ceiling", type=float, default=80.0,
                             help="VIP physiological ceiling (Hz, default: 80.0)")
+    opt_parser.add_argument("--nullcline_peak_max", type=float, default=200.0,
+                            help="Maximum allowed nullcline peak Φ (Hz). Values above this are penalised. "
+                                 "Default 200 = effectively off. Recommended: 90-100 Hz to reduce cue saturation.")
+    opt_parser.add_argument("--w_peak", type=float, default=0.0,
+                            help="Weight of nullcline peak penalty (default: 0.0 = off)")
 
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
@@ -1322,224 +1329,6 @@ Examples:
     )
 
     # =========================================================================
-    # RING-OSCILLATION-STUDY subcommand
-    # =========================================================================
-    ring_osc_parser = subparsers.add_parser(
-        "ring-oscillation-study",
-        help="Cue-only oscillation analysis (dominant 2-12 Hz dynamics)",
-        description=(
-            "Run cue-only ring simulations across conditions and amplitudes, "
-            "extract dominant oscillation frequency/power trajectories in a "
-            "frequency band (default 2-12 Hz), compare distributions across "
-            "conditions, and generate high-quality frequency-band heatmaps."
-        ),
-    )
-    _add_ring_common(ring_osc_parser)
-    ring_osc_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: WT WT_APP).",
-    )
-    ring_osc_parser.add_argument(
-        "--amplitudes", type=float, nargs="+", default=None,
-        help="Cue amplitude factors (x I_ext_pyr). If omitted, uses --amplitude.",
-    )
-    ring_osc_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Trials per condition x amplitude (default: 50)",
-    )
-    ring_osc_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Parallel workers (default: auto)",
-    )
-    ring_osc_parser.add_argument(
-        "--osc_skip_ms", type=float, default=200.0,
-        help="Initial delay segment to skip before oscillation analysis (default: 200 ms)",
-    )
-    ring_osc_parser.add_argument(
-        "--min_freq_hz", type=float, default=2.0,
-        help="Lower frequency bound for dominant-frequency search (default: 2)",
-    )
-    ring_osc_parser.add_argument(
-        "--max_freq_hz", type=float, default=12.0,
-        help="Upper frequency bound for dominant-frequency search (default: 12)",
-    )
-    ring_osc_parser.add_argument(
-        "--tf_window_s", type=float, default=1.0,
-        help="STFT window length in seconds (default: 1.0)",
-    )
-    ring_osc_parser.add_argument(
-        "--tf_overlap", type=float, default=0.8,
-        help="STFT overlap fraction in [0,1) (default: 0.8)",
-    )
-    ring_osc_parser.add_argument(
-        "--sample_time_frac", type=float, default=0.75,
-        help="Timepoint for single-bin comparison as fraction of analyzed delay (default: 0.75)",
-    )
-    ring_osc_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore cached simulation results and re-run all trials from scratch.",
-    )
-    # =========================================================================
-    # RING-OSC-DISTRACTOR-STUDY subcommand
-    # =========================================================================
-    ring_osc_dist_parser = subparsers.add_parser(
-        "ring-osc-distractor-study",
-        help="Oscillation + distractor study (STFT at cue/distractor nodes + PLV)",
-        description=(
-            "Run cue + distractor ring simulations, sweeping cue amplitude, "
-            "distractor angular offset, and distractor amplitude factor. "
-            "Extracts STFT-based oscillatory power at the cue and distractor nodes, "
-            "and Phase Locking Value (PLV) between them."
-        ),
-    )
-    _add_ring_common(ring_osc_dist_parser)
-    ring_osc_dist_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: WT).",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--amplitudes", type=float, nargs="+", default=None,
-        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--distractor_factors", type=float, nargs="+", default=[0.75, 1.0],
-        help="Distractor amplitude as fraction of cue amplitude (default: 0.75 1.0)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--offsets_deg", type=float, nargs="+", default=[30.0, 70.0, 90.0, 120.0, 170.0],
-        help="Distractor angular offsets from cue in degrees (default: 30 70 90 120 170)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--delay1_ms", type=float, default=1500.0,
-        help="Delay between cue offset and distractor onset (default: 1500 ms)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--distractor_duration_ms", type=float, default=200.0,
-        help="Duration of distractor stimulus (default: 200 ms)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--delay2_ms", type=float, default=3000.0,
-        help="Delay after distractor offset until end of trial (default: 3000 ms)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--n_trials", type=int, default=10,
-        help="Trials per condition x amplitude x factor x offset (default: 10)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Parallel workers (default: auto)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--min_freq_hz", type=float, default=2.0,
-        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--max_freq_hz", type=float, default=12.0,
-        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--tf_window_s", type=float, default=1.0,
-        help="STFT window length in seconds (default: 1.0)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--tf_overlap", type=float, default=0.8,
-        help="STFT overlap fraction in [0, 1) (default: 0.8)",
-    )
-    ring_osc_dist_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore cached simulation results and re-run from scratch.",
-    )
-
-    # =========================================================================
-    # RING-OSC-PHASE-DISTRACTOR subcommand
-    # =========================================================================
-    ring_osc_phase_parser = subparsers.add_parser(
-        "ring-osc-phase-distractor",
-        help="Phase-dependent distractor study: vary distractor timing relative to oscillation",
-        description=(
-            "Runs burn-in + cue simulation with a FIXED seed, then applies a distractor "
-            "at different points in the ongoing oscillation cycle (in units of π). "
-            "Measures how PLV and oscillatory power over the post-distractor delay "
-            "depend on the oscillation phase at distractor onset."
-        ),
-    )
-    _add_ring_common(ring_osc_phase_parser)
-    ring_osc_phase_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: WT).",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--amplitudes", type=float, nargs="+", default=None,
-        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--distractor_factors", type=float, nargs="+", default=[1.0],
-        help="Distractor amplitude as fraction of cue amplitude (default: 1.0)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--offsets_deg", type=float, nargs="+", default=[90.0],
-        help="Distractor angular offsets from cue in degrees (default: 90)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--delay1_base_ms", type=float, default=500.0,
-        help="Base delay between cue offset and distractor onset (default: 500 ms). "
-             "The actual delay1 is delay1_base + phase_pi * T_osc / 2.",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--distractor_duration_ms", type=float, default=200.0,
-        help="Duration of distractor stimulus (default: 200 ms)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--delay2_ms", type=float, default=2000.0,
-        help="Post-distractor delay duration (default: 2000 ms)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--n_phase_sweep", type=int, default=16,
-        help="Number of equally-spaced phase values in [0, 2π) for the sweep (default: 16)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--osc_freq_hz", type=float, default=5.0,
-        help="Fallback oscillation frequency used if auto-detection fails (default: 5 Hz)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--n_trials", type=int, default=10,
-        help="Distractor trials per (condition, amplitude, factor, offset, phase) (default: 10)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Parallel workers (default: auto)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--min_freq_hz", type=float, default=2.0,
-        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--max_freq_hz", type=float, default=12.0,
-        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--tf_window_s", type=float, default=1.0,
-        help="STFT window length in seconds (default: 1.0)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--tf_overlap", type=float, default=0.8,
-        help="STFT overlap fraction in [0, 1) (default: 0.8)",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore cached simulation results and re-run from scratch.",
-    )
-    ring_osc_phase_parser.add_argument(
-        "--plot_conditions", type=str, nargs="+", default=None,
-        metavar="COND",
-        help=(
-            "Subset of --conditions to include in plots (default: all simulated conditions). "
-            "Does NOT affect the cache key, so you can re-plot a subset without re-simulating. "
-            "Example: --conditions WT WT_APP a7_KO --plot_conditions WT WT_APP"
-        ),
-    )
-
-    # =========================================================================
     # RING-DIFFUSION subcommand
     # =========================================================================
     ring_diff_parser = subparsers.add_parser(
@@ -1568,10 +1357,9 @@ Examples:
     )
     ring_diff_parser.add_argument(
         "--filter_cutoff_hz", type=float, default=None,
-        help="Low-pass filter cutoff (Hz) applied to bump center trajectory before MSD "
-             "computation. If not set, the cutoff is auto-detected from the bump amplitude "
-             "oscillation spectrum (0.4 × dominant oscillation frequency). "
-             "Set to 0 to disable filtering entirely.",
+           help="Low-pass filter cutoff (Hz) applied to bump center trajectory before MSD "
+               "computation. If not set, the cutoff is chosen automatically from the delay "
+               "signal. Set to 0 to disable filtering entirely.",
     )
 
 
@@ -1638,6 +1426,10 @@ Examples:
     ring_cal_parser.add_argument(
         "--no_cache", action="store_true",
         help="Ignore existing CSV cache and recompute all conditions from scratch.",
+    )
+    ring_cal_parser.add_argument(
+        "--output_dir", type=str, default=None,
+        help="Output directory for results (default: auto-generated in figs/ring/calibration)",
     )
 
     # =========================================================================
@@ -1800,9 +1592,9 @@ Examples:
     )
     ring_bump_decay_parser.add_argument(
         "--window_ms", type=float, default=500.0,
-        help="Width (ms) of time windows for averaging out oscillations "
-             "(default: 500 ms). Used both for the normalization reference "
-             "and for all timecourse bins.",
+           help="Width (ms) of time windows used for averaging the delay trajectory "
+               "(default: 500 ms). Used both for the normalization reference "
+               "and for all timecourse bins.",
     )
     ring_bump_decay_parser.add_argument(
         "--no_cache", action="store_true",
@@ -1812,51 +1604,6 @@ Examples:
     # =========================================================================
     # RING-PRE-CUE-POWER subcommand
     # =========================================================================
-    ring_pre_cue_parser = subparsers.add_parser(
-        "ring-pre-cue-power-study",
-        help="Pre-cue (noise-only) power spectrum and spectral peakedness analysis",
-        description=(
-            "Run noise-only simulations from the burn-in state to characterise "
-            "spontaneous oscillatory power in the pre-cue baseline period. "
-            "Computes the mean PSD across a frequency band, plots the spectrum "
-            "distribution per condition, and compares a spectral peakedness metric "
-            "(1 − normalised entropy) across conditions with a Mann-Whitney U test."
-        ),
-    )
-    _add_ring_common(ring_pre_cue_parser)
-    ring_pre_cue_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: WT).",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--duration_ms", type=float, default=2000.0,
-        help="Duration of each noise-only trial in ms (default: 2000).",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--n_trials", type=int, default=20,
-        help="Trials per condition (default: 20)",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Parallel workers (default: auto)",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--min_freq_hz", type=float, default=2.0,
-        help="Lower frequency bound for STFT (default: 2 Hz)",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--max_freq_hz", type=float, default=12.0,
-        help="Upper frequency bound for STFT (default: 12 Hz)",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--tf_window_s", type=float, default=0.5,
-        help="STFT window length in seconds (default: 0.5)",
-    )
-    ring_pre_cue_parser.add_argument(
-        "--tf_overlap", type=float, default=0.8,
-        help="STFT overlap fraction in [0, 1) (default: 0.8)",
-    )
-
     # =========================================================================
     # RING-BURNIN-STABILITY subcommand
     # =========================================================================
@@ -1924,11 +1671,10 @@ Examples:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', 'diagnostic', "
               "'plot-transfer', "
-              "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
-              "'ring-osc-phase-distractor', "
+              "'ring-run', 'ring-study', "
               "'ring-diffusion', 'ring-noise-floor', "
               "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
-              "'ring-pre-cue-power-study', or 'ring-optimize'.")
+              "'ring-optimize'.")
         sys.exit(1)
     elif args.command == "diagnostic":
         cmd_diagnostic(args)
@@ -1946,15 +1692,6 @@ Examples:
     elif args.command == "ring-study":
         from .ring.cli import cmd_study as cmd_ring_study
         cmd_ring_study(args)
-    elif args.command == "ring-oscillation-study":
-        from .ring.cli import cmd_oscillation_study as _cmd
-        _cmd(args)
-    elif args.command == "ring-osc-distractor-study":
-        from .ring.cli import cmd_osc_distractor_study as _cmd
-        _cmd(args)
-    elif args.command == "ring-osc-phase-distractor":
-        from .ring.cli import cmd_osc_distractor_phase_study as _cmd
-        _cmd(args)
     elif args.command == "ring-diffusion":
         from .ring.cli import cmd_diffusion as cmd_ring_diffusion
         cmd_ring_diffusion(args)
@@ -1972,9 +1709,6 @@ Examples:
         _cmd(args)
     elif args.command == "ring-burnin-stability":
         from .ring.cli import cmd_burnin_stability as _cmd
-        _cmd(args)
-    elif args.command == "ring-pre-cue-power-study":
-        from .ring.cli import cmd_pre_cue_power_study as _cmd
         _cmd(args)
     elif args.command == "ring-optimize":
         from .ring.cli import cmd_ring_optimize as _cmd

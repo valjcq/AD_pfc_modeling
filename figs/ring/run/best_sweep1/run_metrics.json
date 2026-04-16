@@ -8,22 +8,22 @@
     "condition": "WT"
   },
   "steady_state": {
-    "baseline_pyr_hz": 9.735,
+    "baseline_pyr_hz": 10.376,
     "peak_pyr_cue_hz": 200.0,
-    "delay_pyr_center_hz": 76.562,
+    "delay_pyr_center_hz": 79.205,
     "delay_pyr_opposite_hz": 0.0
   },
   "turing_gain_delay": {
-    "bump_node": 0.2939,
-    "mean_background": 0.0
+    "bump_node": 0.1269,
+    "mean_background": 0.0001
   },
   "bump_metrics": {
-    "center_mean_deg": 181.4472,
-    "center_std_deg": 0.1198,
-    "amplitude_mean": 0.9687,
+    "center_mean_deg": 179.9913,
+    "center_std_deg": 0.0499,
+    "amplitude_mean": 0.972,
     "width_mean_deg": 8.1232,
-    "drift_rate_deg_per_s": -0.0412,
-    "diffusion_deg2_per_s": 0.105,
-    "error_from_cue_deg": 1.4472
+    "drift_rate_deg_per_s": 0.0122,
+    "diffusion_deg2_per_s": 0.0248,
+    "error_from_cue_deg": 0.0087
   }
 }

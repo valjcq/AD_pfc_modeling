@@ -44,6 +44,10 @@ class BistableConfig:
     pv_ceiling: float = 100.0       # Hz
     vip_ceiling: float = 80.0       # Hz
 
+    # Nullcline peak constraint: penalises max(Φ) above this value
+    nullcline_peak_max: float = 200.0   # Hz — default 200 = effectively off
+    w_peak: float = 0.0                 # default off (backward compatible)
+
     # Loss weights
     w_bistab: float = 1.0
     w_rate: float = 1.0
@@ -344,7 +348,15 @@ def bistable_loss(
     L_jac = relu(max_abs_J - 5.0) ** 2
 
     # ========================================================================
-    # G. Interneuron physiological ceiling penalty L_physiol
+    # G. Nullcline peak penalty L_peak
+    # ========================================================================
+    # Φ(r) = F(r) + r  →  peak of the nullcline above the identity line
+    phi_sweep = F + r_sweep
+    nullcline_peak = float(np.max(phi_sweep))
+    L_peak = relu(nullcline_peak - cfg.nullcline_peak_max) ** 2
+
+    # ========================================================================
+    # H. Interneuron physiological ceiling penalty L_physiol
     # ========================================================================
     # Penalize when interneuron rates exceed physiological ceilings across the full sweep
     L_physiol = (
@@ -362,6 +374,7 @@ def bistable_loss(
         + cfg.w_margin * L_margin
         + cfg.w_jacobian * L_jac
         + cfg.w_physiol * L_physiol
+        + cfg.w_peak * L_peak
     )
 
     if return_components:
@@ -375,6 +388,8 @@ def bistable_loss(
             "L_margin": float(L_margin),
             "L_physiol": float(L_physiol),
             "L_jac": float(L_jac),
+            "L_peak": float(L_peak),
+            "nullcline_peak_hz": float(nullcline_peak),
             "L_total": float(L_total),
             "r_low_fp": float(r_low_fp),
             "r_high_fp": float(r_high_fp) if r_high_fp is not None else None,
@@ -429,6 +444,7 @@ def save_bistable_summary(
     lines.append(f"    L_margin   (FP separation):    {components.get('L_margin', 0.0):10.4g}")
     lines.append(f"    L_physiol  (interneuron ceil): {components.get('L_physiol', 0.0):10.4g}")
     lines.append(f"    L_jac      (Jacobian reg.):    {components.get('L_jac', 0.0):10.4g}")
+    lines.append(f"    L_peak     (nullcline peak):   {components.get('L_peak', 0.0):10.4g}  [peak={components.get('nullcline_peak_hz', float('nan')):.1f} Hz]")
     lines.append(f"    ─" * 35)
     lines.append(f"    L_total                        {components.get('L_total', 0.0):10.4g}")
     lines.append("")

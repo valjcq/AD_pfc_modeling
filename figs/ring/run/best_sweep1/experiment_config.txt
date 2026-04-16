@@ -1,6 +1,6 @@
 
 ══════════════════════════════════════════════════════════════════
-  Run started: 2026-04-14  12:35:04
+  Run started: 2026-04-14  15:03:27
 ══════════════════════════════════════════════════════════════════
   CIRCUIT PARAMETERS
   ── Time constants (ms)
@@ -9,7 +9,7 @@
   ── Adaptation
        J_adapt_pyr   = 0.005891
   ── Noise
-       sigma_noise   = 0.1  (noise current std = 0.107 nA)
+       sigma_noise   = 0.05  (noise current std = 0.05352 nA)
   ── GABA scaling
        g_gaba_base   = 1.191
        g_alpha7      = 1.449
@@ -45,6 +45,6 @@
        total sim time= 15750 ms
 ──────────────────────────────────────────────────────────────────
   EXPERIMENT
-       Condition: WT   seed=42
+       Condition: WT   seed=1072413364
        Delay:     5000 ms
 ══════════════════════════════════════════════════════════════════

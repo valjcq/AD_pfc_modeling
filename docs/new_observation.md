@@ -946,3 +946,241 @@ Single-node simulations now correctly reproduce the bistable optimization predic
 This bug would have caused systematic underestimation of the SOM adaptation's strength during parameter fitting, potentially leading to incorrect circuit parameters. The ring simulation was unaffected because it had the correct implementation throughout.
 
 ---
+---
+
+### Nullcline geometry analysis — why cue saturation is structural (2026-04-14)
+
+#### Context
+
+After Sweep 1 confirmed a genuine localized bump at `w_pyr=0.002514, w_pv=0.03, amp=0.55`,
+every working-point trial shows `cue_sat_frac = 1.0` (cue firing hits 200 Hz ceiling).
+The question is whether the nullcline shape structurally forces this saturation or whether
+it is avoidable by parameter tuning.
+
+#### Fixed-point structure (from `nullcline_WT_best_params.json`)
+
+| Fixed point | r_PYR (Hz) | Stability | r_PV | r_SOM | r_VIP |
+|---|---|---|---|---|---|
+| Low | 0.0 | **stable** | 2.45 | 2.42 | 2.14 |
+| Threshold | 35.6 | **unstable** | 3.61 | 0.79 | 25.98 |
+| High | 78.3 | **stable** | 3.87 | 0.0 | 70.10 |
+
+#### Nullcline shape
+
+The single-node PYR nullcline Φ(r_PYR) (the self-consistent firing rate given recurrent input)
+has the following key features:
+
+- **Peak**: 124.4 Hz at r_PYR ≈ 51 Hz
+- **High stable FP**: 78.3 Hz (on the **descending** arm of the nullcline)
+- **Peak-to-FP ratio**: 1.59 — the nullcline overshoots the high attractor by 46 Hz
+- **Max drive (Φ − r) in transition zone (35.6 → 78.3 Hz)**: 73.9 Hz at r_PYR ≈ 50 Hz
+- **Mean drive in transition zone**: 41.5 Hz
+
+The high stable FP is on the descending arm. This is the geometric key to the problem.
+
+#### Why saturation is structurally forced
+
+When the network transitions from resting (0 Hz) to the high state (78 Hz), the trajectory
+must traverse the transition zone (35.6 → 78.3 Hz). In this entire zone, Φ >> r_PYR
+(the drive exceeds the firing rate). The state accelerates rapidly upward with peak
+net drive of ~74 Hz — meaning d(r_PYR)/dt is very large throughout the transition.
+
+The system does not smoothly travel to 78 Hz. It shoots well past the nullcline peak
+(124 Hz) before the falling nullcline and interneuron dynamics can pull it back down.
+With the cue active, external input further shifts the effective nullcline upward, creating
+a transient cue-period equilibrium far above 190 Hz.
+
+This is not a tuning artifact. It is a consequence of:
+1. The high FP sitting on the descending arm (at Φ = 78 Hz, the nullcline has already
+   fallen ~46 Hz below its peak)
+2. The large gap between the nullcline peak (124 Hz) and the high FP (78 Hz) creating
+   a high-inertia overshoot during the transition
+
+#### What the cue_sweep confirms
+
+The `cue_sweep_best_params.png` shows that even at trans_factor = 1 (baseline amplitude),
+the during-cue PYR rate in the single-node model saturates the transfer function.
+The bistable activation window corresponds precisely to this heavily saturated cue regime.
+
+#### What would be needed to avoid saturation
+
+To allow a transition from resting to the high state without hitting 200 Hz, one would need
+to reshape the nullcline so that:
+- The nullcline peak ≈ 90–100 Hz (close to the high FP), not 124 Hz
+- The transition zone drive (Φ − r) is small enough that the trajectory does not overshoot
+
+This requires re-optimizing the **single-node parameters** with an explicit penalty on the
+nullcline peak height, e.g., target: max(Φ) < 95 Hz while keeping the bistable structure.
+That is a non-trivial re-optimization task and may conflict with other constraints.
+
+---
+
+### Transient sweep framework for bistability validation — 2D (Duration × Amplitude) (2026-04-14)
+
+#### Setup
+
+A systematic 2D transient sweep to independently assess duration and amplitude effects on attractor robustness. All runs use the best working point (w_pyr=0.002514, w_pv=0.03, amp=0.55, sigma=15°) with transients injected at delay end.
+
+**Sweep structure** (separates dimensions):
+- **Baseline** (control): 1 run
+- **Negative duration sweep**: 6 runs (50, 75, 100, 200, 250, 500 ms at fixed −0.2)
+- **Negative amplitude sweep**: 6 runs (−0.1 to −0.5 at fixed 100 ms)
+- **Positive duration sweep**: 6 runs (50, 75, 100, 200, 250, 500 ms at fixed +0.2)
+- **Positive amplitude sweep**: 6 runs (+0.1 to +0.5 at fixed 100 ms)
+- **Total**: 25 runs organized in `figs/ring/run/transient_sweep/{baseline,negative,positive}/{duration,amplitude}/*`
+
+**Key metric**: `post_response_pyr_hz` (mean PYR firing rate in last 1 s of 3 s post-transient window)
+- < 30 Hz → network pulled toward resting (transient effective)
+- ≈ 70 Hz → bump unaffected (transient too weak)
+- Expected for positive: stable or slightly elevated (robust attractor)
+
+#### Execution & analysis
+
+Scripts located in `scripts/`:
+1. `run_transient_sweep.sh` — batch run all 25 trials (~40 min, no video export)
+2. `analyze_transient_sweep.py` — extract metrics and display effect of each dimension
+
+Analysis workflow:
+1. Run sweep: `bash scripts/run_transient_sweep.sh`
+2. Analyze: `python3 scripts/analyze_transient_sweep.py` (generates effect matrices for duration and amplitude independently)
+3. Manual verification: review `population_activity.png` in key folders
+4. Interpretation: identify which dimension (duration vs amplitude) dominates network recovery
+
+#### Practical implication for Sweep 2
+
+Sweep 2 (fine amplitude near threshold) explores whether a barely-above-threshold cue
+(amp ≈ 0.37–0.39) shows less saturation than amp=0.55. This is plausible: at threshold,
+the cue-shifted nullcline just barely eliminates the resting FP, so the effective
+equilibrium during the cue might be lower than at amp=0.55. However, given the structural
+argument above (the transition zone drive is inherently large regardless of cue amplitude),
+this is unlikely to reduce cue_sat_frac below ~0.5 unless the amplitude is so close to
+threshold that the flip itself becomes unreliable.
+
+
+---
+
+### New optimization loss: nullcline peak penalty `L_peak` (2026-04-14)
+
+#### Why
+
+The bistable nullcline for `best_params.json` peaks at **~127 Hz** while the high stable FP sits at **78 Hz** (ratio 1.6×). This large gap means the network overshoots badly during the resting→active transition, always hitting the 200 Hz transfer-function ceiling during cue presentation. The old loss function had no term controlling this — the optimizer only needed Φ to be above the identity line at `r_high_target=30 Hz`, leaving the peak unconstrained.
+
+#### What changed
+
+A new term `L_peak = relu(max(Φ) − nullcline_peak_max)²` was added to `bistable_loss.py`. It penalises any nullcline peak above `nullcline_peak_max`. Two new CLI args:
+- `--nullcline_peak_max` (Hz, default 200 = off)
+- `--w_peak` (weight, default 0.0 = off)
+
+The `bistable_summary.txt` now reports `L_peak` and the actual peak value.
+
+#### Recommended settings for low-overshoot optimization
+
+```bash
+python -m circuit_model optimize \
+  --mode bistable \
+  --target_pyr 8.214 --target_som 4.295 --target_pv 4.073 --target_vip 6.051 \
+  --w_bistab 0.2 --w_rate_bistab 2.0 --w_margin 0.5 --w_physiol 2.0 \
+  --w_peak 1.0 --nullcline_peak_max 95.0 \
+  --budget 5000 \
+  --params_json figs/optim/bistable_high_fr/best_params.json \
+  --noise_type none --n_trials 2 \
+  --output_dir figs/optim/bistable_low_peak/
+```
+
+Target outcome: nullcline peak < 95 Hz with the bistable structure preserved. If this is achieved, the cue-period overshoot should remain below the 190 Hz saturation threshold.
+
+---
+
+### Low firing-rate target as implicit peak control (2026-04-14)
+
+#### Observation
+
+The new `L_peak` penalty successfully constrained the nullcline peak in the `bistable_high_fr_low_peak` run (peak = **92.7 Hz**, high FP = **66.3 Hz**, ratio **1.40×**). However, examining the earlier `bistable_low_fr` result — which used no `L_peak` term at all — reveals that its nullcline already had a comparably low peak: **81.9 Hz**, high FP = **74.6 Hz**, ratio **1.10×**.
+
+Summary comparison:
+
+| Run | r_low target | r_high target | Peak Φ | High FP | Peak / FP ratio | L_peak used |
+|-----|-------------|--------------|--------|---------|-----------------|-------------|
+| `bistable_low_fr` | 1.75 Hz | 60.2 Hz | 81.9 Hz | 74.6 Hz | 1.10× | No |
+| `bistable_high_fr_low_peak` | 8.21 Hz | 30.0 Hz | 92.7 Hz | 66.3 Hz | 1.40× | Yes (peak_max=95 Hz) |
+| `bistable_high_fr` (reference) | 8.21 Hz | 30.0 Hz | ~127 Hz | ~78 Hz | ~1.6× | No |
+
+#### Interpretation
+
+Using a low firing-rate target (r_low ≈ 1.75 Hz, r_high ≈ 60 Hz) appears to implicitly push the optimizer toward a lower nullcline peak, even without an explicit penalty. A plausible mechanism: with low target rates, the optimizer is driven to find parameter regimes where the transfer function saturates less — the nullcline must have a gentle, relatively flat shape to place the high FP at a moderate rate while maintaining bistability, which naturally suppresses the peak.
+
+In contrast, the `bistable_high_fr` setting (r_low = 8.21 Hz, r_high = 30 Hz) asks for a high FP at a lower firing rate, which structurally tends to push the nullcline peak up relative to the FP.
+
+#### Implication
+
+The explicit `L_peak` penalty is still useful (it provides direct, tunable control), but the low-rate optimization regime may be a simpler way to obtain a well-shaped nullcline without introducing an additional hyperparameter. If the physiological target rates are uncertain, running bistable optimization with conservatively low rate targets could be a good default to avoid the saturation problem.
+
+---
+
+### Low_fr ring network: bifurcation threshold is insensitive to w_pyr_pyr_inter (2026-04-15)
+
+#### What was done
+
+We investigated whether the `bistable_low_fr` parameter set can support ring attractor dynamics
+and, if so, under what conditions.
+
+**Step 1 — Finding the threshold (Phase 4)**
+
+Initial calibration sweeps (amplitude 0.5–2.5×) showed zero activity. Extending the range to
+10× revealed a sharp bifurcation: the network transitions from completely silent to transiently
+active between amplitude **6.5× and 7.0×** I_ext_pyr. This is 7–14× higher than the ~0.5–1.0×
+threshold of `bistable_high_fr`.
+
+Root cause: the low_fr optimisation achieved a quiet baseline (~0 Hz) by simultaneously
+weakening external drive (I0_pyr = 0.507 vs 1.070 in high_fr, 2.1× weaker) and strongly
+upregulating GABA (g_gaba_base = 4.465 vs 1.191, 3.7× stronger). These effects multiply,
+raising the bistable threshold far above physiological stimulus amplitudes.
+
+**Step 2 — Testing whether w_pyr_pyr_inter lowers the threshold (Phase 5)**
+
+Hypothesis: stronger recurrent PYR→PYR coupling can compensate for weak external drive,
+reducing the minimum amplitude needed to trigger the HIGH state. We ran a 2D sweep:
+
+- `w_pyr_pyr_inter`: 0.001 → 0.040 (9 values, log-spaced, covering sub- to supra-Turing)
+- `amplitude`: 1.0 → 7.0× (8 values)
+- `w_pv_global`: 0.0001 and 0.001 (1 440 trials total)
+
+#### Key observation
+
+`w_pyr_pyr_inter` has **zero effect** on the bifurcation threshold. At amplitude 7.0×, the
+mean bump amplitude (`ref_amplitude`) is identical across all nine w_inter values:
+
+| w_pyr_pyr_inter | ref_amplitude at amp = 7.0× |
+|---|---|
+| 0.001 | 3.105e-02 |
+| 0.002 | 3.105e-02 |
+| 0.004 | 3.105e-02 |
+| 0.008 | 3.105e-02 |
+| 0.040 | 3.105e-02 |
+
+The amplitude progression across cue strengths (at fixed w_inter = 0.002) is a smooth
+exponential ramp (~1e-58 at 1×, ~1e-11 at 6×, ~3e-2 at 7×), identical across all w_inter.
+There is no shift in the bifurcation point.
+
+#### Interpretation
+
+The bifurcation is a **single-node phenomenon**. Each node must cross an energy barrier
+set by the balance of external current (I0_pyr) and local inhibition (g_gaba_base). Until a
+node is already active, there is no signal transmitted through w_pyr_pyr_inter — the
+inter-node coupling carries nothing to the neighbour of a silent node. Recurrent connectivity
+can shape the spatial structure of a bump once it exists, and determine how long it persists,
+but it cannot help initiate the bistable transition.
+
+The exponential ramp (nine orders of magnitude between amp=5× and amp=7×) is the classical
+signature of a saddle-node bifurcation in the underlying single-node system — w_inter is
+irrelevant to it.
+
+#### Implication
+
+Lowering the activation threshold for the low_fr parameter set requires modifying the
+single-node circuit parameters directly (I0_pyr, g_gaba_base). Such modifications would,
+however, compromise the very property that motivated this set — a near-silent baseline.
+**There is no ring-connectivity lever that can reconcile the low-fr quiet baseline with
+physiologically plausible cue amplitudes.** Use `bistable_high_fr` for ring network
+simulations.
+

@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ring-study,ring-oscillation-study,ring-osc-distractor-study,ring-osc-phase-distractor,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
+python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ring-study,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
 ```
 
 ---
@@ -17,16 +17,13 @@ python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ri
 5. [study](#study) -- Batch study across 8 experimental conditions
 6. [ring-run](#ring-run) -- Ring attractor single-condition simulation
 7. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
-8. [ring-oscillation-study](#ring-oscillation-study) -- Cue-only oscillation analysis in a selected frequency band
-9. [ring-osc-distractor-study](#ring-osc-distractor-study) -- Oscillation + distractor study (STFT at cue/distractor nodes + PLV)
-10. [ring-osc-phase-distractor](#ring-osc-phase-distractor) -- Phase-dependent distractor study (vary distractor timing relative to oscillation cycle)
-11. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-12. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
-13. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
-14. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
-15. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
-16. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
-17. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
+8. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
+9. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
+10. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
+11. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
+12. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
+13. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
+14. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
 
 ---
 
@@ -381,305 +378,55 @@ The 8 conditions are:
 | `a7_KO` | alpha7 KO | alpha7 = 0, g_alpha7 = 0 |
 | `a7_KO_APP` | alpha7 KO + APP background | WT_APP family + alpha7 = 0, g_alpha7 = 0 |
 | `b2_KO` | beta2 KO | beta2 = 0 |
-| `b2_KO_APP` | beta2 KO + APP background | WT_APP family + beta2 = 0 |
-| `a5_KO` | alpha5 KO | alpha5 = 0 |
-| `a5_KO_APP` | alpha5 KO + APP background | WT_APP family + alpha5 = 0 |
+8. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
 
-### Parameters
+## `ring-diffusion`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--params_json` | str | `""` | Load base parameters from JSON file |
-| `--n_runs` | int | `50` | Number of simulations per condition |
-| `--T_ms` | float | `2500.0` | Simulation duration (ms) |
-| `--dt_ms` | float | `0.1` | Integration time step (ms) |
-| `--noise_type` | str | `"white"` | Noise type (default: white) |
-| `--tau_noise_ms` | float | `5.0` | OU noise time constant (ms) |
-| `--seed` | int | `None` | Random seed |
-| `--burn_in_ms` | float | `1800.0` | Burn-in period for statistics (ms) |
-| `--window_ms` | float | `500.0` | Averaging window (ms) |
-| `--fixed_receptor_values` | flag | `False` | Use fixed mean receptor values instead of sampling |
-| `--n_workers` | int | `None` | Parallel workers (auto if None) |
-| `--save_plot` | str | `""` | Save box plot to file path |
-| `--no_show` | flag | `False` | Don't display the plot |
-| `--unit` | str | `"Hz"` | Rate unit for display |
-
-### Examples
+Compute the mean squared displacement (MSD) of the bump center during delay periods across conditions and extract the diffusion strength $\hat{B}$ (slope of MSD vs time, in $\text{rad}^2/\text{s}$).
 
 ```bash
-# Default study (50 runs per condition, white noise)
-python -m circuit_model study
-
-# Quick test with fixed receptor values
-python -m circuit_model study --n_runs 10 --fixed_receptor_values --no_show
-
-# OU noise study
-python -m circuit_model study --noise_type ou --tau_noise_ms 10
+python -m circuit_model ring-diffusion [options]
 ```
 
----
-
-## `ring-run`
-
-Run a ring attractor simulation for a single experimental condition with visualization.
-
-```bash
-python -m circuit_model ring-run [options]
-```
-
-### Condition Selection
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--condition` | str | `"WT"` | Experimental condition. Valid: `WT`, `WT_APP`, `a5_KO`, `a5_KO_APP`, `a7_KO`, `a7_KO_APP`, `b2_KO`, `b2_KO_APP` |
-
-### Common Ring Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--n_nodes` | int | from ring params JSON or `128` | Number of nodes on the ring |
-| `--params_json` | str | `""` | Load local circuit parameters from JSON file. If omitted, defaults to `params/new/ring_firing_rate/WT_1mo_article_ko.json` (WT) and `params/new/ring_firing_rate/WT_APP_1mo_article_ko.json` (APP). |
-| `--amplitude` | float | `10.0` | Stimulus amplitude as factor of I_ext_pyr baseline (0.1 = 10% of baseline current) |
-| `--delay_ms` | float | `5000.0` | Delay period duration (ms) |
-| `--seed` | int | `442` | Random seed for reproducibility |
-| `--no_show` | flag | `False` | Don't display plots |
-| `--total_time_ms` | float | `None` | Total simulation time (overrides automatic timing) |
-| `--record_dt_ms` | float | `5.0` | Recording time step (ms). Only every record_dt_ms the state is stored. Lower values use more memory |
-| `--snapshot_anim_fps` | int | `30` | FPS for snapshot evolution animation |
-| `--snapshot_anim_step_ms` | float | `2.0` | Time step between animation frames (ms) |
-| `--quality_high` | flag | `False` | Use moderately higher-quality animation rendering (higher DPI + AV1 quality; up to ~2× slower encoding) |
-
-#### Noise Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--sigma_noise` | float | from params (default `0.3`) | Relative noise amplitude. The std of the current noise injected into each PYR node equals `sigma_noise × I_ext_pyr` (nA). Noise enters before the transfer function, so its effect on firing rate is naturally gated by the transfer function slope. Set to `0` to disable noise. |
-
-#### Connectivity Parameters
-
-Ring connectivity parameters are loaded by default from `params/new/ring_firing_rate/WT_1mo_article_ko_ring.json`. Explicit CLI values always override the file.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--sigma_pyr_deg` | float | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pyr_pyr_inter` | float (one or more) | from ring params JSON or `8.0` | Total PYR→PYR coupling strength. Multi-condition commands accept one value per condition (e.g. `--w_pyr_pyr_inter 8.0 7.5` for WT and WT_APP). A single value is broadcast to all conditions. |
-| `--w_pv_global` | float | from ring params JSON or `10.0` | Total PV→PYR global inhibition strength (uniform) |
-
-**PYR→PYR**: Row-sum normalized Gaussian. `w_pyr_pyr_inter` controls total coupling strength.
-
-#### Response Transient Options
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--response_onset_ms` | float | `0.0` | Response transient onset after delay end (ms). 0 = disabled |
-| `--response_duration_ms` | float | `500.0` | Duration of response transient (ms) |
-| `--response_factor` | float | `0.5` | Response transient amplitude as fraction of I0 (+50% of baseline) |
-| `--post_response_ms` | float | `3000.0` | Simulation time after response transient ends (ms) |
-
-### Outputs
-
-Generates in `figs/ring/run/cue/amp<N>/<condition>/`:
-- `dashboard.png` -- Activity heatmap, snapshots, firing rate traces
-- `snapshot_evolution.mp4` -- Ring snapshot animation (requires ffmpeg)
-- `bump_metrics_over_time.png` -- Bump center, width, amplitude over time
-- `connectivity_matrices.png` -- PYR-PYR and PV-PYR connectivity matrices
-- `experiment_config.txt` -- Full parameter summary for reproducibility
-
-`amp<N>` encodes the stimulus amplitude factor (e.g. `amp0.1` for `--amplitude 0.1`).
-
-### Examples
-
-```bash
-# Wild type, default amplitude
-python -m circuit_model ring-run --condition WT
-
-# Smaller network, longer delay
-python -m circuit_model ring-run --condition WT --n_nodes 64 --delay_ms 8000
-
-# Alpha7 KO, amplitude 0.3×
-python -m circuit_model ring-run --condition a7_KO --amplitude 0.3 --delay_ms 5000
-
-# Disable noise
-python -m circuit_model ring-run --condition WT --sigma_noise 0
-
-# Stronger noise
-python -m circuit_model ring-run --condition WT --sigma_noise 0.5
-
-# With response transient
-python -m circuit_model ring-run --condition WT --response_onset_ms 500 --response_factor 0.3
-```
-
----
-
-## `ring-study`
-
-Run ring attractor simulations across multiple conditions and generate comparison plots.
-
-```bash
-python -m circuit_model ring-study [options]
-```
-
-### Study-Specific Parameters
+### Diffusion-Specific Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
-| `--amplitudes` | float (list) | `[30]` | Multiple stimulus amplitude factors (× I_ext_pyr) to compare |
-| `--n_trials` | int | `100` | Number of trials per condition x amplitude |
+| `--n_trials` | int | `50` | Number of trials per condition |
 | `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
-| `--delay_step_ms` | float | `200` | Delay evaluation step size (ms) |
-| `--no_cache` | flag | `False` | Ignore existing CSV cache and recompute |
-| `--amp_eval_step_ms` | float | `500` | Step (ms) for timed metrics-vs-amplitude plots. 0 = disabled |
+| `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 
+### Method
+
+For each condition:
+1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
+2. Decode the bump center $\varphi(t)$ via population vector during the delay period
+3. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
+4. Fit a straight line to the selected MSD range to extract $\hat{B}$
+
 ### Outputs
 
-Generates in `figs/ring/<n_nodes>/<params_stem>/<conn_label>/`:
-- `amp<N>/metrics_vs_delay.png` -- Bump metrics at multiple delay timepoints per condition
-- `amp<N>/bump_metrics_comparison.png` -- Side-by-side activity and bump metrics
-- `metrics_vs_amplitude.png` -- Cross-amplitude comparison at full delay (if multiple amplitudes)
-- `metrics_vs_amplitude_at_<T>s.png` -- Cross-amplitude comparison at delay=T (every `amp_eval_step_ms`)
-- `connectome.png` -- Connectivity visualization
-- `study_metrics.csv` -- Cached metrics for all jobs (condition, amplitude, trial)
-
-The `<conn_label>` ensures different connectivity configurations produce separate output directories (see [ring-run outputs](#outputs) for format).
+Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
+- `diffusion_msd_<band>.png` -- Three-panel figure: MSD vs lag (left), $\hat{B}$ bar chart (centre), amplitude timecourse (right)
+- `diffusion_summary.csv` -- `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
+- `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
+- `diffusion_amplitude.csv` -- `condition_key`, `t_s`, `amp_mean`, `amp_sem`, `survival_frac`, `noise_threshold`
 
 ### Examples
 
 ```bash
-# All conditions, default amplitude (128 nodes)
-python -m circuit_model ring-study
+# All conditions, 50 trials each
+python -m circuit_model ring-diffusion --no_show
 
-# Smaller network
-python -m circuit_model ring-study --n_nodes 64
+# Compare WT vs alpha7 KO with 20 trials
+python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
 
-# Subset of conditions
-python -m circuit_model ring-study --conditions WT WT_APP a7_KO
-
-# Multi-amplitude study with trials
-python -m circuit_model ring-study \
-    --amplitudes 8 10 15 20 \
-    --conditions WT WT_APP \
-    --n_trials 10 --n_workers 4
-
-# Custom delay evaluation
-python -m circuit_model ring-study --delay_step_ms 500 --delay_ms 5000
-
-# Force recompute (ignore cache)
-python -m circuit_model ring-study --no_cache
+# Longer delay for better MSD estimation
+python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
 ```
-
----
-
-## `ring-oscillation-study`
-
-Run cue-only ring simulations across conditions and amplitudes, extract dominant oscillation trajectories in a selected frequency band (default `2-12 Hz`), and generate distribution/heatmap outputs.
-
-```bash
-python -m circuit_model ring-oscillation-study [options]
-```
-
-### Oscillation-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT WT_APP` | Conditions to simulate (space-separated) |
-| `--amplitudes` | float (list) | uses `--amplitude` | Cue amplitude factors (x `I_ext_pyr`) |
-| `--n_trials` | int | `50` | Trials per condition x amplitude |
-| `--n_workers` | int | `None` | Parallel workers (auto if `None`) |
-| `--osc_skip_ms` | float | `200.0` | Initial delay segment skipped before oscillation analysis |
-| `--min_freq_hz` | float | `2.0` | Lower bound of frequency band used for dominant-frequency search |
-| `--max_freq_hz` | float | `12.0` | Upper bound of frequency band used for dominant-frequency search |
-| `--tf_window_s` | float | `1.0` | STFT window length (seconds) |
-| `--tf_overlap` | float | `0.8` | STFT overlap fraction in `[0,1)` |
-| `--sample_time_frac` | float | `0.75` | Delay fraction used for single-timepoint summary metrics |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Outputs
-
-Generates in `figs/ring/oscillation/<params_stem>/<conn_label>/`:
-- `oscillation_trial_summary.csv` -- Trial-level summary metrics (`freq_mean_hz`, `power_mean`, `freq_sample_hz`, `power_sample`)
-- `oscillation_dominant_timecourse.csv` -- Dominant trajectory over time (`dominant_freq_hz`, `dominant_power`, `cue_rate_hz`) per trial
-- `oscillation_stats.csv` -- Pairwise two-sided Mann-Whitney U tests across conditions (per amplitude)
-- `amp<N>/violin_power_mean.png` -- Violin plot of delay-averaged dominant power by condition
-- `amp<N>/violin_power_sample.png` -- Violin plot of single-timepoint dominant power by condition
-- `amp<N>/heatmap_<COND>.png` -- High-quality smooth spectrogram-style heatmap (`frequency x time`) per condition
-- `amp<N>/oscillation_vs_time.png` -- Oscillation metrics over analyzed delay time (power + picked frequency + cue-node PYR rate, conditions compared)
-
-For full computation details (detrending, STFT, dominant-band metrics), see `docs/oscillation_analysis.md`.
-
-### Examples
-
-```bash
-# Default WT vs WT_APP analysis in the 2-12 Hz band
-python -m circuit_model ring-oscillation-study --no_show
-
-# Multi-amplitude comparison with more trials
-python -m circuit_model ring-oscillation-study \
-    --conditions WT WT_APP a7_KO_APP \
-    --amplitudes 10 15 20 25 30 \
-    --n_trials 100 --n_workers 8 --no_show
-
-# Narrow the band to theta-like oscillations
-python -m circuit_model ring-oscillation-study \
-    --min_freq_hz 4 --max_freq_hz 10 \
-    --tf_window_s 0.6 --tf_overlap 0.85 --no_show
-```
-
----
-
-## `ring-osc-distractor-study`
-
-Run cue + distractor ring simulations sweeping cue amplitude, distractor angular offset, and distractor amplitude factor. Measures oscillatory power at the cue and distractor nodes (via STFT) and their phase synchrony (PLV — Phase Locking Value) across the full delay period.
-
-```bash
-python -m circuit_model ring-osc-distractor-study [options]
-```
-
-### Distractor-Oscillation-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT` | Conditions to simulate (space-separated) |
-| `--amplitudes` | float (list) | `--amplitude` | Cue amplitude factors (× I\_ext\_pyr). If omitted, uses `--amplitude`. |
-| `--distractor_factors` | float (list) | `0.75 1.0` | Distractor amplitude as fraction of cue amplitude |
-| `--offsets_deg` | float (list) | `30 70 90 120 170` | Distractor angular offsets from cue (degrees) |
-| `--delay1_ms` | float | `1500.0` | Post-cue, pre-distractor delay (ms) |
-| `--distractor_duration_ms` | float | `200.0` | Duration of distractor stimulus (ms) |
-| `--delay2_ms` | float | `3000.0` | Post-distractor delay until trial end (ms) |
-| `--n_trials` | int | `10` | Trials per (condition × amplitude × factor × offset) |
-| `--n_workers` | int | `None` | Parallel workers (default: auto) |
-| `--min_freq_hz` | float | `2.0` | Lower frequency bound for STFT and PLV bandpass (Hz) |
-| `--max_freq_hz` | float | `12.0` | Upper frequency bound for STFT and PLV bandpass (Hz) |
-| `--tf_window_s` | float | `1.0` | STFT / PLV sliding window length (s) |
-| `--tf_overlap` | float | `0.8` | STFT / PLV window overlap fraction [0, 1) |
-| `--no_cache` | flag | off | Force re-simulation even if cached results exist |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Protocol Timeline
-
-```
-[burn-in 10 s] → [pre-cue 0.5 s] → [cue 0.25 s] → [delay1] → [distractor] → [delay2]
-                                                       ↑              ↑             ↑
-                                                   1500 ms        200 ms        3000 ms  (defaults)
-```
-
-- **Cue**: Gaussian spatial profile (sigma = 18°) at 180°, amplitude swept via `--amplitudes`.
-- **Distractor**: Same sigma, amplitude = `distractor_factor × cue_amplitude`, centered at `180° + offset_deg`.
-- **Control**: Each amplitude also runs without a distractor (offset = None) for baseline comparison.
-
-### Metrics
-
-#### Per-node STFT
-Reuses `compute_oscillation_band_timecourse` applied independently to the PYR firing rate at:
-- **Cue node**: node closest to 180°
-- **Distractor node**: node closest to `180° + offset_deg`
-
-Returns dominant frequency and power per STFT time bin, over the full post-cue window (delay1 + distractor + delay2 in one contiguous STFT to avoid boundary artefacts).
-
 #### Phase Locking Value (PLV)
 New metric computed by `compute_plv_timecourse`:
 1. Bandpass-filter both node signals in [min\_freq\_hz, max\_freq\_hz] (zero-phase Butterworth order 4)
@@ -693,137 +440,6 @@ PLV = 0 means no phase coupling; PLV = 1 means perfect phase locking.
 ### Output Directory
 
 ```
-figs/ring/osc_distractor/{network_label}/{condition_key}/factor{F}/
-```
-
-### Outputs
-
-| File | Description |
-|------|-------------|
-| `osc_distractor_trials.csv` | Trial-level summary (cue/dist freq median, power median, PLV median in delay2) |
-| `.osc_dist_cache_{key}.pkl` | Cached raw simulation results (pickle) |
-| `factor{F}/osc_distractor_timecourses_amp{X}.png` | 3-row timecourse figure per amplitude: cue node power, distractor node power, PLV — one colored line per offset angle; dashed black = no-distractor control |
-| `factor{F}/osc_distractor_spectrograms_amp{X}_offset{Y}.png` | 2-column STFT heatmap (cue node \| distractor node) with dominant frequency overlay and distractor epoch markers |
-| `factor{F}/osc_distractor_amp_sweep.png` | Connected-dot amplitude sweep: x = cue amplitude, y = mean post-distractor PLV, one line per offset angle |
-
-### Examples
-
-```bash
-# Default run: WT, all offsets, both distractor factors
-python -m circuit_model ring-osc-distractor-study --no_show
-
-# Single amplitude and offset for a quick look
-python -m circuit_model ring-osc-distractor-study \
-    --amplitudes 4 --offsets_deg 90 --distractor_factors 1.0 \
-    --n_trials 20 --conditions WT --no_show
-
-# Full amplitude sweep with more trials
-python -m circuit_model ring-osc-distractor-study \
-    --amplitudes 1 2 4 6 8 10 \
-    --n_trials 30 --n_workers 8 \
-    --conditions WT WT_APP --no_show
-```
-
----
-
-## `ring-osc-phase-distractor`
-
-Phase-dependent distractor experiment. Runs the **same burn-in and cue simulation** (fixed seed, deterministic trajectory) for every trial, then injects a distractor at different points in the ongoing oscillation cycle. The timing offset is expressed in units of **π radians** of the oscillation, so a sweep from 0 to 2π covers exactly one full oscillation cycle.
-
-```bash
-python -m circuit_model ring-osc-phase-distractor [options]
-```
-
-### Phase-Distractor-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT` | Conditions to simulate |
-| `--amplitudes` | float (list) | `--amplitude` | Cue amplitude factors (× I\_ext\_pyr) |
-| `--distractor_factors` | float (list) | `1.0` | Distractor amplitude as fraction of cue amplitude |
-| `--offsets_deg` | float (list) | `90.0` | Distractor angular offsets from cue (degrees) |
-| `--delay1_base_ms` | float | `500.0` | Base delay between cue offset and distractor onset (ms). Actual delay1 = `delay1_base + phase_pi × T_osc / 2` |
-| `--distractor_duration_ms` | float | `200.0` | Duration of distractor stimulus (ms) |
-| `--delay2_ms` | float | `2000.0` | Post-distractor delay (ms) |
-| `--n_phase_sweep` | int | `16` | Number of equally-spaced phase values in [0, 2π) for the continuous sweep |
-| `--osc_freq_hz` | float | `5.0` | Fallback oscillation frequency if auto-detection fails (Hz) |
-| `--n_trials` | int | `10` | Distractor trials per (condition × amplitude × factor × offset × phase) |
-| `--n_workers` | int | `None` | Parallel workers (default: auto) |
-| `--min_freq_hz` | float | `2.0` | Lower frequency bound for STFT and PLV bandpass (Hz) |
-| `--max_freq_hz` | float | `12.0` | Upper frequency bound for STFT and PLV bandpass (Hz) |
-| `--tf_window_s` | float | `1.0` | STFT / PLV sliding window length (s) |
-| `--tf_overlap` | float | `0.8` | STFT / PLV window overlap fraction [0, 1) |
-| `--no_cache` | flag | off | Force re-simulation even if cached results exist |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Protocol Timeline
-
-```
-[burn-in 10 s] → [pre-cue 0.5 s] → [cue 0.25 s] → [delay1(φ)] → [distractor] → [delay2]
-                                                          ↑               ↑            ↑
-                                               delay1_base + φ·T/2      200 ms      2000 ms
-                                               (same deterministic trajectory up to this point)
-```
-
-The oscillation frequency `T` (and thus period `T_osc = 1000/f` ms) is **auto-detected** from a reference no-distractor simulation before the phase grid is built. For each phase value `φ` (in units of π):
-
-```
-delay1(φ) = delay1_base_ms + φ × T_osc / 2
-```
-
-So `φ = 0` → distractor at `delay1_base`; `φ = 1` (π) → distractor half a period later; `φ = 2` (2π) → same as `φ = 0`.
-
-### Identical Pre-Distractor State Guarantee
-
-For a given `phase_pi` value, the network state at distractor onset is **deterministic** — all `n_trials` distractor simulations start from the exact same state, because:
-
-1. The burn-in uses the same fixed seed for all phase values.
-2. Each pre-distractor simulation (burn-in → cue → delay1) uses the same fixed seed.
-3. Since the simulation is deterministic given the seed and initial state, the trajectory is identical up to the respective `delay1` end point.
-
-Only the post-distractor noise realisation differs across trials.
-
-### Metrics
-
-Identical to `ring-osc-distractor-study`: STFT-based dominant power at the cue node and distractor node, and PLV between them. Averaged over the post-distractor delay2 window to produce scalar summary metrics as a function of phase.
-
-### Output Directory
-
-```
-figs/ring/osc_phase_distractor/{network_label}/{condition_key}/factor{F}/amp{X}/offset{Y}/
-```
-
-### Outputs
-
-| File | Description |
-|------|-------------|
-| `osc_phase_trials.csv` | Trial-level CSV: condition, amplitude, factor, offset, phase\_pi, PLV / cue power / dist power mean over delay₂ |
-| `.osc_phase_cache_{key}.pkl` | Pickle cache of raw trial results |
-| `phase_plv_4panel.png` | 2×2 grid of PLV timecourses for phases 0, π/2, π, 3π/2 — each panel shows mean ± SD; black dashed = no-distractor control |
-| `phase_cue_power_4panel.png` | Same layout for cue node dominant power |
-| `phase_dist_power_4panel.png` | Same layout for distractor node dominant power |
-| `phase_sweep.png` | 3-row summary: PLV / cue power / dist power (mean over delay₂) vs. continuous phase (0 to 2π), with SEM bands and no-distractor baseline |
-| `phase_polar.png` | Polar rose version of `phase_sweep.png`; one subplot per metric |
-| `phase_heatmap_plv.png` | Phase × time heatmap of mean PLV (phase on y-axis, time relative to distractor on x-axis) |
-| `phase_heatmap_cue_power.png` | Same for cue node power |
-| `phase_heatmap_dist_power.png` | Same for distractor node power |
-
-### Examples
-
-```bash
-# Default: WT, 90° offset, factor 1.0, 16-phase sweep
-python -m circuit_model ring-osc-phase-distractor --no_show
-
-# Higher-resolution phase sweep, 20 trials
-python -m circuit_model ring-osc-phase-distractor \
-    --amplitude 35 --offsets_deg 90 \
-    --n_phase_sweep 24 --n_trials 20 --no_show
-
-# Compare two conditions and two distractor offsets
-python -m circuit_model ring-osc-phase-distractor \
-    --conditions WT WT_APP \
-    --offsets_deg 90 170 \
     --distractor_factors 0.75 1.0 \
     --n_phase_sweep 16 --n_trials 15 \
     --n_workers 8 --no_show
@@ -847,7 +463,7 @@ python -m circuit_model ring-diffusion [options]
 | `--n_trials` | int | `50` | Number of trials per condition |
 | `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
 | `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
-| `--filter_cutoff_hz` | float | auto | Low-pass cutoff (Hz) for bump center trajectory. Auto-detected from oscillation spectrum. Set to `0` to disable. |
+| `--filter_cutoff_hz` | float | auto | Low-pass cutoff (Hz) for bump center trajectory. Auto-detected from the delay signal. Set to `0` to disable. |
 
 Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 
@@ -856,222 +472,33 @@ Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
 For each condition:
 1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
 2. Decode the bump center $\varphi(t)$ via population vector during the delay period
-3. **Detect oscillations**: compute the FFT of the per-trial bump amplitude; identify the dominant oscillation frequency (see [Bump Amplitude Oscillations](#bump-amplitude-oscillations-in-docs-ring_attractormd))
-4. **Filter**: apply a zero-phase low-pass Butterworth filter to each $\varphi(t)$ trajectory at 0.4 × $f_\text{osc}$ (auto-detected) or at the value given by `--filter_cutoff_hz`
-5. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
-6. **Oscillation-corrected fit**: if an oscillation frequency $f_\text{osc}$ was detected, fit the model $\text{MSD}(\tau) = B\tau + C(1-\cos(2\pi f_\text{osc}\tau)) + \text{offset}$ to extract $\hat{B}$; otherwise fall back to a standard linear fit
+3. Optionally low-pass filter each $\varphi(t)$ trajectory with `--filter_cutoff_hz`
+4. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
+5. Fit a standard linear model to the MSD curve to extract $\hat{B}$
 
 ### Outputs
 
 Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
 - `diffusion_msd_<band>.png` -- Three-panel figure: MSD vs lag (left, oscillatory-regime shaded), $\hat{B}$ bar chart (centre), amplitude timecourse (right).
-- `diffusion_oscillation_spectrum.png` -- Power spectrum of bump amplitude per condition with detected frequency annotated, plus bar chart of dominant period (ms).
 - `diffusion_summary.csv` -- `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
 - `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
 - `diffusion_amplitude.csv` -- `condition_key`, `t_s`, `amp_mean`, `amp_sem`, `survival_frac`, `noise_threshold`
-- `diffusion_oscillation.csv` -- `condition_key`, `dominant_freq_hz`, `dominant_period_ms`, `filter_cutoff_hz`
 
 ### Examples
 
 ```bash
-# All conditions, 50 trials each (oscillation auto-detected and corrected)
+# All conditions, 50 trials each
 python -m circuit_model ring-diffusion --no_show
 
-# Compare WT vs alpha7 KO with 20 trials
+# Disable filtering (raw MSD, for comparison)
 python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
 
 # Longer delay for better MSD estimation
 python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
 
-# Disable oscillation filtering (raw MSD, for comparison)
-python -m circuit_model ring-diffusion --conditions WT --filter_cutoff_hz 0
-```
-
 ---
 
-## `ring-noise-floor`
-
-Run no-stimulus baseline trials and compute a noise floor threshold as the Nth percentile of bump amplitude under spontaneous noise. Saves `baseline_A_hat.csv` which is consumed automatically by `ring-calibrate`. Run this command first when you want custom baseline parameters (trial count, percentile, etc.).
-
-```bash
-python -m circuit_model ring-noise-floor [options]
-```
-
-### Noise Floor Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT` | Conditions to run (default: WT only) |
-| `--w_inter_values` | float (list) | `2.0 3.0 4.0 5.0 6.0` | w_pyr_pyr_inter values for baseline sweep |
-| `--n_baseline` | int | `100` | Number of no-stimulus trials per w_inter |
-| `--noise_percentile` | float | `95` | Percentile of baseline A_hat used as threshold |
-| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
-| `--batch_chunk_size` | int | `50` | Max trials per simulation batch chunk |
-| `--no_cache` | flag | `False` | Ignore existing baseline cache and recompute from scratch |
-| `--replot_only` | flag | `False` | Regenerate noise floor plots from cached `baseline_A_hat.csv` without re-simulating |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Method
-
-For each (condition, w_inter) combination, run `n_baseline` trials without any stimulus. Decode population-vector amplitude (A_hat) at every recorded time step and at the end of the delay. The threshold is set at the specified percentile of all A_hat values across trials. By default, existing cache is reused per condition and per `w_inter`, now accounting for cached trial count: if you request more trials, only the missing trials are simulated, appended to cache, and thresholds are recomputed from the merged old+new data (equivalent to a weighted update by sample count). Use `--no_cache` to force full recompute. Results are saved to `baseline_A_hat.csv` and used by `ring-calibrate` as the success criterion.
-
-### Outputs
-
-Generates in `figs/calibration/<n_nodes>/<params_stem>/<base_conn_label>/`:
-
-**Figures:**
-- `<cond_key>/noise_floor.png` -- Histogram of baseline A_hat per w_inter with threshold line
-- `noise_summary.png` -- Cross-condition noise threshold summary
-
-**Data:**
-- `<cond_key>/baseline_A_hat.csv` -- Raw A_hat values: `condition_key`, `w_inter`, `a_hat_value`
-
-### Examples
-
-```bash
-# Default noise floor (WT only, default w_inter values)
-python -m circuit_model ring-noise-floor --no_show
-
-# Custom baseline for multiple conditions
-python -m circuit_model ring-noise-floor \
-    --conditions WT a7_KO --w_inter_values 2.0 3.0 4.0 5.0 \
-    --n_baseline 200 --noise_percentile 99 --no_show
-
-# Replot from existing cache without re-running
-python -m circuit_model ring-noise-floor --replot_only --no_show
-```
-
----
-
-## `ring-calibrate`
-
-Sweep a 2D grid of (stimulus_amplitude, w_pyr_pyr_inter) to find parameter combinations that produce a stable memory bump. Uses a pre-computed noise floor as the success criterion — if `baseline_A_hat.csv` is not found, `ring-noise-floor` is automatically run first with default parameters (n_baseline=100, noise_percentile=95). Run `ring-noise-floor` explicitly beforehand to customise the baseline.
-
-```bash
-python -m circuit_model ring-calibrate [options]
-```
-
-### Calibrate-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT` | Conditions to calibrate (default: WT only) |
-| `--amplitudes` | float (list) | `5 10 15 20 25 30` | Stimulus amplitude factors to sweep |
-| `--w_inter_values` | float (list) | `2.0 3.0 4 5.0 6.0` | w_pyr_pyr_inter values to sweep |
-| `--n_trials` | int | `50` | Number of trials per grid point |
-| `--noise_percentile` | float | `95` | Percentile applied when reading cached baseline A_hat data |
-| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
-| `--error_band` | str | `"sem"` | Error band type for time course plots: `sem` or `sd` |
-| `--no_cache` | flag | `False` | Ignore existing grid CSV cache and recompute from scratch |
-| `--batch_chunk_size` | int | `50` | Max trials per simulation batch chunk to limit peak RAM |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Method
-
-1. **Noise floor** (prerequisite): Loaded from `baseline_A_hat.csv` produced by `ring-noise-floor`. If missing, auto-runs noise floor with default parameters before continuing.
-2. **Grid exploration**: For each (amplitude, w_inter) combination, run `n_trials` with the standard WM protocol. Measure A_hat at end of delay, peak PYR rate, angular error.
-3. **Success criterion**: A trial is "successful" if A_hat at delay end exceeds the noise floor threshold for that w_inter.
-4. **Recommendation**: Select the (amplitude, w_inter) with highest success rate; ties broken by highest mean A_hat. Warning if peak PYR rate > 100 Hz.
-
-### Outputs
-
-Generates in `figs/calibration/<n_nodes>/<params_stem>/<base_conn_label>/`:
-
-**Figures:**
-- `heatmap_success_rate.png` -- 2D heatmap: success rate across the grid
-- `heatmap_A_hat.png` -- 2D heatmap: mean A_hat across the grid
-- `heatmap_peak_pyr.png` -- 2D heatmap: peak PYR firing rate
-- `timecourses_<band>.png` -- A_hat time courses for representative grid points
-- `scatter_summary.png` -- Mean A_hat vs success rate, colored by peak PYR rate
-
-**Data:**
-- `calibration_results.csv` -- Per-trial data: `condition_key`, `amplitude`, `w_inter`, `trial_idx`, `seed`, `A_hat_final`, `peak_pyr_rate`, `center_final_deg`, `error_from_cue_deg`
-- `calibration_summary.csv` -- Aggregated per grid point: `condition_key`, `amplitude`, `w_inter`, `success_rate`, `mean_A_hat`, `peak_pyr_rate`, `mean_error_deg`, `noise_threshold`, `n_trials`
-- `calibration_recommended.json` -- Best parameters with metadata
-
-### Examples
-
-```bash
-# Default calibration (WT, 10x5 grid, 50 trials/point — runs noise floor first if needed)
-python -m circuit_model ring-calibrate --no_show
-
-# Run noise floor explicitly first, then calibrate
-python -m circuit_model ring-noise-floor --no_show
-python -m circuit_model ring-calibrate --no_show
-
-# Quick test with small grid
-python -m circuit_model ring-calibrate --amplitudes 10 20 --w_inter_values 3.0 4.0 --n_trials 5
-
-# Custom grid with more resolution
-python -m circuit_model ring-calibrate \
-    --amplitudes 5 8 10 12 15 18 20 25 30 \
-    --w_inter_values 2.0 2.5 3.0 3.5 4.0 4.5 5.0 \
-    --n_trials 50 --no_show
-
-# Calibrate multiple conditions
-python -m circuit_model ring-calibrate --conditions WT a7_KO --amplitudes 10 20 30 --n_trials 20
-```
-
----
-
-## `ring-asymmetry`
-
-Analyse the left/right asymmetry of the activity bump across multiple trials and conditions. Each trial receives a unique noisy settling period before the cue so that the pre-cue spontaneous state varies across trials. The experiment tests whether asymmetry is balanced (zero mean) and whether pre-cue asymmetry predicts delay asymmetry, and produces full visualisations for the worst-case trial per condition.
-
-```bash
-python -m circuit_model ring-asymmetry [options]
-```
-
-### Asymmetry-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | `WT WT_APP a7_KO_APP` | Conditions to analyse (space-separated) |
-| `--n_trials` | int | `100` | Number of trials per condition |
-| `--n_workers` | int | `None` | Number of parallel workers (default: auto) |
-| `--random_cue_location` | flag | off | Draw a uniformly random cue angle in [0°, 360°) per trial (inherently balanced, skips balance correction) |
-| `--no_cue_balance` | flag | off | Disable the automatic balance correction (even N → between nodes; odd N → on nearest node). Leaves the cue at raw 180°, which for even N creates a structural bias of −1/(N−1). |
-| `--correct_asymmetry` | flag | on | Use amplitude-weighted normalized asymmetry in each window: $\sum A(t)\,\mathrm{Amp}(t) / \sum \mathrm{Amp}(t)$ |
-| `--no_correct_asymmetry` | flag | off | Disable amplitude-based asymmetry correction and use raw asymmetry index |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Method
-
-The asymmetry index is defined as:
-
-$$\text{asymmetry} = \frac{\sum_{\text{right}} r_i - \sum_{\text{left}} r_i}{\sum_{\text{right}} r_i + \sum_{\text{left}} r_i} \in [-1, 1]$$
-
-where "left" and "right" are nodes with signed angular offset < 0 or > 0 relative to the cue location. A value of −1 means all activity is on the left; +1 means all activity is on the right; 0 means perfectly symmetric.
-
-With the default correction enabled, pre-cue and delay asymmetry are computed as amplitude-weighted normalized means:
-
-$$a_{\text{window,corr}} = \frac{\sum_{t \in \mathcal{T}_{\text{window}}} A(t)\,\mathrm{Amp}(t)}{\sum_{t \in \mathcal{T}_{\text{window}}} \mathrm{Amp}(t)}$$
-
-This down-weights time points where the bump is weak and normalizes by total bump strength, making values more comparable across conditions.
-
-**Trial design** — each trial is fully independent:
-1. **Per-trial burn-in**: each trial starts from zero initial conditions and runs `ASYM_SETTLING_MS` (6000 ms) of noisy spontaneous activity with its own unique seed, producing fully uncorrelated pre-cue states across trials
-2. **Pre-cue window**: asymmetry measured over the last `ASYM_PRE_CUE_WINDOW_MS` (500 ms) of the burn-in period
-3. **Cue + delay**: standard working-memory protocol with the specified `--delay_ms`
-4. **Delay asymmetry**: asymmetry measured over the delay period (after the initial transient)
-
-All trials are run in parallel using `ProcessPoolExecutor`.
-
-#### Balance correction and structural pre-cue bias
-
-The asymmetry index excludes the node at offset = 0 (cue position) and counts offset = −180° (antipodal) as "left". For even N with the cue on a node, left has one more node than right → bias = −1/(N−1).
-
-The **balance correction** (on by default) fixes this:
-- **Even N**: cue placed at `nearest_node + step/2` (halfway between two nodes) → left = right = N/2.
-- **Odd N**: cue snapped to nearest node (antipodal never on a node → always balanced).
-
-A diagnostic is printed whenever N is even. Use `--no_cue_balance` to revert to raw 180° (e.g. for comparison with old results).
-
-**`--random_cue_location`**: continuous random angle per trial → inherently balanced (left = right = N/2), balance correction skipped. Plot titles show `cue@random` vs `cue@181.41° (balanced)` for the default.
-
+## 17. References
 ### Outputs
 
 Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>_<mode>/` where `<mode>` is `corrected` or `uncorrected`:

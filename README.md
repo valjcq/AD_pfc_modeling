@@ -249,7 +249,7 @@ circuit_model/
 ├── study.py             # Batch study across 8 experimental conditions
 ├── plotting.py          # Visualization (dashboard, box plots)
 ├── io.py                # JSON I/O, output_dir()
-├── cli.py               # Unified CLI (run, optimize, study, ring-run, ring-study, ring-oscillation-study)
+├── cli.py               # Unified CLI (run, optimize, study, ring-run, ring-study, ring-diffusion)
 │
 └── ring/                # Ring attractor subpackage
     ├── __init__.py      # Ring API exports
@@ -278,7 +278,6 @@ tests/
 | `python -m circuit_model study` | Batch study across 8 conditions |
 | `python -m circuit_model ring-run` | Ring attractor single-condition simulation |
 | `python -m circuit_model ring-study` | Ring attractor multi-condition comparison |
-| `python -m circuit_model ring-oscillation-study` | Cue-only oscillation analysis (dominant 2-12 Hz) |
 
 See [docs/CLI.md](docs/CLI.md) for full parameter documentation.
 
