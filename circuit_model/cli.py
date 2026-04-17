@@ -694,19 +694,18 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         r_low_hz = args.r_low_hz if args.r_low_hz is not None else args.target_pyr
         bistable_cfg = BistableConfig(
             r_low_target=r_low_hz,
-            r_high_target=args.r_high_hz,
-            r_mid_probe=args.r_mid_hz,
             delta_r_min=args.delta_r_min,
             r_pv_target=args.target_pv,
             r_som_target=args.target_som,
             r_vip_target=args.target_vip,
+            r_pyr_high_target=args.r_pyr_high_target,
+            r_som_high_target=args.r_som_high_target,
+            r_pv_high_target=args.r_pv_high_target,
+            r_vip_high_target=args.r_vip_high_target,
             w_bistab=args.w_bistab,
             w_rate=args.w_rate_bistab,
+            w_rate_high=args.w_rate_high,
             w_margin=args.w_margin,
-            w_physiol=args.w_physiol,
-            som_ceiling=args.som_ceiling,
-            pv_ceiling=args.pv_ceiling,
-            vip_ceiling=args.vip_ceiling,
             nullcline_peak_max=args.nullcline_peak_max,
             w_peak=args.w_peak,
             condition=getattr(args, "condition", "WT"),
@@ -733,17 +732,22 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     # Print targets
     unit = args.unit
-    print("\nOptimization targets:")
-    print(f"  PYR: {target.mean_r_pyr} {unit}")
-    print(f"  SOM: {target.mean_r_som} {unit}")
-    print(f"  PV:  {target.mean_r_pv} {unit}")
-    print(f"  VIP: {target.mean_r_vip} {unit}")
-    if target.alpha7_ko_pyr is not None:
-        print(f"  alpha7 KO PYR: {target.alpha7_ko_pyr} {unit}")
-    if target.alpha5_ko_pyr is not None:
-        print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} {unit}")
-    if target.beta2_ko_pyr is not None:
-        print(f"  beta2 KO PYR: {target.beta2_ko_pyr} {unit}")
+    if mode == "bistable":
+        print("\nOptimization targets (bistable mode):")
+        print(f"  LOW state  — PYR: {target.mean_r_pyr} {unit}  SOM: {target.mean_r_som} {unit}  PV: {target.mean_r_pv} {unit}  VIP: {target.mean_r_vip} {unit}")
+        print(f"  HIGH state — PYR: {args.r_pyr_high_target} {unit}  SOM: {args.r_som_high_target} {unit}  PV: {args.r_pv_high_target} {unit}  VIP: {args.r_vip_high_target} {unit}")
+    else:
+        print("\nOptimization targets:")
+        print(f"  PYR: {target.mean_r_pyr} {unit}")
+        print(f"  SOM: {target.mean_r_som} {unit}")
+        print(f"  PV:  {target.mean_r_pv} {unit}")
+        print(f"  VIP: {target.mean_r_vip} {unit}")
+        if target.alpha7_ko_pyr is not None:
+            print(f"  alpha7 KO PYR: {target.alpha7_ko_pyr} {unit}")
+        if target.alpha5_ko_pyr is not None:
+            print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} {unit}")
+        if target.beta2_ko_pyr is not None:
+            print(f"  beta2 KO PYR: {target.beta2_ko_pyr} {unit}")
     print()
 
     jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
@@ -792,13 +796,12 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         from .bistable_loss import bistable_loss as _bistable_loss
         init_loss, init_components = _bistable_loss(base, bistable_cfg, return_components=True)
         print("\nInitial bistability loss components:")
-        print(f"  L_bistab:  {init_components.get('L_bistab', 0.0):.4g}")
-        print(f"  L_ceiling: {init_components.get('L_ceiling', 0.0):.4g}")
-        print(f"  L_rate:    {init_components.get('L_rate', 0.0):.4g}")
-        print(f"  L_margin:  {init_components.get('L_margin', 0.0):.4g}")
-        print(f"  L_physiol: {init_components.get('L_physiol', 0.0):.4g}")
-        print(f"  L_jac:     {init_components.get('L_jac', 0.0):.4g}")
-        print(f"  L_total:   {init_components.get('L_total', 0.0):.4g}")
+        print(f"  L_bistab:    {init_components.get('L_bistab', 0.0):.4g}")
+        print(f"  L_rate:      {init_components.get('L_rate', 0.0):.4g}")
+        print(f"  L_rate_high: {init_components.get('L_rate_high', 0.0):.4g}")
+        print(f"  L_margin:    {init_components.get('L_margin', 0.0):.4g}")
+        print(f"  L_jac:       {init_components.get('L_jac', 0.0):.4g}")
+        print(f"  L_total:     {init_components.get('L_total', 0.0):.4g}")
         print()
 
     if log_file_to_use:
@@ -880,19 +883,69 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         # Determine output directory
         out_dir = args.output_dir or (Path(args.save_best_json).parent if args.save_best_json else ".")
         out_dir = str(out_dir)
-
-        # Get final components
-        _, components = _bistable_loss(best[0].params, bistable_cfg, return_components=True)
-
-        # Save params and summary
         os.makedirs(out_dir, exist_ok=True)
+
+        # Save the full command used to launch this run
+        cmd_path = os.path.join(out_dir, "command.txt")
+        with open(cmd_path, "w", encoding="utf-8") as f:
+            f.write("python -m circuit_model " + " ".join(sys.argv[1:]) + "\n")
+
+        # --- Save best (rank 1) at the top level ---
+        _, components = _bistable_loss(best[0].params, bistable_cfg, return_components=True)
         bistable_json = os.path.join(out_dir, "bistable_params.json")
         save_params_json(bistable_json, best[0].params)
         save_bistable_summary(out_dir, best[0].params, components, bistable_cfg)
 
+        # --- Save all top-K candidates in top10/ sub-folder ---
+        top_dir = os.path.join(out_dir, "top10")
+        os.makedirs(top_dir, exist_ok=True)
+
+        all_components = []
+        for rank, cand in enumerate(best, start=1):
+            _, comp = _bistable_loss(cand.params, bistable_cfg, return_components=True)
+            all_components.append(comp)
+            rank_dir = os.path.join(top_dir, f"rank{rank:02d}")
+            os.makedirs(rank_dir, exist_ok=True)
+            save_params_json(os.path.join(rank_dir, "bistable_params.json"), cand.params)
+            save_bistable_summary(rank_dir, cand.params, comp, bistable_cfg)
+
+        # --- Write a consolidated leaderboard table ---
+        leaderboard_path = os.path.join(top_dir, "leaderboard.txt")
+        with open(leaderboard_path, "w", encoding="utf-8") as f:
+            header = (
+                f"{'Rank':>4}  {'L_total':>9}  {'L_bistab':>9}  {'L_rate':>9}  "
+                f"{'L_rate_hi':>9}  {'L_margin':>9}  "
+                f"{'r_low':>7}  {'r_high':>7}  "
+                f"{'SOM_hi':>7}  {'PV_hi':>7}  {'VIP_hi':>7}  {'regime':>10}"
+            )
+            f.write(header + "\n")
+            f.write("-" * len(header) + "\n")
+            for rank, (cand, comp) in enumerate(zip(best, all_components), start=1):
+                is_bistable = comp.get("n_stable", 0) >= 2
+                regime = "BISTABLE" if is_bistable else "monostable"
+                r_high = comp.get("r_high_fp")
+                som_hi = comp.get("r_som_high_fp")
+                pv_hi  = comp.get("r_pv_high_fp")
+                vip_hi = comp.get("r_vip_high_fp")
+                row = (
+                    f"{rank:>4}  {comp.get('L_total', 0.0):>9.4f}  "
+                    f"{comp.get('L_bistab', 0.0):>9.4f}  {comp.get('L_rate', 0.0):>9.4f}  "
+                    f"{comp.get('L_rate_high', 0.0):>9.4f}  {comp.get('L_margin', 0.0):>9.4f}  "
+                    f"{comp.get('r_low_fp', 0.0):>7.2f}  "
+                    f"{r_high if r_high is not None else float('nan'):>7.2f}  "
+                    f"{som_hi if som_hi is not None else float('nan'):>7.2f}  "
+                    f"{pv_hi  if pv_hi  is not None else float('nan'):>7.2f}  "
+                    f"{vip_hi if vip_hi is not None else float('nan'):>7.2f}  "
+                    f"{regime:>10}"
+                )
+                f.write(row + "\n")
+
         print("\nBest bistable parameters and summary saved:")
+        print(f"  Command: {cmd_path}")
         print(f"  Params:  {bistable_json}")
         print(f"  Summary: {os.path.join(out_dir, 'bistable_summary.txt')}")
+        print(f"\nTop-{len(best)} leaderboard saved to: {leaderboard_path}")
+        print(f"  (individual rank folders: {top_dir}/rank01/ … rank{len(best):02d}/)")
         print(f"\n  Final bistability regime: {'BISTABLE' if components.get('n_stable', 0) >= 2 else 'MONOSTABLE'}")
     
     # Generate loss evolution plots
@@ -1100,26 +1153,26 @@ Examples:
                             help="Nevergrad budget (alias for --n_samples, convenience for bistable mode)")
     opt_parser.add_argument("--r_low_hz", type=float, default=None,
                             help="Target low fixed point PYR rate for bistable mode (Hz, default: uses --target_pyr)")
-    opt_parser.add_argument("--r_high_hz", type=float, default=30.0,
-                            help="Target high fixed point PYR rate for bistable mode (Hz, default: 30.0)")
-    opt_parser.add_argument("--r_mid_hz", type=float, default=15.0,
-                            help="Probe point PYR rate for bistable mode (Hz, default: 15.0)")
     opt_parser.add_argument("--delta_r_min", type=float, default=15.0,
                             help="Minimum gap between low and high fixed points (Hz, default: 15.0)")
-    opt_parser.add_argument("--w_bistab", type=float, default=1.0,
-                            help="Weight of bistability sign pattern loss (default: 1.0)")
+    # High-state rate targets (Rooy 2021 defaults)
+    opt_parser.add_argument("--r_pyr_high_target", type=float, default=60.2,
+                            help="Target PYR rate at the high fixed point (Hz, default: 60.2 — Rooy 2021)")
+    opt_parser.add_argument("--r_som_high_target", type=float, default=35.2,
+                            help="Target SOM rate at the high fixed point (Hz, default: 35.2 — Rooy 2021)")
+    opt_parser.add_argument("--r_pv_high_target", type=float, default=35.3,
+                            help="Target PV rate at the high fixed point (Hz, default: 35.3 — Rooy 2021)")
+    opt_parser.add_argument("--r_vip_high_target", type=float, default=68.8,
+                            help="Target VIP rate at the high fixed point (Hz, default: 68.8 — Rooy 2021)")
+    # Loss weights
+    opt_parser.add_argument("--w_bistab", type=float, default=5.0,
+                            help="Weight of bistability sign pattern loss (default: 5.0)")
     opt_parser.add_argument("--w_rate_bistab", type=float, default=1.0,
-                            help="Weight of rate matching loss in bistable mode (default: 1.0)")
-    opt_parser.add_argument("--w_margin", type=float, default=0.5,
-                            help="Weight of fixed point separation margin loss (default: 0.5)")
-    opt_parser.add_argument("--w_physiol", type=float, default=1.0,
-                            help="Weight of interneuron physiological ceiling loss (default: 1.0)")
-    opt_parser.add_argument("--som_ceiling", type=float, default=50.0,
-                            help="SOM physiological ceiling (Hz, default: 50.0)")
-    opt_parser.add_argument("--pv_ceiling", type=float, default=100.0,
-                            help="PV physiological ceiling (Hz, default: 100.0)")
-    opt_parser.add_argument("--vip_ceiling", type=float, default=80.0,
-                            help="VIP physiological ceiling (Hz, default: 80.0)")
+                            help="Weight of low-FP rate matching loss in bistable mode (default: 1.0)")
+    opt_parser.add_argument("--w_rate_high", type=float, default=1.5,
+                            help="Weight of high-FP rate matching loss (default: 1.5)")
+    opt_parser.add_argument("--w_margin", type=float, default=2.0,
+                            help="Weight of fixed point separation margin loss (default: 2.0)")
     opt_parser.add_argument("--nullcline_peak_max", type=float, default=200.0,
                             help="Maximum allowed nullcline peak Φ (Hz). Values above this are penalised. "
                                  "Default 200 = effectively off. Recommended: 90-100 Hz to reduce cue saturation.")

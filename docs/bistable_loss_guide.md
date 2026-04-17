@@ -9,18 +9,16 @@
 
 1. [What Are We Optimizing, and Why?](#1-what-are-we-optimizing-and-why)
 2. [The PYR Nullcline — Geometric Foundation](#2-the-pyr-nullcline--geometric-foundation)
-3. [Current Loss Components](#3-current-loss-components)
-   - [3.1 L_bistab — Sign-Pattern Enforcement](#31-l_bistab--sign-pattern-enforcement)
-   - [3.2 L_rate — Low Fixed-Point Rate Matching](#32-l_rate--low-fixed-point-rate-matching)
-   - [3.3 L_margin — Fixed-Point Separation](#33-l_margin--fixed-point-separation)
-   - [3.4 L_ceiling — High Fixed-Point Cap](#34-l_ceiling--high-fixed-point-cap)
-   - [3.5 L_physiol — Interneuron Sweep Ceiling](#35-l_physiol--interneuron-sweep-ceiling)
-   - [3.6 L_jac — Jacobian Regularizer](#36-l_jac--jacobian-regularizer)
-   - [3.7 L_peak — Nullcline Peak Penalty (optional)](#37-l_peak--nullcline-peak-penalty-optional)
-4. [Total Loss Formula & Default Weights](#4-total-loss-formula--default-weights)
-5. [The Missing Piece: High-State Rate Constraints](#5-the-missing-piece-high-state-rate-constraints)
-6. [Proposed Simplified Loss](#6-proposed-simplified-loss)
-7. [Summary Table: Before vs After](#7-summary-table-before-vs-after)
+3. [Before: Original Loss](#3-before-original-loss)
+4. [After: Current Loss](#4-after-current-loss)
+   - [4.1 L_bistab — Sign-Pattern Enforcement](#41-l_bistab--sign-pattern-enforcement)
+   - [4.2 L_rate — Low Fixed-Point Rate Matching](#42-l_rate--low-fixed-point-rate-matching)
+   - [4.3 L_rate_high — High Fixed-Point Rate Matching](#43-l_rate_high--high-fixed-point-rate-matching)
+   - [4.4 L_margin — Fixed-Point Separation](#44-l_margin--fixed-point-separation)
+   - [4.5 L_jac — Jacobian Regularizer](#45-l_jac--jacobian-regularizer)
+   - [4.6 L_peak — Nullcline Peak Penalty (optional)](#46-l_peak--nullcline-peak-penalty-optional)
+5. [Total Loss Formula & Default Weights](#5-total-loss-formula--default-weights)
+6. [Summary Table: Before vs After](#6-summary-table-before-vs-after)
 
 ---
 
@@ -61,51 +59,29 @@ Zeros of $F$ are fixed points. Stability: $F'(r^*) < 0$ → **stable**; $F'(r^*)
 ![Monostable vs Bistable nullcline](../figs/docs/fig1_concept_nullcline.png)
 
 For bistability we need **exactly this sign pattern**:
-- $F(r_\text{low}) > 0$ — nullcline above identity near the low FP → low state is attracting
-- $F(r_\text{mid}) < 0$ — nullcline dips below identity in the middle → unstable branch separating states
-- $F(r_\text{high}) > 0$ — nullcline above identity near the high FP → high state is attracting
+
+$$F(r): \quad \underbrace{+}_{\text{low basin}} \xrightarrow{\text{low FP}} \underbrace{-}_{\text{valley}} \xrightarrow{\text{unstable FP}} \underbrace{+}_{\text{high basin}} \xrightarrow{\text{high FP}} \underbrace{-}_{\text{after}}$$
+
+- $F > 0$ before the low FP → low state is attracting
+- $F < 0$ in the valley → unstable branch separating the two states
+- $F > 0$ in the high basin → high state is attracting
+- $F < 0$ after the high FP → high state is stable (not a transient bump)
 
 ---
 
-## 3. Current Loss Components
+## 3. Before: Original Loss
 
-Source: [`circuit_model/bistable_loss.py`](../circuit_model/bistable_loss.py)
+The original loss had **7 terms**, several of which were redundant or solving the wrong problem.
 
-The loss is computed by:
-1. Sweeping $r \in [0, 80]$ Hz, solving interneurons self-consistently at each point
-2. Building the NMDA steady-state $S^*(r)$ and computing $F(r)$
-3. Evaluating all penalties below
+### 3.1 Old `L_bistab` — Overcomplicated Sign Check
 
----
-
-### 3.1 `L_bistab` — Sign-Pattern Enforcement
-
-**Purpose:** Force the nullcline into the bistable shape shown above.
-
-**Intuition:**
-
-```
- F(r)
-  ▲
-  │   ←Zone1→     ←Zone2(must dip<0)→    ←Zone3→
-  │
-  │+++++++.   ← reward: F positive here        +++
-  │        `. ← zone2: penalise if never <0 .'
- ─┼──────────`────────────────────────────'─────→ r
-  │          `. (must go negative here!)  ↑ r_high
-  │  r_low→  ↑  `──────────────────────'
-  │         r_mid (probe: must be <0 here)
-```
-
-![L_bistab zone visualization](../figs/docs/fig2_L_bistab.png)
-
-**Formula** (from code):
+The original implementation used 3 probe points **plus 4 zone penalties**:
 
 ```python
 # Three probe points
 L_3pt = relu(-F_low) + relu(F_mid) + relu(-F_high)
 
-# Zone penalties (robustness to probe point placement)
+# Zone penalties (attempt at robustness to probe point placement)
 L_zone1 = mean(max(-F[r ≤ r_low],  0))    # F should be ≥ 0 in low zone
 L_zone2 = relu(max( F[r_low<r≤r_high]))   # F must go negative somewhere in middle
 L_zone3 = mean(max(-F[r > r_high], 0))    # F should be ≥ 0 in high zone
@@ -113,386 +89,266 @@ L_zone3 = mean(max(-F[r > r_high], 0))    # F should be ≥ 0 in high zone
 L_bistab = L_3pt + L_zone1 + L_zone2 + L_zone3
 ```
 
-**Default probe points:** `r_low_target=8`, `r_mid_probe=15`, `r_high_target=30` Hz.
-**What goes wrong without it:** The optimizer finds any monostable solution (one FP) without penalty, which cannot sustain memory.
+**Bug:** `r_low_target` was used as *both* the low FP rate target *and* the sign-check probe. If the optimizer found a valid bistable solution with the low FP slightly below the target (e.g., FP at 1.5 Hz when target is 1.75 Hz), the probe landed to the right of the FP where $F < 0$ — and was incorrectly penalized, pushing the optimizer away from valid solutions.
 
-> `r_high_target` here is only the probe for checking the sign of $F$ — it is **not** a constraint on where the actual high FP ends up. This is the source of the missing high-state rate matching (see §5).
-
----
-
-### 3.2 `L_rate` — Low Fixed-Point Rate Matching
-
-**Purpose:** The low stable FP should match the observed resting-state firing rates.
-
-**Interneuron solving:** For each candidate $r_\text{low FP}$, SOM and PV are solved jointly via `fsolve` (two coupled equations including SOM adaptation), VIP is solved directly.
-
-**Formula:**
-$$L_\text{rate} = \left(\frac{r_\text{PYR}^\text{low} - r_\text{PYR}^\text{target}}{r_\text{PYR}^\text{target}}\right)^2 + \left(\frac{r_\text{SOM}^\text{low} - r_\text{SOM}^\text{target}}{r_\text{SOM}^\text{target}}\right)^2 + \left(\frac{r_\text{PV}^\text{low} - r_\text{PV}^\text{target}}{r_\text{PV}^\text{target}}\right)^2 + \left(\frac{r_\text{VIP}^\text{low} - r_\text{VIP}^\text{target}}{r_\text{VIP}^\text{target}}\right)^2$$
-
-This is **MSPE** (mean squared percentage error): a 1 Hz miss at 1.75 Hz target costs far more than 1 Hz at 60 Hz. This makes sense biologically — relative deviations matter more than absolute ones.
+### 3.2 `L_ceiling` — High FP Upper Cap
 
 ```
- Example: targets = (PYR=1.75, SOM=1.12, PV=1.04, VIP=1.33 Hz)
- 
- If optimizer finds: PYR=0.0, SOM=1.2, PV=0.5, VIP=1.5 Hz:
-   L_rate = (0/1.75)² + (0.08/1.12)² + (0.54/1.04)² + (0.17/1.33)²
-          =    0      +   0.005        +   0.27        +   0.016
-          ≈ 0.29     (dominated by PV miss)
+L_ceiling = relu(r_high_fp - r_high_max)²     # r_high_max = 80 Hz
 ```
 
-**What goes wrong without it:** Bistability can be achieved with biologically absurd resting states (e.g. PYR=0, all interneurons hyperactive). The optimizer consistently finds such degenerate solutions otherwise.
+Prevented the high FP from drifting above the physiological ceiling. Bundled with `L_bistab` under the same weight.
 
-![L_rate low FP](../figs/docs/fig3_L_rate_low.png)
+### 3.3 `L_physiol` — Interneuron Sweep Ceiling
 
----
-
-### 3.3 `L_margin` — Fixed-Point Separation
-
-**Purpose:** The two stable FPs should be well separated. A barely bistable circuit with low FP at 0 Hz and high FP at 2 Hz is biologically meaningless.
-
-**Formula:**
-$$L_\text{margin} = \text{relu}\!\left(\Delta r_\text{min} - (r_\text{high stable} - r_\text{low stable})\right)$$
-
-where $\Delta r_\text{min} = 15$ Hz by default.
+Applied soft ceilings on SOM (50 Hz), PV (100 Hz), VIP (80 Hz) across the *entire* sweep, not just at the fixed points:
 
 ```
- Example:
-                 ← Δr = 5 Hz →        L_margin = relu(15 - 5) = 10   ← BAD
-   low FP = 0 Hz              high FP = 5 Hz
-
-                 ← Δr = 60 Hz →       L_margin = relu(15 - 60) = 0   ← OK
-   low FP = 0 Hz                                      high FP = 60 Hz
+L_physiol = mean(relu(r_SOM - 50)²) + mean(relu(r_PV - 100)²) + mean(relu(r_VIP - 80)²)
 ```
 
-If the network is **monostable** (fewer than 2 stable FPs), the code sets $L_\text{margin} = 2 \times \Delta r_\text{min} = 30$, a strong additional penalty.
+This was a blunt instrument to prevent pathological interneuron rates in the transition zone. It did not constrain where the rates actually needed to land — the high fixed point had no explicit targets.
 
-**What goes wrong without it:** The optimizer finds marginal bistability where the two attractors are barely distinguishable — functionally useless for memory.
+### 3.4 What was missing: high-state rate constraints
 
-![L_margin](../figs/docs/fig4_L_margin.png)
+With no explicit rate targets at the high FP, the optimizer found VIP-disinhibitory bistability where SOM was fully silenced in the high state:
 
----
-
-### 3.4 `L_ceiling` — High Fixed-Point Cap
-
-**Purpose:** Prevent the high FP from being pushed above the physiological ceiling ($r_\text{high max} = 80$ Hz, from `constants.py`).
-
-**Formula:**
-$$L_\text{ceiling} = \text{relu}\!\left(r_\text{high FP} - r_\text{high max}\right)^2 \qquad \text{(only when bistable)}$$
-
-```
- r_high_max = 80 Hz
- 
- r_high = 78 Hz  →  L_ceiling = relu(78-80)² = 0        ← OK
- r_high = 95 Hz  →  L_ceiling = relu(95-80)² = 225       ← penalised
-```
-
-**Combined with `L_bistab` in total loss:**
-Both are multiplied by `w_bistab`, because they jointly define the bistable geometric constraints.
-
-**What goes wrong without it:** The optimizer finds bistability by placing the high FP near or above 200 Hz (the simulation clamp ceiling), creating spurious solutions that don't correspond to real attractors.
-
----
-
-### 3.5 `L_physiol` — Interneuron Sweep Ceiling
-
-**Purpose:** Prevent interneurons from reaching pathological rates across the **entire sweep** from $r=0$ to $r=80$ Hz, not just at the fixed points.
-
-**Motivation:** Earlier runs showed SOM saturating at 150–200 Hz in the *intermediate* regime between the low and unstable FPs, which is biologically implausible. This penalty is a soft ceiling applied at every point of the sweep.
-
-**Formula:**
-$$L_\text{physiol} = \underbrace{\langle\text{relu}(r_\text{SOM} - 50)^2\rangle_\text{sweep}}_\text{SOM ceiling: 50 Hz} + \underbrace{\langle\text{relu}(r_\text{PV} - 100)^2\rangle_\text{sweep}}_\text{PV ceiling: 100 Hz} + \underbrace{\langle\text{relu}(r_\text{VIP} - 80)^2\rangle_\text{sweep}}_\text{VIP ceiling: 80 Hz}$$
-
-where $\langle \cdot \rangle_\text{sweep}$ is the mean over the 1000-point sweep.
-
-```
- Example: SOM reaches 159 Hz in the transition zone (as in bistable_fixed run)
-
-   r_SOM in transition zone: [2, 10, 40, 90, 159, 130, 40, 5, 0]  Hz
-   SOM ceiling = 50 Hz
-   
-   Penalties: [0, 0, 0, relu(40)²=1600, relu(109)²=11881, relu(80)²=6400, 0, 0, 0]
-   Mean = 2209  ← large penalty, correctly flags this as pathological
-```
-
-**What goes wrong without it:** Extreme SOM/VIP/PV rates in the transition zone that would cause the network to behave pathologically when traversing state boundaries.
-
-**Limitation:** This is a *ceiling*, not a *target*. It prevents runaway but does not ensure physiological values at the high FP. See §5.
-
-![L_physiol interneuron sweep](../figs/docs/fig5_L_physiol.png)
-
----
-
-### 3.6 `L_jac` — Jacobian Regularizer
-
-**Purpose:** Prevent solutions where one pathway dominates overwhelmingly (e.g. PV→PYR weight so large it creates a single all-inhibitory loop). Biologically, no synaptic gain should be so high that 1 Hz of additional firing in one population changes another by more than 5 Hz.
-
-**How the Jacobian is computed:** The 4×4 Jacobian $J_{ij} = \partial \dot{r}_i / \partial r_j$ is evaluated at the low fixed point using `compute_jacobian(params, r_ss)`.
-
-**Formula:**
-$$L_\text{jac} = \text{relu}\!\left(\max_{i,j} |J_{ij}| - 5.0\right)^2$$
-
-```
- Example Jacobian at low FP (hypothetical):
- 
-          PYR   SOM    PV   VIP
- PYR  [  2.1  -3.0  -4.8   0.1 ]
- SOM  [  1.2  -0.5   0.0  -1.1 ]
- PV   [  0.9   0.0  -0.2   0.0 ]
- VIP  [  0.3   0.0   0.0  -0.1 ]
- 
- max|J| = 4.8  →  L_jac = relu(4.8 - 5)² = 0   ← OK, within bounds
- 
- If PYR→PV weight was inflated: max|J| = 12.0 → L_jac = (12-5)² = 49  ← penalised
-```
-
-The threshold of 5 means: *1 Hz increase in population $j$ can change population $i$ by at most 5 Hz*. This is already a generous bound biologically.
-
-**What goes wrong without it:** The optimizer may find degenerate solutions where one extremely strong connection creates bistability via an implausibly dominant pathway, rather than through the intended multi-pathway disinhibitory mechanism.
-
-![L_jac Jacobian](../figs/docs/fig6_L_jac.png)
-
----
-
-### 3.7 `L_peak` — Nullcline Peak Penalty (optional, default off)
-
-**Purpose:** Prevent the nullcline from peaking far above the high FP. A large gap between peak and high FP causes the network to overshoot badly during transitions (→ cue-period saturation at 200 Hz).
-
-**Formula:**
-$$L_\text{peak} = \text{relu}\!\left(\max_r \Phi(I_\text{net}(r)) - r_\text{peak,max}\right)^2 \qquad \text{default: } r_\text{peak,max} = 200 \text{ (off)}$$
-
-```
- Nullcline shape:
-
-       Φ(I_net(r))                  Φ(I_net(r))
-  ▲                             ▲
-  │     ✱ peak=124 Hz            │   ✱ peak=92 Hz ← L_peak controls this
-  │   ./ \.                      │  ./  \.
-  │  /    \  ← high FP           │ /     \  ← high FP
-  │ /      \  at 78 Hz           │/       \  at 66 Hz
-  │/         .                   │          .
- ─┼──────────→ r              ───┼──────────→ r
-  │                              │
-  Peak/FP ratio = 1.59×           Peak/FP ratio = 1.40×
-  → large overshoot              → less overshoot
-```
-
-**Practical use:** Set `--w_peak 1.0 --nullcline_peak_max 95` in the CLI. This was found to reduce (but not eliminate) cue-period saturation in ring simulations.
-
-**Alternative:** Using low-rate targets (r_low ≈ 1.75 Hz) implicitly pushes the peak down, as documented in [new_observation.md](new_observation.md) (2026-04-14).
-
-![L_peak nullcline overshoot](../figs/docs/fig7_L_peak.png)
-
----
-
-## 4. Total Loss Formula & Default Weights
-
-```
-L_total = w_bistab * (L_bistab + L_ceiling)
-        + w_rate   *  L_rate
-        + w_margin *  L_margin
-        + w_jac    *  L_jac
-        + w_physiol * L_physiol
-        + w_peak   *  L_peak
-```
-
-| Component | Default weight | Currently active |
+| Population | Found by optimizer | Rooy 2021 target |
 |---|---|---|
-| `L_bistab + L_ceiling` | `w_bistab = 1.0` | Yes |
-| `L_rate` (low FP) | `w_rate = 1.0` | Yes |
-| `L_margin` | `w_margin = 0.5` | Yes |
-| `L_jac` | `w_jacobian = 0.1` | Yes |
-| `L_physiol` | `w_physiol = 1.0` | Yes |
-| `L_peak` | `w_peak = 0.0` | **No (off)** |
+| PYR | ~70–80 Hz | 60.2 Hz |
+| **SOM** | **~0 Hz** | **35.2 Hz ❌** |
+| **PV** | **~4 Hz** | **35.3 Hz ❌** |
+| VIP | ~65 Hz | 68.8 Hz |
 
-### What the optimizer actually minimizes (as a workflow)
+### 3.5 Old default weights
 
-```
-Step 1:  Find parameters where F(r) has the right sign pattern  ←  L_bistab
-           ↓ if bistable
-Step 2:  Push both stable FPs away from each other            ←  L_margin
-           ↓
-Step 3:  Match resting-state firing rates at the low FP       ←  L_rate
-           ↓
-Step 4:  Keep the solution physiologically plausible          ←  L_jac, L_physiol, L_ceiling
-           ↓
-Step 5:  (Optional) control overshoot during transition       ←  L_peak
-           ↓
-         ❌ NOTHING constrains the high FP rates!
-```
+| Term | Weight |
+|---|---|
+| `L_bistab + L_ceiling` | `w_bistab = 1.0` |
+| `L_rate` (low FP) | `w_rate = 1.0` |
+| `L_margin` | `w_margin = 0.5` |
+| `L_jac` | `w_jacobian = 0.1` |
+| `L_physiol` | `w_physiol = 1.0` |
+| `L_peak` | `w_peak = 0.0` (off) |
 
 ---
 
-## 5. The Missing Piece: High-State Rate Constraints
+## 4. After: Current Loss
 
-### What the optimizer currently finds
+Source: [`circuit_model/bistable_loss.py`](../circuit_model/bistable_loss.py)
 
-With the current loss, the optimizer successfully achieves:
-- ✅ Bistable nullcline geometry
-- ✅ Low FP rates roughly matching resting-state targets
-- ✅ Physiological interneuron ceilings
-- ✅ Reasonable Jacobian gains
+The loss is computed by:
+1. Sweeping $r \in [0, 80]$ Hz, solving interneurons self-consistently at each point
+2. Building the NMDA steady-state $S^*(r)$ and computing $F(r)$
+3. Evaluating the 6 penalties below
 
-But at the **high fixed point**, there are no rate targets. The optimizer is free to pick any configuration that satisfies the geometry constraints. The result, observed consistently across all runs:
-
-| Population | High FP (ring simulation) | Target (Rooy 2021) | Status |
-|---|---|---|---|
-| PYR | ~70–80 Hz | ~60 Hz | ≈ OK |
-| **SOM** | **~0 Hz** | **35.2 Hz** | **❌ completely wrong** |
-| **PV** | **~4 Hz** | **35.3 Hz** | **❌ far too low** |
-| VIP | ~60–70 Hz | 68.8 Hz | ≈ OK |
-
-### Why the optimizer finds SOM = 0 in the high state
-
-The bistable mechanism in the current solution is **VIP-disinhibitory**: the cue activates VIP, which suppresses SOM via w_VS, which releases PYR from SOM-mediated inhibition. This is biologically correct for the *transition*, but in the self-sustained high state, VIP remains elevated (~70 Hz), keeping SOM fully suppressed.
-
-The loss offers no incentive to bring SOM back to 35 Hz in the high state — so the optimizer never does.
-
-```
-Bistable mechanism found by optimizer:
-                                              
-  LOW state:   PYR ≈ 0 Hz                    
-               SOM ≈ 2 Hz ──(inhibits)──→ PYR (keeps it silent)
-               VIP ≈ 2 Hz                    
-
-  Cue:         VIP ↑↑ (driven by cue)         
-               VIP ──(suppresses)──→ SOM ↓   
-               SOM suppression removes block on PYR
-               
-  HIGH state:  PYR ≈ 75 Hz (self-sustained via NMDA)
-               SOM ≈ 0 Hz  (VIP keeps it fully silent)   ← biologically wrong
-               PV  ≈ 4 Hz  (driven by PYR but weak)      ← biologically wrong
-               VIP ≈ 65 Hz (high, maintaining SOM silence)
-```
-
-This mechanism produces correct bistability but the wrong high-state interneuron configuration. According to Rooy (2021), SOM should be active at ~35 Hz and PV at ~35 Hz during the high state.
-
-![Missing high-state constraints](../figs/docs/fig8_missing_high_state.png)
+**Removed:** `L_ceiling` (superseded by `L_rate_high` which already pulls the high FP to 60 Hz), `L_physiol` (replaced by explicit rate targets at both FPs).
 
 ---
 
-## 6. Proposed Simplified Loss
+### 4.1 `L_bistab` — Adaptive Sign-Pattern Enforcement
 
-### Design principles
+**No fixed probe or split parameters.** The check adapts to wherever the low FP actually lands during optimization. It has four sub-terms:
 
-1. **Two rate targets, not one.** Match firing rates at *both* stable fixed points. This is the main missing piece.
-2. **Geometry check, not zone micromanagement.** Replace the complex 7-penalty L_bistab with a simpler check: "does a second stable FP exist beyond the first?" Rate losses provide most of the implicit geometric pressure once both states are targeted.
-3. **Drop L_physiol.** Once we have explicit rate targets at both FPs, the physiology is constrained where it matters. The sweep ceiling is a blunt instrument that poorly compensates for missing point targets.
-4. **Keep L_margin, L_jac, L_peak.** These remain useful as regulators.
-
-### New `L_rate_high`
-
-Symmetric to `L_rate`, evaluated at the high stable fixed point:
-
-$$L_\text{rate,high} = \left(\frac{r_\text{PYR}^\text{high} - r_\text{PYR}^\text{H-target}}{r_\text{PYR}^\text{H-target}}\right)^2 + \left(\frac{r_\text{SOM}^\text{high} - r_\text{SOM}^\text{H-target}}{r_\text{SOM}^\text{H-target}}\right)^2 + \left(\frac{r_\text{PV}^\text{high} - r_\text{PV}^\text{H-target}}{r_\text{PV}^\text{H-target}}\right)^2 + \left(\frac{r_\text{VIP}^\text{high} - r_\text{VIP}^\text{H-target}}{r_\text{VIP}^\text{H-target}}\right)^2$$
-
-where $r^\text{H-target}$ comes from Rooy (2021): **PYR=60.2, SOM=35.2, PV=35.3, VIP=68.8 Hz**.
-
-> **Important:** This term is only meaningful when the network is bistable (second stable FP exists). When monostable, $r_\text{high}$ is undefined and this term should be set to 0 — the bistability constraint (`L_bistab`) already applies a heavy penalty in that case.
-
-### Simplified `L_bistab`
-
-The current `L_bistab` has 7 sub-terms (3 probe points + 4 zone penalties). The intent is correct but the implementation is redundant: once we enforce rate matching at both FPs, the sign-pattern zones carry less independent information.
-
-**Proposed replacement:** a minimal two-condition check.
-
-$$L_\text{bistab,simple} = \underbrace{\text{relu}(-F(r_\text{low,target}))}_\text{low FP must attract} + \underbrace{\text{relu}(F(r_\text{mid,probe}))}_\text{unstable branch must exist}$$
-
-This is exactly `L_3pt` without the high-zone term (which is naturally satisfied by `L_rate_high` pulling the high FP to 60 Hz where $F > 0$) and without the zone penalties (which are redundant once both FP rates are penalized).
-
-When monostable, the optimizer gets `L_bistab_simple > 0`, `L_margin = 30`, and `L_rate_high = 0` (inactive). These jointly create a strong gradient toward bistability.
-
-### Proposed total loss
-
-$$\boxed{L_\text{total} = w_b \cdot L_\text{bistab,simple} + w_r \cdot L_\text{rate,low} + w_{rh} \cdot L_\text{rate,high} + w_m \cdot L_\text{margin} + w_j \cdot L_\text{jac} + (w_c \cdot L_\text{ceiling}) + (w_p \cdot L_\text{peak})}$$
-
-where terms in parentheses are optional.
-
-### Proposed default weights
-
-| Term | Proposed weight | Rationale |
-|---|---|---|
-| `L_bistab_simple` | 2.0 | Stronger than before — it's simpler so needs higher weight to compensate |
-| `L_rate_low` | 1.0 | Same as before |
-| `L_rate_high` | 1.5 | Slightly higher than low: high state is the harder constraint |
-| `L_margin` | 0.5 | Same as before |
-| `L_jac` | 0.1 | Same as before |
-| `L_ceiling` | 0.5 | Reduced (L_rate_high already pulls high FP down) |
-| `L_peak` | 0.0 | Off by default, enable with `--w_peak 1.0 --nullcline_peak_max 95` |
-| ~~`L_physiol`~~ | ~~1.0~~ | **Removed** — replaced by explicit L_rate_high targets |
-
-### New `BistableConfig` fields needed
+#### Part 1 — Adaptive low basin
 
 ```python
-# New fields for high-state targets
-r_pyr_high_target: float = 60.2    # PYR rate at high FP (Rooy 2021 H-state)
-r_som_high_target: float = 35.2    # SOM rate at high FP
-r_pv_high_target:  float = 35.3    # PV rate at high FP
-r_vip_high_target: float = 68.8    # VIP rate at high FP
-w_rate_high: float = 1.5           # Weight for L_rate_high
+# Find the actual low FP: first r where F crosses 0 going downward (+→-)
+down_cross_idx = np.where(np.diff(np.sign(F)) < 0)[0]
+r_low_actual = r_sweep[down_cross_idx[0]]   # if no crossing: fall back to r_low_target
+
+# F must be > 0 throughout [0, r_low_actual]
+F_max_low_basin = max(F[r ≤ r_low_actual])
+
+# Penalty scales with how far the actual FP is from its target
+fp_scale = 1 + |r_low_actual − r_low_target| / r_low_target
+
+L_low_basin = relu(−F_max_low_basin) × fp_scale
 ```
 
-### Effect on the optimization landscape
+If the optimizer has not found the low FP yet and it drifts to 70 Hz instead of 1.75 Hz:
+- the whole region [0, 70 Hz] must be positive
+- the penalty is ≈ 40× larger than when the FP sits at target
+- this creates a strong coupled gradient: *both* `L_bistab` and `L_rate` push the FP toward its target simultaneously
+
+#### Part 2 — Full sign pattern (+, −, +, −)
+
+Three conditions after the low FP enforce the complete bistable shape:
+
+```python
+F_after = F[r > r_low_actual]
+
+# 2a: F must go negative — valley exists → unstable FP will be created
+L_valley = relu(min(F_after))
+
+# 2b: F must be ≥ f_high_margin above zero inside the target high-state window.
+#     Window = [r_pyr_high_target × lo_frac, r_pyr_high_target × hi_frac]
+#              = [60.2 × 0.7, 60.2 × 1.2] = [42, 72] Hz by default.
+#     Using a windowed max (not global) prevents satisfying this condition with
+#     a spurious low-rate bump (e.g., a crossing at 17 Hz scores full penalty).
+r_hb_lo = r_pyr_high_target × r_high_basin_lo_frac   # default 42 Hz
+r_hb_hi = r_pyr_high_target × r_high_basin_hi_frac   # default 72 Hz
+F_max_hb = max(F[r_hb_lo < r ≤ r_hb_hi])
+L_high_basin = relu(f_high_margin − F_max_hb)        # default f_high_margin = 1.0 Hz
+
+# 2c: F < 0 at the far end of the sweep — high FP is stable, not just a bump
+F_tail = F[r ≥ 0.85 × r_max]
+L_tail = relu(max(F_tail))
+```
 
 ```
-WITH CURRENT LOSS:
-
- High FP configuration space (schematic):
- 
-  SOM at high FP (Hz)
-  ▲ 40 │ 
-    30 │            ← Rooy target (35 Hz)
-    20 │
-    10 │
-     0 │●←────────────────── optimizer finds this (SOM=0)
-       └─────────────────────→ PV at high FP (Hz)
-          0   10   20  30  40
-
-WITH PROPOSED LOSS (L_rate_high added):
-
-  SOM at high FP (Hz)
-  ▲ 40 │            
-    30 │      ✱←─── L_rate_high target zone (~35 Hz)
-    20 │
-    10 │
-     0 │  (cost of SOM=0 now very high)
-       └─────────────────────→ PV at high FP (Hz)
-          0   10   20  30  40
+ F(r)
+  ▲   Part 1                   Part 2
+  │  ←low basin→ ←─ valley ─→ ←── window [42,72] ──→ ← tail →
+  │
+  │ ++++++.                          .+++++++
+  │       `.                      .+'         `.
+ ─┼────────`───────────────────── '─────────────`────→ r
+  │         ↑                     ↑              ↑
+  │       low FP             unstable FP       high FP
+  │       (detected,         (unconstrained)   (must be in window)
+  │        ~1.75 Hz target)
 ```
 
-### Open question: architectural feasibility
+- `L_valley = 0` once F dips negative anywhere after the low FP
+- `L_high_basin = 0` once F is at least `f_high_margin` (1 Hz) above zero inside [42, 72] Hz — a 17 Hz spurious crossing scores ≈ 52 penalty
+- `L_tail = 0` once F is negative in the final 15% of the sweep (r > 68 Hz)
+- **`L_valley + L_high_basin + L_tail = 0`** iff the full $+, -, +, -$ pattern holds with the crossing near target
 
-Adding `L_rate_high` will immediately reveal whether the current network architecture can simultaneously achieve:
-- Bistability (two stable FPs)
-- Low FP matching resting state (PYR~1.75, SOM~1.12, PV~1.04 Hz)
-- High FP matching active state (PYR~60, SOM~35, PV~35 Hz)
+The unstable FP position is **not directly constrained** — it follows implicitly when 2a and 2b are both satisfied.
 
-The VIP-disinhibitory mechanism naturally silences SOM in the high state. If the optimizer consistently fails even with `L_rate_high` strongly enforced, it means the architecture needs revision:
+**Total:**
 
-**Option A** — Allow SOM to receive direct PYR excitation strong enough to re-activate it even with partial VIP suppression (increase `w_es` upper bound).
+$$L_\text{bistab} = L_\text{low basin} + L_\text{valley} + L_\text{high basin} + L_\text{tail}$$
 
-**Option B** — Add a second disinhibitory pathway or a SOM adaptation mechanism where SOM eventually recovers from VIP suppression on a slow timescale (partial adaptation-induced rebound).
-
-**Option C** — Reconsider whether the Rooy 2021 high-state rates (SOM=35 Hz) are compatible with the VIP-disinhibitory attractor mechanism. It may be that in the biological system, the high state involves *partial* VIP activation (not full silencing of SOM) — which would require re-examining the bistability mechanism itself.
+**What goes wrong without it:** The optimizer finds monostable solutions without penalty — no self-sustaining memory.
 
 ---
 
-![Proposed loss overview](../figs/docs/fig9_proposed_loss_overview.png)
+### 4.2 `L_rate` — Low Fixed-Point Rate Matching
 
-## 7. Summary Table: Before vs After
+**Unchanged from original.** Evaluated at the *lowest* stable fixed point found by the Brentq root-finder.
 
-| Loss term | Current | Proposed | Change |
+$$L_\text{rate} = \left(\frac{r_\text{PYR}^\text{low} - r_\text{PYR}^\text{target}}{r_\text{PYR}^\text{target}}\right)^2 + \left(\frac{r_\text{SOM}^\text{low} - r_\text{SOM}^\text{target}}{r_\text{SOM}^\text{target}}\right)^2 + \left(\frac{r_\text{PV}^\text{low} - r_\text{PV}^\text{target}}{r_\text{PV}^\text{target}}\right)^2 + \left(\frac{r_\text{VIP}^\text{low} - r_\text{VIP}^\text{target}}{r_\text{VIP}^\text{target}}\right)^2$$
+
+Default targets: **PYR=1.75, SOM=1.12, PV=1.04, VIP=1.33 Hz** (CLI: `--target_pyr`, `--target_som`, `--target_pv`, `--target_vip`).
+
+This is **MSPE**: a 1 Hz miss at 1.75 Hz target costs far more than 1 Hz at 60 Hz, which makes sense — relative deviations matter biologically.
+
+**What goes wrong without it:** Bistability achieved with biologically absurd resting states (PYR=0, all interneurons hyperactive).
+
+---
+
+### 4.3 `L_rate_high` — High Fixed-Point Rate Matching
+
+**New.** Symmetric to `L_rate`, evaluated at the highest stable fixed point.
+
+$$L_\text{rate,high} = \left(\frac{r_\text{PYR}^\text{high} - r_\text{PYR}^\text{H}}{r_\text{PYR}^\text{H}}\right)^2 + \left(\frac{r_\text{SOM}^\text{high} - r_\text{SOM}^\text{H}}{r_\text{SOM}^\text{H}}\right)^2 + \left(\frac{r_\text{PV}^\text{high} - r_\text{PV}^\text{H}}{r_\text{PV}^\text{H}}\right)^2 + \left(\frac{r_\text{VIP}^\text{high} - r_\text{VIP}^\text{H}}{r_\text{VIP}^\text{H}}\right)^2$$
+
+Default targets: **PYR=60.2, SOM=35.2, PV=35.3, VIP=68.8 Hz** (Rooy 2021, CLI: `--r_pyr_high_target` etc.).
+
+> **When monostable:** no second stable FP exists, so $L_\text{rate,high} = 0$. The bistability terms already apply a heavy penalty in that regime — adding a phantom high-FP penalty would give a misleading gradient.
+
+**What it fixes:** Eliminates the VIP-disinhibitory degenerate solution (SOM=0, PV=4 Hz in the high state) by adding explicit pressure toward SOM≈35 Hz and PV≈35 Hz.
+
+---
+
+### 4.4 `L_margin` — Fixed-Point Separation
+
+**Formula unchanged; default weight increased from 0.5 → 2.0.**
+
+$$L_\text{margin} = \text{relu}\!\left(\Delta r_\text{min} - (r_\text{high stable} - r_\text{low stable})\right), \quad \Delta r_\text{min} = 15 \text{ Hz}$$
+
+When **monostable**: $L_\text{margin} = 2 \times \Delta r_\text{min} = 30$ (strong fixed penalty).
+
+```
+ Δr = 5 Hz  →  L_margin = relu(15 - 5)  = 10   ← too close
+ Δr = 60 Hz →  L_margin = relu(15 - 60) =  0   ← OK
+```
+
+**What goes wrong without it:** Marginal bistability with barely distinguishable attractors — functionally useless for working memory.
+
+---
+
+### 4.5 `L_jac` — Jacobian Regularizer
+
+**Unchanged.**
+
+$$L_\text{jac} = \text{relu}\!\left(\max_{i,j} |J_{ij}| - 5.0\right)^2$$
+
+The 4×4 Jacobian is evaluated at the low fixed point. The threshold of 5 means: *1 Hz increase in population $j$ changes population $i$ by at most 5 Hz*.
+
+**What goes wrong without it:** Degenerate solutions where one overwhelmingly dominant pathway (e.g., PV→PYR) creates bistability via an implausible mechanism, rather than the intended multi-pathway disinhibitory circuit.
+
+---
+
+### 4.6 `L_peak` — Nullcline Peak Penalty (optional, default off)
+
+**Unchanged.**
+
+$$L_\text{peak} = \text{relu}\!\left(\max_r \Phi(I_\text{net}(r)) - r_\text{peak,max}\right)^2 \qquad \text{default: } r_\text{peak,max} = 200 \text{ Hz (effectively off)}$$
+
+Prevents the nullcline from peaking far above the high FP, which causes the network to overshoot badly during the L→H transition (cue-period saturation).
+
+Enable with `--w_peak 1.0 --nullcline_peak_max 95` in the CLI.
+
+---
+
+## 5. Total Loss Formula & Default Weights
+
+```python
+L_total = w_bistab    * L_bistab       # adaptive sign-pattern (4 sub-terms, no fixed probes)
+        + w_rate      * L_rate         # low FP rates
+        + w_rate_high * L_rate_high    # high FP rates  (0 when monostable)
+        + w_margin    * L_margin       # FP separation
+        + w_jacobian  * L_jac          # Jacobian regularizer
+        + w_peak      * L_peak         # nullcline peak (off by default)
+```
+
+| Component | Default weight | Active |
+|---|---|---|
+| `L_bistab` (4 sub-terms, adaptive) | `w_bistab = 5.0` | Yes |
+| `L_rate` (low FP) | `w_rate = 1.0` | Yes |
+| `L_rate_high` (high FP) | `w_rate_high = 1.5` | Yes (only when bistable) |
+| `L_margin` | `w_margin = 2.0` | Yes |
+| `L_jac` | `w_jacobian = 0.1` | Yes |
+| `L_peak` | `w_peak = 0.0` | **No (off)** |
+
+### What the optimizer minimizes (step by step)
+
+```
+Step 1:  F(r) has full (+,−,+,−) sign pattern         ←  L_bistab
+           ↓ if bistable
+Step 2:  Two stable FPs separated by ≥ 15 Hz          ←  L_margin
+           ↓
+Step 3:  Low FP matches resting-state rates            ←  L_rate (coupled with L_bistab scale)
+           ↓
+Step 4:  High FP matches active-state rates            ←  L_rate_high
+           ↓
+Step 5:  No single pathway dominates implausibly       ←  L_jac
+           ↓
+Step 6:  (Optional) control overshoot at transition    ←  L_peak
+```
+
+---
+
+## 6. Summary Table: Before vs After
+
+| Loss term | Before | After | Change |
 |---|---|---|---|
-| `L_bistab` (7 sub-terms) | ✅ `w=1.0` | → Simplified (2 sub-terms), `w=2.0` | Simplified |
-| `L_ceiling` | ✅ bundled with L_bistab | ✅ keep, `w=0.5` | Decoupled, reduced weight |
-| `L_rate_low` (low FP) | ✅ `w=1.0` | ✅ unchanged | No change |
-| `L_rate_high` (high FP) | **❌ missing** | **✅ added `w=1.5`** | **New — main addition** |
-| `L_margin` | ✅ `w=0.5` | ✅ unchanged | No change |
-| `L_physiol` (sweep ceiling) | ✅ `w=1.0` | **❌ removed** | **Removed** |
-| `L_jac` | ✅ `w=0.1` | ✅ unchanged | No change |
-| `L_peak` | ✅ off by default | ✅ off by default | No change |
+| `L_bistab` | 7 sub-terms (3 probes + 4 zone penalties), `w=1.0` | 4 sub-terms (adaptive low + valley + windowed high + tail), `w=5.0` | **Redesigned** — probe-free, windowed |
+| Bistability check params | `r_low_probe`, `r_mid_probe`, `r_high_probe` (placement-sensitive) | `f_high_margin=1.0`, `r_high_basin_lo_frac=0.7`, `r_high_basin_hi_frac=1.2` (optional shape tuning) | 3 placement params → 3 shape params |
+| `L_ceiling` | ✅ bundled with L_bistab | **❌ removed** | Superseded by L_rate_high |
+| `L_physiol` (sweep ceiling) | ✅ `w=1.0` | **❌ removed** | Replaced by L_rate_high |
+| `L_rate` (low FP) | ✅ `w=1.0` | ✅ `w=1.0` | Unchanged |
+| `L_rate_high` (high FP) | **❌ missing** | **✅ added, `w=1.5`** | Main addition |
+| `L_margin` | ✅ `w=0.5` | ✅ `w=2.0` | Weight raised |
+| `L_jac` | ✅ `w=0.1` | ✅ `w=0.1` | Unchanged |
+| `L_peak` | ✅ off by default | ✅ off by default | Unchanged |
+| **Total terms** | **7** | **6** | Simpler, more targeted |
 
-**Net effect:** The loss becomes simpler (7 terms → 6 terms, one of them new), more targeted (both states explicitly constrained), and less redundant (no soft ceiling that partially overlapped with rate matching).
+**Net effect:** Both stable states are now explicitly constrained. The bistability check requires no probe placement — the low-basin boundary adapts to the detected FP, and the high-basin check is anchored to the target rate window, preventing spurious low-rate solutions from scoring zero penalty.
 
 ---
 
-*Last updated: 2026-04-16*
+*Last updated: 2026-04-17*

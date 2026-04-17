@@ -38,8 +38,7 @@ def _extract_component_values(breakdown: dict) -> dict[str, float]:
         # Bistable-specific terms
         "bistability": _getf("L_bistab", 0.0),
         "margin": _getf("L_margin", 0.0),
-        "physiology": _getf("L_physiol", 0.0),
-        "ceiling": _getf("L_ceiling", 0.0),
+        "rate_high": _getf("L_rate_high", 0.0),
     }
 
 
@@ -54,8 +53,7 @@ def _pretty_component_name(name: str) -> str:
         "bump": "Bump",
         "bistability": "Bistability",
         "margin": "Margin",
-        "physiology": "Physiology",
-        "ceiling": "Ceiling",
+        "rate_high": "Rate (high FP)",
     }.get(name, name.replace("_", " ").title())
 
 

@@ -449,14 +449,14 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
         ax.plot(r_fp, phi_fp, 'o', color='red', markersize=10, fillstyle='none', markeredgewidth=2.5,
                label='Unstable fixed point' if r_fp == unstable_fps[0][0] else '')
 
-    # Set x-axis limit to extend slightly beyond the rightmost fixed point
+    # Set x-axis limit to extend slightly beyond the rightmost fixed point, at least 80 Hz
     if fixed_points:
         max_fp = max([r for r, _ in fixed_points])
-        x_limit = max_fp * 1.1  # Extend 10% beyond the rightmost fixed point
+        x_limit = max(max_fp * 1.1, 80)
     else:
-        x_limit = 260
+        x_limit = 80
     ax.set_xlim(0, x_limit)
-    ax.set_ylim(0, max(x_limit, 260))
+    ax.set_ylim(0, x_limit)
     ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
     ax.set_ylabel('Phi_PYR(I_net) (Hz)', fontsize=11, fontweight='bold')
     ax.set_title(f'PYR Nullcline — {condition}', fontsize=12, fontweight='bold')
@@ -548,14 +548,14 @@ def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
             phi_fp = circuit.transfer_function(I_pyr_fp, circuit.Theta_pyr, circuit.alpha_pyr, circuit.g_e)
             ax.plot(r_fp, phi_fp, 'o', color='red', markersize=9, fillstyle='none', markeredgewidth=2)
 
-        # Set x-axis limit to extend slightly beyond the rightmost fixed point
+        # Set x-axis limit to extend slightly beyond the rightmost fixed point, at least 80 Hz
         if fixed_points:
             max_fp = max([r for r, _ in fixed_points])
-            x_limit = max_fp * 1.1  # Extend 10% beyond the rightmost fixed point
+            x_limit = max(max_fp * 1.1, 80)
         else:
-            x_limit = 120
+            x_limit = 80
         ax.set_xlim(0, x_limit)
-        ax.set_ylim(0, max(x_limit, 120))
+        ax.set_ylim(0, x_limit)
         ax.set_xlabel('r_PYR (Hz)', fontsize=10)
         ax.set_ylabel('Phi_PYR(I_net) (Hz)', fontsize=10)
         ax.set_title(f'{cond} — {regime}', fontsize=11, fontweight='bold')
