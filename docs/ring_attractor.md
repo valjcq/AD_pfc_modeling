@@ -8,24 +8,50 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
 
 ## Table of Contents
 
-1. [Network Architecture](#1-network-architecture)
-2. [Inter-Node Connectivity](#2-inter-node-connectivity)
-   - [2.1 Angular Distance](#21-angular-distance)
-   - [2.2 PYR → PYR Excitation](#22-pyr--pyr-excitation)
-   - [2.3 PV → PYR Global Inhibition](#23-pv--pyr-global-inhibition)
-   - [2.4 Connectivity Parameters](#24-connectivity-parameters)
-3. [Local Circuit Dynamics](#3-local-circuit-dynamics)
-   - [3.1 NMDA Gating Variable](#31-nmda-gating-variable)
-   - [3.2 Input Current Equations](#32-input-current-equations)
-4. [Spike-Frequency Adaptation](#4-spike-frequency-adaptation)
-5. [Transfer Function](#5-transfer-function)
-6. [Stimulus & Distractor Protocol](#6-stimulus--distractor-protocol)
-   - [6.6 Distractor Stimulus](#66-distractor-stimulus)
-7. [Noise](#7-noise)
-8. [Experimental Conditions](#8-experimental-conditions)
-9. [Bump Amplitude Oscillations](#9-bump-amplitude-oscillations)
-10. [Joint Ring + Circuit Optimization](#10-joint-ring--circuit-optimization)
-11. [References](#11-references)
+- [Ring Attractor Network — Model \& Implementation](#ring-attractor-network--model--implementation)
+  - [Table of Contents](#table-of-contents)
+  - [1. Network Architecture](#1-network-architecture)
+  - [2. Inter-Node Connectivity](#2-inter-node-connectivity)
+    - [2.1 Angular Distance](#21-angular-distance)
+    - [2.2 PYR $\\to$ PYR Excitation](#22-pyr-to-pyr-excitation)
+      - [Inter-node excitatory input](#inter-node-excitatory-input)
+    - [2.3 PV $\\to$ PYR Global Inhibition](#23-pv-to-pyr-global-inhibition)
+    - [2.4 Connectivity Parameters](#24-connectivity-parameters)
+  - [3. Local Circuit Dynamics](#3-local-circuit-dynamics)
+    - [3.1 NMDA Gating Variable](#31-nmda-gating-variable)
+    - [3.2 Input Current Equations](#32-input-current-equations)
+    - [3.3 Weight Notation](#33-weight-notation)
+    - [3.4 GABA Scaling](#34-gaba-scaling)
+    - [3.5 External Currents](#35-external-currents)
+    - [3.6 Transient Current](#36-transient-current)
+  - [4. Spike-Frequency Adaptation](#4-spike-frequency-adaptation)
+  - [5. Transfer Function](#5-transfer-function)
+  - [6. Stimulus \& Distractor Protocol](#6-stimulus--distractor-protocol)
+    - [6.1 Spatial Profile](#61-spatial-profile)
+    - [6.2 Temporal Profile](#62-temporal-profile)
+    - [6.3 Total Stimulus Current](#63-total-stimulus-current)
+    - [6.4 Working Memory Protocol](#64-working-memory-protocol)
+    - [6.5 Stimulus Parameters](#65-stimulus-parameters)
+    - [6.6 Distractor Stimulus](#66-distractor-stimulus)
+  - [7. Noise](#7-noise)
+    - [Noise equation](#noise-equation)
+    - [Noise processes](#noise-processes)
+    - [Relation to Seeholzer et al. (2019)](#relation-to-seeholzer-et-al-2019)
+  - [8. Experimental Conditions](#8-experimental-conditions)
+  - [9. Bump Amplitude Oscillations](#9-bump-amplitude-oscillations)
+    - [9.1 Mechanism](#91-mechanism)
+    - [9.2 Effect on MSD](#92-effect-on-msd)
+    - [9.3 Approaches to Correct or Mitigate the Problem](#93-approaches-to-correct-or-mitigate-the-problem)
+    - [9.4 Oscillation Detection](#94-oscillation-detection)
+  - [10. Joint Ring + Circuit Optimization](#10-joint-ring--circuit-optimization)
+    - [10.1 Motivation](#101-motivation)
+    - [10.2 Parameter Space](#102-parameter-space)
+    - [10.3 Loss Function](#103-loss-function)
+      - [Trace-based Turing bistability loss (optional, `--turing_weight`)](#trace-based-turing-bistability-loss-optional---turing_weight)
+      - [Deprecated bump mode](#deprecated-bump-mode)
+    - [10.4 Computational Cost](#104-computational-cost)
+    - [10.5 Output](#105-output)
+  - [11. References](#11-references)
 
 ---
 
@@ -164,7 +190,7 @@ $$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}} + 
 
 ### 3.3 Weight Notation
 
-Weights follow the convention $w_{XY}$ = connection **from** population $Y$ **to** population $X$:
+Weights follow the convention $w_{XY}$ = connection **from** population $X$ **to** population $Y$:
 - e = PYR (excitatory), p = PV, s = SOM, v = VIP
 - Example: $w_{ep}$ = weight from PYR to PV
 - $J_{\text{NMDA}}$ is the recurrent PYR→PYR NMDA coupling strength (replaces the former $w_{ee}$)
