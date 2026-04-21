@@ -222,15 +222,18 @@ Adaptation prevents runaway excitation and creates temporal dynamics in the bump
 
 The model uses the **Wong-Wang transfer function** (Wong & Wang, 2006), derived from a mean-field reduction of spiking neural networks:
 
-$$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = c \cdot (I - \theta)$$
+$$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = \alpha \cdot (I - \theta)$$
 
 **Parameters per population $X$:**
 
-| Parameter | Symbol | Description |
-|-----------|--------|-------------|
-| `Theta_X` | $\theta^X$ | Threshold current |
-| `alpha_X` | $c^X$ | Gain / slope parameter |
-| `g_e` / `g_i` | $g$ | Curvature parameter ($g_e$ for PYR, $g_i$ for PV/SOM/VIP) |
+| Parameter | Symbol | Population | Value |
+|-----------|--------|------------|-------|
+| `Theta_pyr` | $\theta^{pyr}$ | PYR | $125/310 \approx 0.403\ \text{nA}$ |
+| `Theta_pv` / `Theta_som` / `Theta_vip` | $\theta^{inh}$ | PV, SOM, VIP | $177/615 \approx 0.288\ \text{nA}$ |
+| `alpha_pyr` | $\alpha^{pyr}$ | PYR | $310\ \text{Hz/nA}$ |
+| `alpha_pv` / `alpha_som` / `alpha_vip` | $\alpha^{inh}$ | PV, SOM, VIP | $615\ \text{Hz/nA}$ |
+| `g_exc` | $g_e$ | PYR | $0.16\ \text{s}$ |
+| `g_inh` | $g_i$ | PV, SOM, VIP | $0.087\ \text{s}$ |
 
 **Properties:**
 - Monotonically increasing

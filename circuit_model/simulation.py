@@ -30,8 +30,9 @@ class SimulationResult:
     t_ms: np.ndarray      # Shape: (n_steps,) - Time points in ms
     r: np.ndarray         # Shape: (n_steps, 4) - Firing rates [pyr, som, pv, vip]
     I_adapt: np.ndarray   # Shape: (n_steps, 2) - Adaptation currents [pyr, som]
-    # Optional transient window info for plotting
-    transient_window: Optional[tuple[float, float]] = None  # (start_ms, end_ms)
+    # Optional transient window(s) info for plotting
+    transient_window: Optional[tuple[float, float]] = None   # (start_ms, end_ms) first transient
+    transient_window2: Optional[tuple[float, float]] = None  # (start_ms, end_ms) second transient
 
 
 def simulate_circuit(
@@ -246,13 +247,15 @@ def simulate_circuit(
             dIas = (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
             I_adapt[k + 1, 1] = Ias + dt_ms * dIas
 
-    # Compute transient window for plotting if enabled
+    # Compute transient window(s) for plotting if enabled
     transient_window = None
     if use_transient and params.trans_enabled:
-        trans_end = params.trans_start_ms + params.trans_duration_ms
-        transient_window = (params.trans_start_ms, trans_end)
+        transient_window = (params.trans_start_ms, params.trans_start_ms + params.trans_duration_ms)
+    transient_window2 = None
+    if use_transient and params.trans2_enabled:
+        transient_window2 = (params.trans2_start_ms, params.trans2_start_ms + params.trans2_duration_ms)
 
-    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt, transient_window=transient_window)
+    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt, transient_window=transient_window, transient_window2=transient_window2)
 
 
 def validate_fast_loop(
