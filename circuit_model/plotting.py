@@ -53,6 +53,21 @@ ADAPTATION_COLORS = {
 TRANSIENT_COLOR = "#888888"  # Gray for transient markers
 
 
+def _smooth_rates(r: np.ndarray, t_ms: np.ndarray, smooth_ms: float) -> np.ndarray:
+    """Apply uniform (boxcar) smoothing over a window of smooth_ms milliseconds."""
+    if smooth_ms <= 0 or len(t_ms) < 2:
+        return r
+    dt = float(t_ms[1] - t_ms[0])
+    w = max(1, int(round(smooth_ms / dt)))
+    if w <= 1:
+        return r
+    kernel = np.ones(w) / w
+    smoothed = np.empty_like(r)
+    for i in range(r.shape[1]):
+        smoothed[:, i] = np.convolve(r[:, i], kernel, mode="same")
+    return smoothed
+
+
 def _add_transient_markers(
     ax,
     transient_window: tuple[float, float],
@@ -98,6 +113,7 @@ def plot_firing_rates(
     time_range: Optional[tuple[float, float]] = None,
     show_transient: bool = True,
     unit: str = "Hz",
+    smooth_ms: float = 0.0,
 ):
     """
     Plot firing rates over time for all 4 populations.
@@ -110,6 +126,7 @@ def plot_firing_rates(
         time_range: Optional (t_start, t_end) in ms to zoom in
         show_transient: Whether to show transient window markers (if present)
         unit: Rate unit for Y-axis label (default: "Hz")
+        smooth_ms: Boxcar smoothing window in ms (0 = no smoothing)
 
     Returns:
         The matplotlib axis object
@@ -120,7 +137,7 @@ def plot_firing_rates(
         fig, ax = plt.subplots(figsize=(10, 5))
 
     t = result.t_ms
-    r = result.r
+    r = _smooth_rates(result.r, result.t_ms, smooth_ms)
 
     # Apply time range filter if specified
     if time_range is not None:
@@ -131,13 +148,16 @@ def plot_firing_rates(
     # Draw transient markers first (so they're behind the data)
     if show_transient and result.transient_window is not None:
         _add_transient_markers(ax, result.transient_window, time_range, add_legend=show_legend)
+    if show_transient and getattr(result, "transient_window2", None) is not None:
+        _add_transient_markers(ax, result.transient_window2, time_range, add_legend=False)
 
     for i, name in enumerate(POPULATION_NAMES):
         ax.plot(t, r[:, i], label=name, color=POPULATION_COLORS[name], linewidth=1.5)
 
     ax.set_xlabel("Time (ms)", fontsize=11)
     ax.set_ylabel(f"Firing Rate ({unit})", fontsize=11)
-    ax.set_title(title, fontsize=12, fontweight="bold")
+    display_title = f"{title} [smoothed {smooth_ms:.0f} ms]" if smooth_ms > 0 else title
+    ax.set_title(display_title, fontsize=12, fontweight="bold")
     ax.set_xlim(t[0], t[-1])
     ax.set_ylim(bottom=0)
     ax.spines["top"].set_visible(False)
@@ -188,6 +208,8 @@ def plot_adaptation(
     # Draw transient markers first (so they're behind the data)
     if show_transient and result.transient_window is not None:
         _add_transient_markers(ax, result.transient_window, time_range, add_legend=False)
+    if show_transient and getattr(result, "transient_window2", None) is not None:
+        _add_transient_markers(ax, result.transient_window2, time_range, add_legend=False)
 
     ax.plot(t, I_adapt[:, 0], label="I_adapt (PYR)", color=ADAPTATION_COLORS["PYR"], linewidth=1.5)
 
@@ -212,6 +234,7 @@ def plot_simulation_dashboard(
     save_path: Optional[str] = None,
     show: bool = True,
     unit: str = "Hz",
+    smooth_ms: float = 0.0,
 ):
     """
     Create a comprehensive dashboard showing simulation results.
@@ -245,11 +268,11 @@ def plot_simulation_dashboard(
 
     # Top plot: Combined firing rates
     ax_combined = fig.add_subplot(gs[0, :])
-    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range, unit=unit)
+    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range, unit=unit, smooth_ms=smooth_ms)
 
     # Middle row: Individual populations
     t = result.t_ms
-    r = result.r
+    r = _smooth_rates(result.r, result.t_ms, smooth_ms)
     if time_range is not None:
         mask = (t >= time_range[0]) & (t <= time_range[1])
         t_plot = t[mask]

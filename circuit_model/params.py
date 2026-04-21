@@ -137,10 +137,16 @@ class CircuitParams:
     # When trans_enabled=True, a transient current = trans_factor * I0_pop is applied
     # to ALL populations during [trans_start_ms, trans_start_ms + trans_duration_ms)
     # trans_factor is a multiplier (e.g., 0.2 means +20% of baseline I0)
+    # A second independent transient (trans2_*) can be enabled separately.
     trans_factor: float = 0.2          # Transient as fraction of each population's I0
     trans_start_ms: float = 1000.0     # When transient starts (ms)
     trans_duration_ms: float = 500.0   # Duration of transient pulse (ms)
     trans_enabled: bool = False        # Whether to use time-dependent transient
+
+    trans2_factor: float = -0.3        # Second transient factor (negative = inhibitory)
+    trans2_start_ms: float = 3000.0    # When second transient starts (ms)
+    trans2_duration_ms: float = 500.0  # Duration of second transient pulse (ms)
+    trans2_enabled: bool = False       # Whether to use second transient
 
     # =========================================================================
     # TRANSFER FUNCTION PARAMETERS (Wong-Wang 2006, exact values)
@@ -174,34 +180,34 @@ class CircuitParams:
         """Total GABA scaling factor."""
         return self.g_gaba_base + self.g_alpha7
 
-    def _in_transient_window(self, t_ms: float) -> bool:
-        """Check if time t_ms is within the transient window."""
-        if not self.trans_enabled:
-            return False
-        trans_end_ms = self.trans_start_ms + self.trans_duration_ms
-        return self.trans_start_ms <= t_ms < trans_end_ms
+    def _transient_delta(self, t_ms: float) -> float:
+        """Sum of transient factors (from both transients) active at t_ms."""
+        delta = 0.0
+        if self.trans_enabled:
+            if self.trans_start_ms <= t_ms < self.trans_start_ms + self.trans_duration_ms:
+                delta += self.trans_factor
+        if self.trans2_enabled:
+            if self.trans2_start_ms <= t_ms < self.trans2_start_ms + self.trans2_duration_ms:
+                delta += self.trans2_factor
+        return delta
 
     def I_ext_pyr(self) -> float:
         """Total external current to PYR (static, no transient)."""
         return self.I0_pyr
 
     def I_ext_pyr_at_time(self, t_ms: float) -> float:
-        """Total external current to PYR at time t_ms (with transient if enabled)."""
-        base = self.I0_pyr
-        if self._in_transient_window(t_ms):
-            return base + self.trans_factor * self.I0_pyr
-        return base
+        """Total external current to PYR at time t_ms (with transients if enabled)."""
+        delta = self._transient_delta(t_ms)
+        return self.I0_pyr + delta * self.I0_pyr
 
     def I_ext_pv(self) -> float:
         """Total external current to PV (with alpha7 modulation, no transient)."""
         return self.I0_pv + self.act_alpha7 * self.I_alpha7_pv
 
     def I_ext_pv_at_time(self, t_ms: float) -> float:
-        """Total external current to PV at time t_ms (with transient if enabled)."""
-        base = self.I0_pv + self.act_alpha7 * self.I_alpha7_pv
-        if self._in_transient_window(t_ms):
-            return base + self.trans_factor * self.I0_pv
-        return base
+        """Total external current to PV at time t_ms (with transients if enabled)."""
+        delta = self._transient_delta(t_ms)
+        return self.I0_pv + self.act_alpha7 * self.I_alpha7_pv + delta * self.I0_pv
 
     def I_ext_som(self) -> float:
         """Total external current to SOM (with alpha7 and beta2 modulation, no transient)."""
@@ -212,26 +218,23 @@ class CircuitParams:
         )
 
     def I_ext_som_at_time(self, t_ms: float) -> float:
-        """Total external current to SOM at time t_ms (with transient if enabled)."""
-        base = (
+        """Total external current to SOM at time t_ms (with transients if enabled)."""
+        delta = self._transient_delta(t_ms)
+        return (
             self.I0_som
             + self.act_alpha7 * self.I_alpha7_som
             + self.act_beta2 * self.I_beta2_som
+            + delta * self.I0_som
         )
-        if self._in_transient_window(t_ms):
-            return base + self.trans_factor * self.I0_som
-        return base
 
     def I_ext_vip(self) -> float:
         """Total external current to VIP (with alpha5 modulation, no transient)."""
         return self.I0_vip + self.act_alpha5 * self.I_alpha5_vip
 
     def I_ext_vip_at_time(self, t_ms: float) -> float:
-        """Total external current to VIP at time t_ms (with transient if enabled)."""
-        base = self.I0_vip + self.act_alpha5 * self.I_alpha5_vip
-        if self._in_transient_window(t_ms):
-            return base + self.trans_factor * self.I0_vip
-        return base
+        """Total external current to VIP at time t_ms (with transients if enabled)."""
+        delta = self._transient_delta(t_ms)
+        return self.I0_vip + self.act_alpha5 * self.I_alpha5_vip + delta * self.I0_vip
 
 
 @dataclass(frozen=True)

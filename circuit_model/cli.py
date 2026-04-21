@@ -406,14 +406,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"sigma_noise overridden to: {args.sigma_noise}")
 
     # Apply transient settings if enabled
-    use_transient = args.enable_transient
-    if use_transient:
+    use_transient = args.enable_transient or getattr(args, "enable_trans2", False)
+    if args.enable_transient:
         params = replace(
             params,
             trans_enabled=True,
             trans_start_ms=args.trans_start_ms,
             trans_duration_ms=args.trans_duration_ms,
             trans_factor=args.trans_factor,
+        )
+    if getattr(args, "enable_trans2", False):
+        params = replace(
+            params,
+            trans2_enabled=True,
+            trans2_start_ms=args.trans2_start_ms,
+            trans2_duration_ms=args.trans2_duration_ms,
+            trans2_factor=args.trans2_factor,
         )
 
     # Print key parameter values
@@ -422,11 +430,16 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"  sigma_noise = {params.sigma_noise:.4f} (noise ratio, effective {params.sigma_noise * params.I_ext_pyr():.4f} nA)")
     print(f"  g_gaba = {params.g_gaba():.2f} (GABA scaling)")
 
-    if use_transient:
+    if args.enable_transient:
         trans_end = params.trans_start_ms + params.trans_duration_ms
-        print(f"\nTransient current (applied to all populations):")
+        print(f"\nTransient 1 (excitatory push → high state):")
         print(f"  trans_factor = {params.trans_factor:.2f} (fraction of I0)")
         print(f"  Window: {params.trans_start_ms:.1f} - {trans_end:.1f} ms")
+    if getattr(args, "enable_trans2", False):
+        trans2_end = params.trans2_start_ms + params.trans2_duration_ms
+        print(f"\nTransient 2 (return to resting state):")
+        print(f"  trans2_factor = {params.trans2_factor:.2f} (fraction of I0)")
+        print(f"  Window: {params.trans2_start_ms:.1f} - {trans2_end:.1f} ms")
 
     # Parse initial rates
     r0 = None
@@ -468,8 +481,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     sigma_str = f"σ={params.sigma_noise:.3g}" if args.noise_type != "none" else ""
     title = f"Circuit Model Simulation (noise={args.noise_type}{', ' + sigma_str if sigma_str else ''})"
-    if use_transient:
-        title += f" [Transient: {params.trans_start_ms:.0f}-{params.trans_start_ms + params.trans_duration_ms:.0f} ms]"
+    if args.enable_transient:
+        title += f" [T1: {params.trans_start_ms:.0f}-{params.trans_start_ms + params.trans_duration_ms:.0f} ms, ×{params.trans_factor:+.2f}]"
+    if getattr(args, "enable_trans2", False):
+        title += f" [T2: {params.trans2_start_ms:.0f}-{params.trans2_start_ms + params.trans2_duration_ms:.0f} ms, ×{params.trans2_factor:+.2f}]"
 
     # Determine save path
     noise_tag = f"{args.noise_type}_sigma{params.sigma_noise:.3g}" if args.noise_type != "none" else "none"
@@ -493,6 +508,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         save_path=save_path,
         show=not args.no_show,
         unit=args.unit,
+        smooth_ms=getattr(args, "smooth_ms", 0.0),
     )
 
 
@@ -1020,15 +1036,26 @@ Examples:
     run_parser.add_argument("--no_show", action="store_true",
                             help="Don't display the plot (useful for batch processing)")
 
-    # Transient current options
+    # Transient current options (first transient: push to high state)
     run_parser.add_argument("--enable_transient", action="store_true",
-                            help="Enable time-dependent transient current (applied only during transient window)")
+                            help="Enable first transient current (applied only during transient window)")
     run_parser.add_argument("--trans_start_ms", type=float, default=1000.0,
-                            help="Time when transient starts (ms), default=1000")
+                            help="Time when first transient starts (ms), default=1000")
     run_parser.add_argument("--trans_duration_ms", type=float, default=500.0,
-                            help="Duration of transient pulse (ms), default=500")
+                            help="Duration of first transient pulse (ms), default=500")
     run_parser.add_argument("--trans_factor", type=float, default=0.2,
-                            help="Transient as fraction of each population's I0, default=0.2")
+                            help="First transient as fraction of each population's I0, default=0.2")
+    # Second transient (e.g., inhibitory pulse to return to resting state)
+    run_parser.add_argument("--enable_trans2", action="store_true",
+                            help="Enable second transient current (e.g., negative factor to return to low state)")
+    run_parser.add_argument("--trans2_start_ms", type=float, default=3000.0,
+                            help="Time when second transient starts (ms), default=3000")
+    run_parser.add_argument("--trans2_duration_ms", type=float, default=500.0,
+                            help="Duration of second transient pulse (ms), default=500")
+    run_parser.add_argument("--trans2_factor", type=float, default=-0.3,
+                            help="Second transient as fraction of each population's I0, default=-0.3")
+    run_parser.add_argument("--smooth_ms", type=float, default=0.0,
+                            help="Boxcar smoothing window for firing rate plots in ms (0 = no smoothing, default: 0)")
     run_parser.add_argument("--unit", type=str, default="Hz",
                             choices=["Hz"],
                             help="Rate unit for display and plots (default: Hz)")
