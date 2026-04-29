@@ -60,6 +60,7 @@ from .connectivity import (
     gaussian_profile,
     build_pyr_pyr_weights,
     build_pv_pyr_weights,
+    build_som_pyr_weights,
     RingConnectivity,
 )
 
@@ -117,6 +118,7 @@ __all__ = [
     "gaussian_profile",
     "build_pyr_pyr_weights",
     "build_pv_pyr_weights",
+    "build_som_pyr_weights",
     "RingConnectivity",
     # Stimulus
     "RingStimulus",

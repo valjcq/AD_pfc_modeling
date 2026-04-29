@@ -16,9 +16,9 @@ from typing import Literal, Optional
 import numpy as np
 
 from .params import CircuitParams
-from .transfer import phi_wong_wang
+from .transfer import phi_wong_wang, phi_capped
 from ._fast_loop import _euler_loop, NUMBA_AVAILABLE
-from .constants import GAMMA_NMDA, TAU_NMDA_MS
+from .constants import GAMMA_NMDA, TAU_NMDA_MS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
 
 
 NoiseType = Literal["none", "white", "ou"]
@@ -150,6 +150,7 @@ def simulate_circuit(
             float(params.Theta_som), float(params.alpha_som),
             float(params.Theta_pv),  float(params.alpha_pv),
             float(params.Theta_vip), float(params.alpha_vip),
+            float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP),
         )
 
     else:
@@ -226,13 +227,13 @@ def simulate_circuit(
             )
             I_vip = params.w_ev * r_pyr + I_ext_vip_val + noise_scale_vip * xi
 
-            # TRANSFER FUNCTION
+            # TRANSFER FUNCTION — PYR uncapped; interneurons use hyperbolic soft ceiling
             Phi = np.array(
                 [
                     phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
-                    phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
-                    phi_wong_wang(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh).item(),
-                    phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
+                    phi_capped(I_som, R_MAX_SOM, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
+                    phi_capped(I_pv,  R_MAX_PV,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
+                    phi_capped(I_vip, R_MAX_VIP, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
                 ],
                 dtype=float,
             )
@@ -316,9 +317,9 @@ def validate_fast_loop(
         I_vip = params.w_ev * r_pyr + params.I_ext_vip() + noise_scale_vip * xi
         Phi = np.array([
             phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
-            phi_wong_wang(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
-            phi_wong_wang(I_pv,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
-            phi_wong_wang(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
+            phi_capped(I_som, R_MAX_SOM, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
+            phi_capped(I_pv,  R_MAX_PV,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
+            phi_capped(I_vip, R_MAX_VIP, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
         ])
         dr = (-r_ref[k] + Phi) / params.tau_s
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
@@ -357,6 +358,7 @@ def validate_fast_loop(
         float(params.Theta_som), float(params.alpha_som),
         float(params.Theta_pv),  float(params.alpha_pv),
         float(params.Theta_vip), float(params.alpha_vip),
+        float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP),
     )
 
     if not np.array_equal(r_fast, r_ref):

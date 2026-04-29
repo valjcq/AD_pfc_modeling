@@ -72,6 +72,17 @@ def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
     return max(0.0, u / denom)
 
 
+@_njit(cache=True)
+def _phi_capped_scalar(I: float, r_max: float, theta: float, c: float, g: float) -> float:
+    """Hyperbolic soft ceiling applied to the Wong-Wang transfer function.
+
+    Used for interneurons (PV, SOM, VIP): Phi_capped = r_max * Phi / (r_max + Phi).
+    Leaves the low-rate regime unchanged and asymptotes smoothly to r_max.
+    """
+    phi = _phi_scalar(I, theta, c, g)
+    return r_max * phi / (r_max + phi)
+
+
 # ---------------------------------------------------------------------------
 # Core Euler loop — all scalar operations, no Python objects inside
 # ---------------------------------------------------------------------------
@@ -109,6 +120,8 @@ def _euler_loop(
     Theta_som: float, alpha_som: float,
     Theta_pv: float,  alpha_pv: float,
     Theta_vip: float, alpha_vip: float,
+    # Interneuron soft ceilings (Hz)
+    r_max_pv: float, r_max_som: float, r_max_vip: float,
 ) -> None:
     """Core Euler integration loop — writes into r_out and I_adapt_out in-place.
 
@@ -154,10 +167,11 @@ def _euler_loop(
                 + noise_scale_vip * xi
 
         # Transfer function (scalar, zero overhead)
+        # PYR: uncapped Wong-Wang; interneurons: hyperbolic soft ceiling
         phi_pyr = _phi_scalar(I_pyr, Theta_pyr, alpha_pyr, g_exc)
-        phi_som = _phi_scalar(I_som, Theta_som, alpha_som, g_inh)
-        phi_pv  = _phi_scalar(I_pv,  Theta_pv,  alpha_pv,  g_inh)
-        phi_vip = _phi_scalar(I_vip, Theta_vip, alpha_vip, g_inh)
+        phi_som = _phi_capped_scalar(I_som, r_max_som, Theta_som, alpha_som, g_inh)
+        phi_pv  = _phi_capped_scalar(I_pv,  r_max_pv,  Theta_pv,  alpha_pv,  g_inh)
+        phi_vip = _phi_capped_scalar(I_vip, r_max_vip, Theta_vip, alpha_vip, g_inh)
 
         # Euler update: firing rates
         # Operation order matches reference exactly: dt_ms * (sum / tau_s)

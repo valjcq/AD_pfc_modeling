@@ -140,7 +140,7 @@ def run_ring_trials(
     """
     fit_cfg = cfg.fit_cfg
     if connectivity is None:
-        connectivity = RingConnectivity.from_params(ring_params)
+        connectivity = RingConnectivity.from_params(ring_params, params)
 
     means_trials: list[np.ndarray] = []
     cv_trials: list[float] = []
@@ -194,7 +194,7 @@ def run_bump_trial(
     """
     fit_cfg = cfg.fit_cfg
     if connectivity is None:
-        connectivity = RingConnectivity.from_params(ring_params)
+        connectivity = RingConnectivity.from_params(ring_params, params)
 
     onset_ms = fit_cfg.burn_in_ms
     stim = RingStimulus(
@@ -397,7 +397,7 @@ def turing_trace_bistability_loss(
         + params.J_adapt_pyr * dphi_pyr
         + ggaba * params.w_pe * dphi_pv * params.w_ep * dphi_pyr
     )
-    gain = G_eff * ring_params.w_pyr_pyr_inter
+    gain = G_eff * params.J_NMDA
 
     # Pick bump-supporting nodes from late-delay mean PYR and keep them fixed.
     late_mean_pyr = r_pyr[late_mask].mean(axis=0)
@@ -488,7 +488,7 @@ def evaluate_ring_params(
         (total_loss, ring_means, ko_means, breakdown)
     """
     # Pre-compute connectivity once for all ring simulations in this evaluation
-    connectivity = RingConnectivity.from_params(ring_params)
+    connectivity = RingConnectivity.from_params(ring_params, params)
 
     # --- Step 1: Ring baseline ---
     ok, ring_means, spatial_cv = run_ring_trials(params, ring_params, cfg, rng, connectivity=connectivity)
@@ -631,8 +631,9 @@ def build_ring_parametrization(
     Build a Nevergrad parametrization over CircuitParams + RingParams.
 
     Circuit parameters are handled exactly as in build_nevergrad_parametrization.
-    Ring parameters (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg) are appended
-    with a 'ring__' prefix to avoid name collisions.
+    Ring parameters (sigma_pyr_deg, sigma_som_deg) are appended with a 'ring__'
+    prefix to avoid name collisions. Connection strengths are derived from the
+    fitted local params (J_NMDA, w_pe, w_se) and are NOT optimised here.
     """
     freeze = freeze or set()
 
@@ -956,7 +957,7 @@ def nevergrad_optimize_ring(
         base_circuit: Starting point for CircuitParams
         circuit_bounds: Search bounds for CircuitParams
         base_ring: Starting point for RingParams
-        ring_bounds: Search bounds for ring parameters (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg)
+        ring_bounds: Search bounds for ring parameters (sigma_pyr_deg, sigma_som_deg)
         ring_cfg: Ring-specific fit configuration
         bump_target: Bump quality constraint (None = Mode 1, set = Mode 2)
         n_samples: Number of optimization steps
@@ -1228,10 +1229,9 @@ def _log_ring_candidate(path: str, step: int, cand: RingCandidate, target: Targe
             "beta2_ko":  cand.ko_means.beta2_ko.tolist()  if cand.ko_means.beta2_ko  is not None else None,
         },
         "ring_params": {
-            "w_pyr_pyr_inter": round(float(cand.ring_params.w_pyr_pyr_inter), 6),
-            "w_pv_global":     round(float(cand.ring_params.w_pv_global), 6),
-            "sigma_pyr_deg":   round(float(cand.ring_params.sigma_pyr_deg), 6),
-            "n_nodes":         cand.ring_params.n_nodes,
+            "sigma_pyr_deg": round(float(cand.ring_params.sigma_pyr_deg), 6),
+            "sigma_som_deg": round(float(cand.ring_params.sigma_som_deg), 6),
+            "n_nodes":       cand.ring_params.n_nodes,
         },
         "target": {
             "mean_r_pyr": target.mean_r_pyr,

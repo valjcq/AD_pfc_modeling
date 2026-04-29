@@ -2,18 +2,17 @@
 Ring attractor network parameters.
 
 This module contains the RingParams dataclass that defines the network
-geometry and inter-node connectivity for the ring attractor.
+geometry for the ring attractor. Inter-node connectivity row-sums are
+derived directly from the single-node fitted CircuitParams (J_NMDA, w_pe,
+w_se) via the row-sum normalisation principle — no additional ring-level
+free parameters are introduced for the connection strengths.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
-
-if TYPE_CHECKING:
-    from ..params import ParamBound
 
 
 @dataclass(frozen=True)
@@ -21,33 +20,29 @@ class RingParams:
     """
     Parameters for the ring attractor network.
 
-    The ring consists of N nodes arranged in a circle. Each node is a full
+    The ring consists of N nodes arranged on a circle. Each node is a full
     4-population local circuit (PYR, PV, SOM, VIP) with dynamics defined
-    by CircuitParams (from circuit_model).
+    by CircuitParams.
 
-    Inter-node connectivity:
-    - PYR→PYR: Local excitation with Gaussian profile (angular distance)
-    - PV→PYR: Global uniform inhibition of PYR (PV driven by local PYR, then inhibits PYR globally)
-    - SOM, VIP: Local only (no inter-node connections)
+    Inter-node connectivity (all row-sum normalised to fitted single-node scalars):
+    - PYR→PYR: Gaussian kernel INCLUDING diagonal; row-sum = J_NMDA (from local params)
+    - PV→PYR: Uniform all-to-all INCLUDING diagonal; row-sum = w_pe (from local params)
+    - SOM→PYR: Gaussian kernel with ZERO diagonal (purely lateral); row-sum = w_se (from local params)
+
+    The Gaussian widths are the only structural free parameters at the ring level.
 
     Attributes:
         n_nodes: Number of nodes on the ring (default: 64)
-        w_pyr_pyr_inter: Total inter-node PYR→PYR coupling strength
-            (row-sum normalized, independent of n_nodes)
-        sigma_pyr_deg: Width of Gaussian connectivity profile (degrees)
-        w_pv_global: Total inter-node PV→PYR global inhibition strength
-            (uniform all-to-all, independent of n_nodes)
+        sigma_pyr_deg: Width of Gaussian PYR→PYR kernel (degrees, default 15)
+        sigma_som_deg: Width of Gaussian SOM→PYR lateral kernel (degrees, default 15)
     """
-
-    # === Required inter-node connectivity (no defaults) ===
-    w_pyr_pyr_inter: float  # Total coupling strength (Gaussian profile)
-    w_pv_global: float  # Total global PV→PYR inhibition strength (uniform)
 
     # === Network geometry ===
     n_nodes: int = 64  # Number of nodes on ring (power of 2 recommended)
 
-    # === Inter-node PYR→PYR excitation ===
-    sigma_pyr_deg: float = 30.0  # Width of Gaussian (degrees), ~30-60 typical
+    # === Gaussian kernel widths (degrees) — only free structural parameters ===
+    sigma_pyr_deg: float = 15.0  # PYR→PYR Gaussian width
+    sigma_som_deg: float = 15.0  # SOM→PYR lateral Gaussian width
 
     # === Derived properties ===
     @property
@@ -62,8 +57,13 @@ class RingParams:
 
     @property
     def sigma_pyr_rad(self) -> float:
-        """PYR connectivity width in radians."""
+        """PYR→PYR connectivity width in radians."""
         return self.sigma_pyr_deg * np.pi / 180.0
+
+    @property
+    def sigma_som_rad(self) -> float:
+        """SOM→PYR lateral connectivity width in radians."""
+        return self.sigma_som_deg * np.pi / 180.0
 
     @property
     def node_angles_rad(self) -> np.ndarray:
@@ -89,38 +89,15 @@ class RingParams:
         return (node % self.n_nodes) * self.angular_spacing_rad
 
 
-def default_ring_bounds() -> "dict[str, ParamBound]":
+def default_ring_bounds() -> "dict[str, object]":
     """
-    Default search bounds for ring network parameters.
+    Default search bounds for ring network structural parameters.
 
-    Only covers the three optimizable scalar fields of RingParams.
-    n_nodes is fixed by the user and not optimized.
-
-    Units follow the W&W-grounded physical convention:
-    - w_pyr_pyr_inter: nA/Hz  (inter-node PYR→PYR Gaussian row-sum)
-    - w_pv_global:     nA/Hz  (uniform PV→PYR global inhibition)
-    - sigma_pyr_deg:   degrees (spatial width, unit-independent)
-
-    Working initialization (see params/init/network_ring_init.json):
-    - w_pyr_pyr_inter = 4e-3 nA/Hz
-    - w_pv_global     = 8e-3 nA/Hz
-    - sigma_pyr_deg   = 15°
-
-    These values are based on the W&W transfer function with A_x=1 (fixed),
-    I0_pyr=0.44 nA.
-
-    Turing window (analytical, 10× cue): [4.2e-3, 6.1e-3] nA/Hz for w_inter.
-    Global PV effectively raises the practical upper bound for w_inter, so
-    w_inter can safely reach ~1e-2 with w_pv balanced accordingly.
-
-    w_pv_global upper bound (3e-2) corresponds to near-silent regime where
-    inhibition suppresses all activity.
+    Only the Gaussian widths are optimisable at the ring level.
+    Connection strengths are derived from the single-node fitted CircuitParams.
     """
-    # Working WT solution: w_pyr_pyr_inter=0.0051, w_pv_global=0.027, sigma_pyr_deg=15.
-    # Tightened from [5e-4, 5] → [5e-4, 0.1] / [5e-4, 0.2]; sigma from [5, 60] → [5, 40].
     from ..params import ParamBound
     return {
-        "w_pyr_pyr_inter": ParamBound(lo=5e-4,  hi=0.1,  mode="log"),
-        "w_pv_global":     ParamBound(lo=5e-4,  hi=0.2,  mode="log"),
-        "sigma_pyr_deg":   ParamBound(lo=5.0,   hi=40.0, mode="lin"),
+        "sigma_pyr_deg": ParamBound(lo=5.0, hi=40.0, mode="lin"),
+        "sigma_som_deg": ParamBound(lo=5.0, hi=40.0, mode="lin"),
     }

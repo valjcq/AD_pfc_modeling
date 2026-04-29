@@ -15,9 +15,9 @@ import numpy as np
 from scipy.optimize import fsolve, brentq
 
 from .params import CircuitParams
-from .transfer import phi_wong_wang
+from .transfer import phi_wong_wang, phi_capped
 from .jacobian import compute_jacobian
-from .constants import R_MAX_PHYS, R_HIGH_MAX, GAMMA_NMDA, TAU_NMDA_MS
+from .constants import R_MAX_PHYS, R_HIGH_MAX, GAMMA_NMDA, TAU_NMDA_MS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
 
 
 @dataclass
@@ -72,18 +72,18 @@ def _phi_pyr(I: float, params: CircuitParams) -> float:
 
 
 def _phi_pv(I: float, params: CircuitParams) -> float:
-    """Transfer function for PV."""
-    return float(phi_wong_wang(I, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh))
+    """Transfer function for PV — with hyperbolic soft ceiling."""
+    return float(phi_capped(I, R_MAX_PV, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh))
 
 
 def _phi_som(I: float, params: CircuitParams) -> float:
-    """Transfer function for SOM."""
-    return float(phi_wong_wang(I, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh))
+    """Transfer function for SOM — with hyperbolic soft ceiling."""
+    return float(phi_capped(I, R_MAX_SOM, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh))
 
 
 def _phi_vip(I: float, params: CircuitParams) -> float:
-    """Transfer function for VIP."""
-    return float(phi_wong_wang(I, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh))
+    """Transfer function for VIP — with hyperbolic soft ceiling."""
+    return float(phi_capped(I, R_MAX_VIP, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh))
 
 
 def _solve_interneurons(r_pyr: float, params: CircuitParams) -> tuple[float, float, float]:

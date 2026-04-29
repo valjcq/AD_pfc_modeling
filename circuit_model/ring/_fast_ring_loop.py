@@ -36,6 +36,16 @@ def _phi_scalar(I: float, theta: float, c: float, g: float) -> float:
 
 
 @_njit(cache=True)
+def _phi_capped_scalar(I: float, r_max: float, theta: float, c: float, g: float) -> float:
+    """Hyperbolic soft ceiling applied to the Wong-Wang transfer function.
+
+    Used for interneurons: Phi_capped = r_max * Phi / (r_max + Phi).
+    """
+    phi = _phi_scalar(I, theta, c, g)
+    return r_max * phi / (r_max + phi)
+
+
+@_njit(cache=True)
 def _ring_euler_loop(
     r_stored: np.ndarray,          # (n_recorded, n_nodes, 4) — r_stored[0]=initial state
     i_adapt_stored: np.ndarray,    # (n_recorded, n_nodes, 2) — first slot=initial adaptation
@@ -47,29 +57,28 @@ def _ring_euler_loop(
     I_ext_som_arr: np.ndarray,
     I_ext_pv_arr: np.ndarray,
     I_ext_vip_arr: np.ndarray,
-    W_pyr_pyr: np.ndarray,
-    W_pv_pyr: np.ndarray,
+    W_pyr_pyr: np.ndarray,         # (n_nodes, n_nodes) — unified PYR→PYR; used as W @ S_pyr
+    W_pv_pyr: np.ndarray,          # (n_nodes, n_nodes) — uniform PV→PYR; W @ r_pv → denom
+    W_som_pyr: np.ndarray,         # (n_nodes, n_nodes) — lateral SOM→PYR; W @ r_som → subtr.
     n_steps: int,
     n_nodes: int,
     record_step: int,
     dt_ms: float,
-    noise_scale_pyr: float,        # = sigma_noise * I_ext_pyr (nA)
-    noise_scale_som: float,        # = sigma_noise * I_ext_som (nA)
-    noise_scale_pv: float,         # = sigma_noise * I_ext_pv (nA)
-    noise_scale_vip: float,        # = sigma_noise * I_ext_vip (nA)
+    noise_scale_pyr: float,
+    noise_scale_som: float,
+    noise_scale_pv: float,
+    noise_scale_vip: float,
     tau_s: float,
     ggaba: float,
-    J_NMDA: float,
     S_pyr_init: np.ndarray,    # (n_nodes,) — initial NMDA gating per node
-    w_pe: float,
-    w_se: float,
-    w_es: float,
-    w_vs: float,
-    w_ep: float,
-    w_pp: float,
-    w_sp: float,
-    w_vp: float,
-    w_ev: float,
+    # Local scalar weights (PV/SOM/VIP population inputs — unchanged from single node)
+    w_es: float,   # PYR→SOM
+    w_vs: float,   # VIP→SOM
+    w_ep: float,   # PYR→PV
+    w_pp: float,   # PV→PV self
+    w_sp: float,   # SOM→PV
+    w_vp: float,   # VIP→PV
+    w_ev: float,   # PYR→VIP
     J_adapt_pyr: float,
     tau_adapt_pyr: float,
     J_adapt_som: float,
@@ -84,32 +93,24 @@ def _ring_euler_loop(
     alpha_pv: float,
     Theta_vip: float,
     alpha_vip: float,
+    # Interneuron soft ceilings (Hz)
+    r_max_pv: float,
+    r_max_som: float,
+    r_max_vip: float,
 ) -> None:
     """Core Euler integration loop for ring simulations.
 
-    Uses O(n_nodes) working memory instead of O(n_steps * n_nodes): the working
-    state is kept in small arrays (r_curr, Iap_curr, Ias_curr) that fit in L1 cache,
-    and subsampled recordings are written directly into r_stored at every record_step
-    steps.  The full trajectory is never materialised, reducing both peak memory and
-    memory-bandwidth pressure.
+    Architecture (matches thesis §2.4):
+    - PYR NMDA drive   : (W_pyr_pyr @ S_pyr)[k] / denom  — unified kernel, NMDA-gated
+    - PV divisive denom: 1 + ggaba * (W_pv_pyr @ r_pv)[k] — all PV nodes in denominator
+    - SOM lateral inhib: ggaba * (W_som_pyr @ r_som)[k]  — purely lateral, subtractive
 
-    Parameters
-    ----------
-    r_stored : (n_recorded, n_nodes, 4) — written in-place; slot 0 must contain the
-        initial firing-rate state on entry.
-    i_adapt_stored : (n_recorded, n_nodes, 2) — written in-place; slot 0 must contain
-        the initial adaptation currents on entry.
-    r_final : (n_nodes, 4) — always overwritten with the state after the last step.
-    i_adapt_final : (n_nodes, 2) — always overwritten with the adaptation after the
-        last step.
-    noise_arr : (n_steps-1, n_nodes) — pre-drawn N(0,1) samples. Injected as an
-        additive current perturbation into each population: I_X += noise_scale_X * noise_arr[k, j].
-        The same xi sample is shared across populations at each node; only the scale differs.
-        Pass an all-zeros array to disable noise.
-    noise_scale_pyr/som/pv/vip : scalar (nA) = sigma_noise * I_ext_X. Each population's
-        noise amplitude is proportional to its own baseline external drive.
-    record_step : write a recording every record_step integration steps (>= 1).
-    n_steps : total number of time points including t=0 (loop runs n_steps-1 steps).
+    Loop order within each time step:
+    1. Extract rate vectors for the previous step.
+    2. Update ALL S_pyr values (using previous-step rates) — ensures the matrix
+       product uses a consistent S snapshot (correct Euler ordering).
+    3. Compute the three matrix products before the per-node inner loop.
+    4. Per-node inner loop: compute inputs, transfer function, Euler update.
     """
     # Initialise working state from the first (pre-filled) slot
     r_curr = np.empty((n_nodes, 4))
@@ -123,10 +124,13 @@ def _ring_euler_loop(
         Iap_curr[j] = i_adapt_stored[0, j, 0]
         Ias_curr[j] = i_adapt_stored[0, j, 1]
 
-    I_pyr_inter = np.zeros(n_nodes)
-    I_pv_inter = np.zeros(n_nodes)
-    r_pyr_k = np.zeros(n_nodes)
-    r_pv_k = np.zeros(n_nodes)
+    # Working arrays for rate vectors and pre-computed inter-node currents
+    r_pyr_k  = np.zeros(n_nodes)
+    r_pv_k   = np.zeros(n_nodes)
+    r_som_k  = np.zeros(n_nodes)
+    I_pyr_nmda = np.zeros(n_nodes)  # W_pyr_pyr @ S_pyr — unified NMDA numerator
+    I_pv_denom = np.zeros(n_nodes)  # W_pv_pyr  @ r_pv  — divisive PV denominator
+    I_som_lat  = np.zeros(n_nodes)  # W_som_pyr @ r_som — lateral SOM inhibition
     S_pyr_curr = np.zeros(n_nodes)
     for j in range(n_nodes):
         S_pyr_curr[j] = S_pyr_init[j]
@@ -134,14 +138,24 @@ def _ring_euler_loop(
     rec_i = 1  # next recording slot index
 
     for k in range(n_steps - 1):
-        # Build contiguous vectors for BLAS-backed dot products.
+        # === 1. Extract rate vectors (previous step) ===
         for j in range(n_nodes):
             r_pyr_k[j] = r_curr[j, 0]
-            r_pv_k[j] = r_curr[j, 2]
+            r_pv_k[j]  = r_curr[j, 2]
+            r_som_k[j] = r_curr[j, 1]
 
-        I_pyr_inter[:] = np.dot(W_pyr_pyr, r_pyr_k)
-        I_pv_inter[:] = np.dot(W_pv_pyr, r_pv_k)
+        # === 2. Update ALL S_pyr values using previous-step PYR rates ===
+        for j in range(n_nodes):
+            S_j = S_pyr_curr[j]
+            dS  = (-S_j + (1.0 - S_j) * GAMMA_NMDA * r_pyr_k[j]) * (dt_ms / TAU_NMDA_MS)
+            S_pyr_curr[j] = max(0.0, min(1.0, S_j + dS))
 
+        # === 3. Matrix products (all use previous-step quantities) ===
+        I_pyr_nmda[:] = np.dot(W_pyr_pyr, S_pyr_curr)   # unified NMDA numerator
+        I_pv_denom[:] = np.dot(W_pv_pyr,  r_pv_k)        # PV for divisive denominator
+        I_som_lat[:]  = np.dot(W_som_pyr, r_som_k)        # lateral SOM inhibition
+
+        # === 4. Per-node Euler update ===
         for j in range(n_nodes):
             r_pyr = r_curr[j, 0]
             r_som = r_curr[j, 1]
@@ -150,26 +164,26 @@ def _ring_euler_loop(
             Iap   = Iap_curr[j]
             Ias   = Ias_curr[j]
 
-            # NMDA gating update (before computing I_pyr_j)
-            S_pyr_j = S_pyr_curr[j]
-            dS = (-S_pyr_j + (1.0 - S_pyr_j) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
-            S_pyr_j = max(0.0, min(1.0, S_pyr_j + dS))
-            S_pyr_curr[j] = S_pyr_j
+            xi_j = noise_arr[k, j]
 
-            denom = 1.0 + ggaba * w_pe * r_pv
+            # Fully divisive PV denominator (local + inter-node all in denom)
+            denom = 1.0 + ggaba * I_pv_denom[j]
 
-            xi_j = noise_arr[k, j]  # shared noise sample at this node/step
             I_pyr_j = (
-                (J_NMDA * S_pyr_j) / denom
-                + I_pyr_inter[j]
-                - ggaba * I_pv_inter[j]
-                - ggaba * w_se * r_som
+                I_pyr_nmda[j] / denom           # unified NMDA drive (Gaussian incl. self)
+                - ggaba * I_som_lat[j]           # lateral SOM inhibition (subtractive)
                 - Iap
                 + I_ext_pyr_arr[k]
                 + I_stim_arr[k, j]
                 + noise_scale_pyr * xi_j
             )
-            I_som_j = w_es * r_pyr - w_vs * r_vip - Ias + I_ext_som_arr[k] + noise_scale_som * xi_j
+            I_som_j = (
+                w_es * r_pyr
+                - w_vs * r_vip
+                - Ias
+                + I_ext_som_arr[k]
+                + noise_scale_som * xi_j
+            )
             I_pv_j = (
                 w_ep * r_pyr
                 - ggaba * w_pp * r_pv
@@ -181,9 +195,9 @@ def _ring_euler_loop(
             I_vip_j = w_ev * r_pyr + I_ext_vip_arr[k] + noise_scale_vip * xi_j
 
             phi_pyr = _phi_scalar(I_pyr_j, Theta_pyr, alpha_pyr, g_exc)
-            phi_som = _phi_scalar(I_som_j, Theta_som, alpha_som, g_inh)
-            phi_pv  = _phi_scalar(I_pv_j,  Theta_pv,  alpha_pv,  g_inh)
-            phi_vip = _phi_scalar(I_vip_j, Theta_vip, alpha_vip, g_inh)
+            phi_som = _phi_capped_scalar(I_som_j, r_max_som, Theta_som, alpha_som, g_inh)
+            phi_pv  = _phi_capped_scalar(I_pv_j,  r_max_pv,  Theta_pv,  alpha_pv,  g_inh)
+            phi_vip = _phi_capped_scalar(I_vip_j, r_max_vip, Theta_vip, alpha_vip, g_inh)
 
             dr_pyr = (-r_pyr + phi_pyr) / tau_s
             dr_som = (-r_som + phi_som) / tau_s
