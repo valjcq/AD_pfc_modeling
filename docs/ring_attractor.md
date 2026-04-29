@@ -13,9 +13,9 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
   - [1. Network Architecture](#1-network-architecture)
   - [2. Inter-Node Connectivity](#2-inter-node-connectivity)
     - [2.1 Angular Distance](#21-angular-distance)
-    - [2.2 PYR $\\to$ PYR Excitation](#22-pyr-to-pyr-excitation)
+    - [2.2 PYR to PYR Excitation](#22-pyr-to-pyr-excitation)
       - [Inter-node excitatory input](#inter-node-excitatory-input)
-    - [2.3 PV $\\to$ PYR Global Inhibition](#23-pv-to-pyr-global-inhibition)
+    - [2.3 PV to PYR Global Inhibition](#23-pv-to-pyr-global-inhibition)
     - [2.4 Connectivity Parameters](#24-connectivity-parameters)
   - [3. Local Circuit Dynamics](#3-local-circuit-dynamics)
     - [3.1 NMDA Gating Variable](#31-nmda-gating-variable)
@@ -190,7 +190,7 @@ $$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}} + 
 
 ### 3.3 Weight Notation
 
-Weights follow the convention $w_{XY}$ = connection **from** population $X$ **to** population $Y$:
+Weights follow the convention $w_{XY}$ = connection **from** population $Y$ **to** population $X$:
 - e = PYR (excitatory), p = PV, s = SOM, v = VIP
 - Example: $w_{ep}$ = weight from PYR to PV
 - $J_{\text{NMDA}}$ is the recurrent PYR→PYR NMDA coupling strength (replaces the former $w_{ee}$)
