@@ -39,6 +39,9 @@ def _extract_component_values(breakdown: dict) -> dict[str, float]:
         "bistability": _getf("L_bistab", 0.0),
         "margin": _getf("L_margin", 0.0),
         "rate_high": _getf("L_rate_high", 0.0),
+        # Legacy/unused keys — kept at zero so comp_keys lookups don't KeyError
+        "physiology": 0.0,
+        "ceiling": 0.0,
     }
 
 
@@ -53,7 +56,7 @@ def _pretty_component_name(name: str) -> str:
         "bump": "Bump",
         "bistability": "Bistability",
         "margin": "Margin",
-        "rate_high": "Rate (high FP)",
+        "rate_high": "Rate high FP",
     }.get(name, name.replace("_", " ").title())
 
 
@@ -137,30 +140,33 @@ def plot_loss_evolution(
     total_losses = []
     comp_keys = [
         "rate", "ko", "jacobian", "turing", "ach_ratio", "spatial_uniformity",
-        "bump", "bistability", "margin", "physiology", "ceiling",
+        "bump", "bistability", "margin", "rate_high", "physiology", "ceiling",
     ]
     comp_lists = {k: [] for k in comp_keys}
-    
+
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
             entry = json.loads(line.strip())
             steps.append(entry['step'])
             total_losses.append(entry['loss'])
-            
+
             breakdown = entry.get('breakdown', {})
             comp_vals = _extract_component_values(breakdown)
             for k in comp_keys:
-                comp_lists[k].append(comp_vals[k])
-    
+                comp_lists[k].append(comp_vals.get(k, 0.0))
+
     steps = np.array(steps)
     total_losses = np.array(total_losses)
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
+    is_bistable = np.any(components.get("bistability", np.zeros(1)) > 0)
     active_names = [k for k in comp_keys if np.any(components[k] > 0)]
+    if is_bistable:
+        active_names = [k for k in active_names if k not in ("jacobian", "ko", "turing", "ach_ratio")]
     if not active_names:
         active_names = ["rate", "ko", "jacobian", "turing"]
-    
+
     # Create figure with subplots
     fig = plt.figure(figsize=figsize, dpi=dpi)
     
@@ -175,6 +181,7 @@ def plot_loss_evolution(
         'bump': '#17becf',
         'bistability': '#e377c2',
         'margin': '#bcbd22',
+        'rate_high': '#17becf',
         'physiology': '#7f7f7f',
         'ceiling': '#aec7e8',
         'total': '#000000',
@@ -303,27 +310,30 @@ def plot_loss_evolution_ratios(
     total_losses = []
     comp_keys = [
         "rate", "ko", "jacobian", "turing", "ach_ratio", "spatial_uniformity",
-        "bump", "bistability", "margin", "physiology", "ceiling",
+        "bump", "bistability", "margin", "rate_high", "physiology", "ceiling",
     ]
     comp_lists = {k: [] for k in comp_keys}
-    
+
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
             entry = json.loads(line.strip())
             steps.append(entry['step'])
             total_losses.append(entry['loss'])
-            
+
             breakdown = entry.get('breakdown', {})
             comp_vals = _extract_component_values(breakdown)
             for k in comp_keys:
-                comp_lists[k].append(comp_vals[k])
-    
+                comp_lists[k].append(comp_vals.get(k, 0.0))
+
     steps = np.array(steps)
     total_losses = np.array(total_losses)
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
+    is_bistable = np.any(components.get("bistability", np.zeros(1)) > 0)
     active_names = [k for k in comp_keys if np.any(components[k] > 0)]
+    if is_bistable:
+        active_names = [k for k in active_names if k not in ("jacobian", "ko", "turing", "ach_ratio")]
     if not active_names:
         active_names = ["rate", "ko", "jacobian", "turing"]
 
@@ -341,6 +351,7 @@ def plot_loss_evolution_ratios(
         'bump': '#17becf',
         'bistability': '#e377c2',
         'margin': '#bcbd22',
+        'rate_high': '#17becf',
         'physiology': '#7f7f7f',
         'ceiling': '#aec7e8',
     }

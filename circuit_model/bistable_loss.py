@@ -52,7 +52,7 @@ class BistableConfig:
     r_high_basin_hi_frac: float = 1.2   # upper bound = r_pyr_high_target × this
 
     # Nullcline peak constraint: penalises max(Φ) above this value
-    nullcline_peak_max: float = 200.0   # Hz — default 200 = effectively off
+    nullcline_peak_max: float = 80.0    # Hz
     w_peak: float = 0.0                 # default off (backward compatible)
 
     # Loss weights — bistability is the priority; rate matching is secondary

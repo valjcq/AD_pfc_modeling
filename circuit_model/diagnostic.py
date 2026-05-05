@@ -251,7 +251,7 @@ def compute_turing_gain_product(
     Parameters
     ----------
     circuit_params : CircuitParams
-    ring_params : RingParams (must have w_pyr_pyr_inter)
+    ring_params : RingParams
     r_pyr_grid : array of PYR firing rates (Hz) for interpolation output
 
     Returns
@@ -276,7 +276,7 @@ def compute_turing_gain_product(
         except ValueError:
             continue
         r_ss = np.array([r_eq, r_som, r_pv, r_vip])
-        gain = _turing_gain_at_ss(p, r_ss, ring_params.w_pyr_pyr_inter)
+        gain = _turing_gain_at_ss(p, r_ss, circuit_params.J_NMDA)
         eq_r_pyrs.append(r_eq)
         eq_gains.append(gain)
 
@@ -594,7 +594,7 @@ def compute_turing_gain_timecourse(
 
     gain_mean = np.zeros(n_t, dtype=float)
     gain_peak = np.zeros(n_t, dtype=float)
-    w_inter = ring_params.w_pyr_pyr_inter
+    w_inter = circuit_params.J_NMDA
 
     for t in range(n_t):
         rates_t = r[t]  # (n_nodes, 4)

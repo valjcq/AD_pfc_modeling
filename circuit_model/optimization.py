@@ -339,8 +339,6 @@ def nevergrad_optimize(
     seed: Optional[int],
     optimizer: str = "de",
     freeze: Optional[set[str]] = None,
-    early_stop_loss: Optional[float] = 1e-4,
-    plateau_patience: int = 5000,
     log_file: Optional[str] = None,
     log_interval: int = 50,
     save_best_json: Optional[str] = None,
@@ -396,138 +394,79 @@ def nevergrad_optimize(
         de_budget = 0
         print(f"Optimizer: {optimizer}")
 
-    plateau_start_step = de_budget + 1  # plateau only active after DE phase
-
     best: list[Candidate] = []
     last_step = 0
-    stopped_early = False
-    steps_since_improvement = 0
 
+    interrupted = False
     pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
-    for step in pbar:
-        last_step = step
+    try:
+        for step in pbar:
+            last_step = step
 
-        x = ng_optimizer.ask()
-        p = params_from_ng_dict(x.value, base)
-        sim_ran = False  # Track if simulation ran at this step
+            x = ng_optimizer.ask()
+            p = params_from_ng_dict(x.value, base)
+            sim_ran = False  # Track if simulation ran at this step
 
-        if bistable_cfg is not None:
-            # Bistable mode: use bistable loss directly with component breakdown
-            from .bistable_loss import bistable_loss as _bistable_loss
-            L, bistable_components = _bistable_loss(p, bistable_cfg, return_components=True)
-            L = float(L)
-            ko_means = KOMeans()
-
-            # Run simulation periodically (every 50 steps) to validate firing rates
-            if step % 50 == 0:
-                try:
-                    cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
-                    _, means_sim, ko_means, _ = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
-                    means = means_sim
-                    sim_ran = True
-                    pbar.write(f"[Step {step}] Simulation run: r_pyr={means[0]:.3f} Hz (loss={L:.4g})")
-                except Exception as e:
-                    pbar.write(f"[Step {step}] Simulation failed: {e}")
-                    means = np.full(4, np.nan)
-            else:
-                # No simulation at this step: use NaN to indicate "no data"
-                means = np.full(4, np.nan)
-
-            # For bistable mode, pass the detailed component breakdown dict
-            breakdown = bistable_components
-        else:
-            # Standard mode: simulate and compute loss
-            cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
-            L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
-            sim_ran = True  # Standard mode always simulates
-
-        ng_optimizer.tell(x, L)
-
-        prev_best_loss = best[0].loss if best else float("inf")
-        cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p, breakdown=breakdown, simulated=sim_ran)
-        if len(best) < top_k:
-            best.append(cand)
-            best.sort(key=lambda c: c.loss)
-        elif L < best[-1].loss:
-            best[-1] = cand
-            best.sort(key=lambda c: c.loss)
-
-        if best[0].loss < prev_best_loss:
-            steps_since_improvement = 0
-            # In bistable mode, log immediately when we find a new best (with firing rates if simulated)
-            if bistable_cfg is not None and log_file:
-                # Ensure best[0] has firing rates before logging
-                best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-                _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
-        elif step >= plateau_start_step:
-            steps_since_improvement += 1
-
-        # Update progress bar: show loss + firing rates (when available) + plateau counter (if enabled)
-        if bistable_cfg is not None:
-            # Bistable mode: show loss and PYR firing (when simulation was run)
-            postfix_dict = {"loss": f"{best[0].loss:.4g}" if best else "N/A"}
-            if best and not np.isnan(best[0].means[0]):
-                postfix_dict["pyr"] = f"{best[0].means[0]:.2f}"
-            elif best:
-                postfix_dict["pyr"] = "—"  # Indicate simulation not run yet
-            pbar.set_postfix(postfix_dict)
-        else:
-            # Standard mode: show loss + PYR firing rate
-            postfix_dict = {"loss": f"{best[0].loss:.4g}" if best else "N/A"}
-            if best:
-                postfix_dict["pyr"] = f"{best[0].means[0]:.2f}"
-            if plateau_patience > 0:
-                postfix_dict["plateau"] = steps_since_improvement
-            pbar.set_postfix(**postfix_dict)
-
-        if save_best_json and best and best[0].loss < prev_best_loss:
-            save_params_json(save_best_json, best[0].params)
-
-        if log_file and step % log_interval == 0 and best:
-            # In bistable mode, ensure firing rates are available before logging
-            best_to_log = best[0]
             if bistable_cfg is not None:
-                best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-            _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
-            # Generate loss evolution plots every log_interval steps
-            try:
-                _generate_loss_plots(log_file)
-            except Exception as e:
-                # Don't break optimization if plotting fails
-                pass
+                # Bistable mode: use bistable loss directly with component breakdown.
+                # We no longer run periodic simulation inside the main loop.
+                from .bistable_loss import bistable_loss as _bistable_loss
+                L, bistable_components = _bistable_loss(p, bistable_cfg, return_components=True)
+                L = float(L)
+                means = np.full(4, np.nan)
+                ko_means = KOMeans()
 
-        if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
-            if log_file:
+                # For bistable mode, pass the detailed component breakdown dict
+                breakdown = bistable_components
+            else:
+                # Standard mode: simulate and compute loss
+                cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
+                L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
+                sim_ran = True  # Standard mode always simulates
+
+            ng_optimizer.tell(x, L)
+
+            prev_best_loss = best[0].loss if best else float("inf")
+            cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p, breakdown=breakdown, simulated=sim_ran)
+            if len(best) < top_k:
+                best.append(cand)
+                best.sort(key=lambda c: c.loss)
+            elif L < best[-1].loss:
+                best[-1] = cand
+                best.sort(key=lambda c: c.loss)
+
+            if best[0].loss < prev_best_loss:
+                # In bistable mode, log immediately when we find a new best.
+                if bistable_cfg is not None and log_file:
+                    # Ensure best[0] has firing rates before logging
+                    best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
+                    _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
+
+            # Update progress bar: show best loss only
+            pbar.set_postfix({"loss": f"{best[0].loss:.4g}" if best else "N/A"})
+
+            if save_best_json and best and best[0].loss < prev_best_loss:
+                save_params_json(save_best_json, best[0].params)
+
+            if log_file and step % log_interval == 0 and best:
                 # In bistable mode, ensure firing rates are available before logging
                 best_to_log = best[0]
                 if bistable_cfg is not None:
                     best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
                 _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
+                # Generate loss evolution plots every log_interval steps
                 try:
                     _generate_loss_plots(log_file)
                 except Exception:
+                    # Don't break optimization if plotting fails
                     pass
-            stopped_early = True
-            break
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nOptimization interrupted by user (Ctrl+C). Finalizing best-so-far results...")
+    finally:
+        pbar.close()
 
-        if plateau_patience > 0 and steps_since_improvement >= plateau_patience:
-            print(f"\nEarly stop: no improvement for {plateau_patience} steps.")
-            if log_file and best:
-                # In bistable mode, ensure firing rates are available before logging
-                best_to_log = best[0]
-                if bistable_cfg is not None:
-                    best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-                _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
-                try:
-                    _generate_loss_plots(log_file)
-                except Exception:
-                    pass
-            stopped_early = True
-            break
-
-    pbar.close()
-
-    if log_file and best and (not stopped_early) and last_step % log_interval != 0:
+    if log_file and best and last_step % log_interval != 0:
         # In bistable mode, ensure firing rates are available before logging
         best_to_log = best[0]
         if bistable_cfg is not None:
@@ -537,6 +476,13 @@ def nevergrad_optimize(
             _generate_loss_plots(log_file)
         except Exception:
             pass
+
+    # Fill in firing rates for any top candidates that were found on non-simulation steps
+    if bistable_cfg is not None:
+        best = [_ensure_means_from_simulation(c, target, fit_cfg, rng) for c in best]
+
+    if interrupted and best:
+        print(f"Best-so-far loss after interruption: {best[0].loss:.4g}")
 
     return best
 

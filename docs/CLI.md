@@ -312,7 +312,7 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--no_adapt` | flag | `False` | Disable spike-frequency adaptation: sets `J_adapt_pyr=0` and `J_adapt_som=0` and freezes them. |
 | `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
 | `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
-| `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight (proxy for `w_pyr_pyr_inter` in single-node mode). |
+| `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight used only in the single-node analytical Turing approximation (diagnostic only; ring simulations derive this from `J_NMDA`). |
 | `--turing_cue_scale` | float | `0.4` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
 | `--ach_ratio_weight` | float | `2.0` | Weight of β2/α7 ACh current ratio penalty (0 = disabled). Penalises `I_beta2_som / I_alpha7_som` deviating from 35 (Koukouli et al. 2025). |
 
@@ -541,7 +541,7 @@ python -m circuit_model ring-asymmetry --delay_ms 8000 --n_trials 100 --n_worker
 python -m circuit_model ring-asymmetry \
     --conditions WT WT_APP a7_KO a7_KO_APP b2_KO b2_KO_APP \
     --n_trials 100 --n_workers 8 \
-    --w_pyr_pyr_inter 7 --sigma_pyr_deg 30 --w_pv_global 10 --no_show
+    --sigma_pyr_deg 20 --sigma_som_deg 15 --no_show
 ```
 
 ---
@@ -566,10 +566,9 @@ python -m circuit_model ring-burnin-stability [options]
 | `--n_workers` | auto | Number of parallel worker processes |
 | `--seed` | 42 | Base random seed |
 | `--no_show` | — | Suppress interactive plot display |
-| `--n_nodes` | from ring params JSON or `128` | Number of ring nodes |
-| `--w_pyr_pyr_inter` | from ring params JSON or `8.0` | PYR→PYR inter-node coupling |
-| `--sigma_pyr_deg` | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pv_global` | from ring params JSON or `10.0` | PV→PYR global inhibition strength |
+| `--n_nodes` | from ring params JSON or `64` | Number of ring nodes |
+| `--sigma_pyr_deg` | from ring params JSON or `15.0` | PYR→PYR Gaussian width (degrees) |
+| `--sigma_som_deg` | from ring params JSON or `15.0` | SOM→PYR lateral Gaussian width (degrees) |
 | `--params_json` | — | Load local circuit parameters from JSON |
 
 ### Outputs
@@ -623,14 +622,13 @@ python -m circuit_model ring-bump-decay-study [options]
 | `--ref_offset_ms` | `400.0` | Time after cue offset (ms) used as normalization reference |
 | `--n_trials` | `50` | Trials per condition × amplitude |
 | `--n_workers` | auto | Number of parallel worker processes |
-| `--w_inter_values` | — | Additional w_pyr_pyr_inter values for 2D heatmap sweep |
+| `--w_inter_values` | — | (Deprecated — no longer has effect) |
 | `--no_cache` | — | Ignore existing pickle cache and recompute |
 | `--seed` | 42 | Base random seed |
 | `--no_show` | — | Suppress interactive plot display |
-| `--n_nodes` | from ring params JSON or `128` | Number of ring nodes |
-| `--w_pyr_pyr_inter` | from ring params JSON or `8.0` | PYR→PYR inter-node coupling |
-| `--sigma_pyr_deg` | from ring params JSON or `30.0` | PYR→PYR connectivity width (degrees) |
-| `--w_pv_global` | from ring params JSON or `10.0` | PV→PYR global inhibition strength |
+| `--n_nodes` | from ring params JSON or `64` | Number of ring nodes |
+| `--sigma_pyr_deg` | from ring params JSON or `15.0` | PYR→PYR Gaussian width (degrees) |
+| `--sigma_som_deg` | from ring params JSON or `15.0` | SOM→PYR lateral Gaussian width (degrees) |
 | `--params_json` | — | Load local circuit parameters from JSON |
 
 ### How normalisation works
@@ -661,16 +659,15 @@ The `amp{X}/` subdirectory contains `w{W}/` sub-levels only when `--w_inter_valu
 ```bash
 # Standard run: WT vs WT_APP, 10 s delay, 50 trials, 7 amplitude levels
 python -m circuit_model ring-bump-decay-study \
-  --n_nodes 128 --w_pv_global 10 --w_pyr_pyr_inter 8 --sigma_pyr_deg 30 \
   --conditions WT WT_APP --amplitudes 10 15 20 25 30 35 40 --delay_ms 10000 --n_trials 50 --no_show
 
 # Quick smoke test: 2 amplitudes, 5 trials, short delay
 python -m circuit_model ring-bump-decay-study \
   --amplitudes 10 20 --delay_ms 3000 --n_trials 5 --no_show --no_cache
 
-# 2D heatmap sweep: vary w_inter alongside amplitude
+# Custom ring structure (widths only — strengths come from the circuit params JSON)
 python -m circuit_model ring-bump-decay-study \
-  --amplitudes 10 20 30 --w_inter_values 6 7 8 9 --n_trials 50 --no_show
+  --sigma_pyr_deg 20 --sigma_som_deg 10 --amplitudes 10 20 30 --n_trials 50 --no_show
 
 # Finer time bins (250 ms) with a longer reference offset
 python -m circuit_model ring-bump-decay-study \
@@ -681,7 +678,7 @@ python -m circuit_model ring-bump-decay-study \
 
 ## `ring-optimize`
 
-Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`w_pyr_pyr_inter`, `w_pv_global`, `sigma_pyr_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Knockout (KO) conditions are run on single-node by default (cheap) or on the ring (`--ko_on_ring`).
+Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`sigma_pyr_deg`, `sigma_som_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Connection strengths are **not free parameters** — they are derived from the fitted `CircuitParams` (see [ring_attractor.md §2](ring_attractor.md#row-sum-normalisation-principle)). Knockout (KO) conditions are run on single-node by default (cheap) or on the ring (`--ko_on_ring`).
 
 Primary mode:
 - Match ring resting firing rates to `TargetRates` with KO and structural penalties.
@@ -720,9 +717,8 @@ python -m circuit_model ring-optimize [options]
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--w_pyr_pyr_inter_lo/hi` | float | `1.0 / 30.0` | Search bounds for `w_pyr_pyr_inter` |
-| `--w_pv_global_lo/hi` | float | `0.5 / 20.0` | Search bounds for `w_pv_global` |
-| `--sigma_pyr_deg_lo/hi` | float | `10.0 / 60.0` | Search bounds for `sigma_pyr_deg` |
+| `--sigma_pyr_deg_lo/hi` | float | `5.0 / 40.0` | Search bounds for `sigma_pyr_deg` (°) |
+| `--sigma_som_deg_lo/hi` | float | `5.0 / 40.0` | Search bounds for `sigma_som_deg` (°) |
 
 #### Optimization settings
 
@@ -804,7 +800,7 @@ python -m circuit_model ring-optimize [options]
 ```
 ring_optim_output/
 ├── best_circuit_params.json   # Best CircuitParams (same format as optimize command)
-└── best_ring_params.json      # Best RingParams (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg, n_nodes)
+└── best_ring_params.json      # Best RingParams (sigma_pyr_deg, sigma_som_deg, n_nodes)
 ```
 
 ### Loss structure

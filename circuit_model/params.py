@@ -80,11 +80,7 @@ class CircuitParams:
     w_ev: float = 0.002   # PYR -> VIP: Disinhibitory drive
 
     # --- Connections FROM PV (inhibitory, perisomatic / DIVISIVE) ---
-    # w_pe enters as denominator: denom = 1 + g_gaba * w_pe * r_pv.
-    # Meaningful shunting requires g_gaba * w_pe * r_pv ~ 0.2–1.
-    # At r_pv ~ 4 Hz, g_gaba ~ 1: w_pe ~ 0.05–0.25 nA/Hz (much larger than additive weights).
-    # Default set to 0.05 so the J[PYR,PV] connectivity threshold is met at baseline.
-    w_pe: float = 0.05    # PV -> PYR: Perisomatic shunting inhibition
+    w_pe: float = 0.002   # PV -> PYR: Perisomatic shunting inhibition
     w_pp: float = 0.002   # PV -> PV:  Self-inhibition
 
     # --- Connections FROM SOM (inhibitory, dendritic / subtractive) ---
@@ -101,27 +97,20 @@ class CircuitParams:
     # Each population receives baseline + receptor-mediated currents
 
     # --- PYR external input ---
-    # I0_pyr must be > Theta_e ≈ 0.403 nA so PYR operates above threshold.
-    # Working init: I_syn* ≈ 0.428 nA  (= I0_pyr - 0.012 nA from small weight contributions)
-    # Chosen at z≈1.2 (30% below W&W asymptote) to give a 30% Turing window for the ring.
     I0_pyr: float = 0.44   # Baseline tonic drive (nA)
 
     # --- PV external input ---
-    # I0_pv must be > Theta_i ≈ 0.288 nA.
-    # Working init: I_syn* ≈ 0.338 nA  (= I0_pv - 0.012 nA)
     I0_pv: float = 0.35            # Baseline tonic drive (nA)
-    I_alpha7_pv: float = 0.0       # alpha7 nAChR current (nA); 0 at baseline, fitted for ACh condition
+    I_alpha7_pv: float = 0.20      # alpha7 nAChR current (nA)
 
     # --- SOM external input ---
-    # Working init: I_syn* ≈ 0.355 nA  (= I0_som + 0.005 nA)
     I0_som: float = 0.35           # Baseline tonic drive (nA)
-    I_alpha7_som: float = 0.0      # alpha7 nAChR current (nA)
-    I_beta2_som: float = 0.0       # beta2 nAChR current (nA)
+    I_alpha7_som: float = 0.20     # alpha7 nAChR current (nA)
+    I_beta2_som: float = 0.20      # beta2 nAChR current (nA)
 
     # --- VIP external input ---
-    # Working init: I_syn* ≈ 0.347 nA  (= I0_vip + 0.017 nA)
-    I0_vip: float = 0.33           # Baseline tonic drive (nA)
-    I_alpha5_vip: float = 0.0      # alpha5 nAChR current (nA)
+    I0_vip: float = 0.35           # Baseline tonic drive (nA)
+    I_alpha5_vip: float = 0.20     # alpha5 nAChR current (nA)
 
     # =========================================================================
     # RECEPTOR ACTIVATION MULTIPLIERS (for knockout experiments)
@@ -134,11 +123,11 @@ class CircuitParams:
     # =========================================================================
     # TRANSIENT CURRENT TIMING (for time-varying stimulation)
     # =========================================================================
-    # When trans_enabled=True, a transient current = trans_factor * I0_pop is applied
-    # to ALL populations during [trans_start_ms, trans_start_ms + trans_duration_ms)
-    # trans_factor is a multiplier (e.g., 0.2 means +20% of baseline I0)
+    # When trans_enabled=True, a transient current = trans_factor * I0_pyr is applied
+    # to PYR ONLY during [trans_start_ms, trans_start_ms + trans_duration_ms)
+    # trans_factor is a multiplier (e.g., 0.2 means +20% of PYR's baseline I0)
     # A second independent transient (trans2_*) can be enabled separately.
-    trans_factor: float = 0.2          # Transient as fraction of each population's I0
+    trans_factor: float = 0.2          # Transient as fraction of PYR's I0
     trans_start_ms: float = 1000.0     # When transient starts (ms)
     trans_duration_ms: float = 500.0   # Duration of transient pulse (ms)
     trans_enabled: bool = False        # Whether to use time-dependent transient
@@ -205,9 +194,8 @@ class CircuitParams:
         return self.I0_pv + self.act_alpha7 * self.I_alpha7_pv
 
     def I_ext_pv_at_time(self, t_ms: float) -> float:
-        """Total external current to PV at time t_ms (with transients if enabled)."""
-        delta = self._transient_delta(t_ms)
-        return self.I0_pv + self.act_alpha7 * self.I_alpha7_pv + delta * self.I0_pv
+        """Total external current to PV (transient is PYR-only, so always static)."""
+        return self.I_ext_pv()
 
     def I_ext_som(self) -> float:
         """Total external current to SOM (with alpha7 and beta2 modulation, no transient)."""
@@ -218,23 +206,16 @@ class CircuitParams:
         )
 
     def I_ext_som_at_time(self, t_ms: float) -> float:
-        """Total external current to SOM at time t_ms (with transients if enabled)."""
-        delta = self._transient_delta(t_ms)
-        return (
-            self.I0_som
-            + self.act_alpha7 * self.I_alpha7_som
-            + self.act_beta2 * self.I_beta2_som
-            + delta * self.I0_som
-        )
+        """Total external current to SOM (transient is PYR-only, so always static)."""
+        return self.I_ext_som()
 
     def I_ext_vip(self) -> float:
         """Total external current to VIP (with alpha5 modulation, no transient)."""
         return self.I0_vip + self.act_alpha5 * self.I_alpha5_vip
 
     def I_ext_vip_at_time(self, t_ms: float) -> float:
-        """Total external current to VIP at time t_ms (with transients if enabled)."""
-        delta = self._transient_delta(t_ms)
-        return self.I0_vip + self.act_alpha5 * self.I_alpha5_vip + delta * self.I0_vip
+        """Total external current to VIP (transient is PYR-only, so always static)."""
+        return self.I_ext_vip()
 
 
 @dataclass(frozen=True)
@@ -245,7 +226,7 @@ class ParamBound:
     mode: Literal["lin", "log"] = "log"
 
 
-def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
+def default_bounds(base: CircuitParams, w_hi: float | None = None) -> dict[str, ParamBound]:
     """
     Define search bounds for each optimizable parameter.
 
@@ -263,75 +244,56 @@ def default_bounds(base: CircuitParams) -> dict[str, ParamBound]:
     - Theta_e = 125/310 ≈ 0.403 nA  (PYR threshold)
     - Theta_i = 177/615 ≈ 0.288 nA  (PV/SST/VIP threshold)
 
-    Working init: I_syn* ≈ 0.49 nA (PYR), 0.34–0.36 nA (interneurons).
-    All I0_x lower bounds are set ABOVE the W&W threshold so the network
-    is never initialised in the silent (below-threshold) regime.
     """
     b: dict[str, ParamBound] = {}
 
     # --- Time constants (ms) — tau_s fixed at 20 ms, not optimised ---
-    # Working WT solution: tau_adapt_pyr=600, tau_adapt_som=150.
+    # We would set it to : tau_adapt_pyr=600, tau_adapt_som=150.
     b["tau_adapt_pyr"] = ParamBound(200.0, 1200.0, mode="log")
     b["tau_adapt_som"] = ParamBound(20.0, 300.0, mode="log")
 
     # --- Adaptation strengths (nA/Hz) ---
-    # Working WT solution: J_adapt_pyr=0.002, J_adapt_som~0.001. Tightened upper bound.
     b["J_adapt_pyr"] = ParamBound(0.001, 0.2, mode="log")
     b["J_adapt_som"] = ParamBound(0.001, 0.2, mode="lin")
 
     # --- GABA modulation (dimensionless) ---
-    # Working WT solution: g_gaba_base=1.0, g_alpha7~0. Tightened from [0.5,20] and [0,20].
-    b["g_gaba_base"] = ParamBound(0.5, 5.0, mode="lin")
-    b["g_alpha7"]    = ParamBound(0.0, 5.0, mode="lin")
+    b["g_gaba_base"] = ParamBound(0.1, 5.0, mode="lin")
+    b["g_alpha7"]    = ParamBound(0.1, 5.0, mode="lin")
 
     # --- Synaptic weights (nA/Hz) ---
-    # Bounds tightened 2026-04-13 based on Monte Carlo viable region analysis (4.07% → target 15%+).
-    # Previous uniform [0, 0.5] for all synaptic weights created 96% dead zone above best-fit values.
-    # New strategy: set lower bound = 0.001 nA/Hz (neuronal noise floor), upper bound = 3× best-fit (or 0.5 if already large).
-    # Best-fit reference from best_params.json WT solution:
-    #   Small weights (< 0.06): w_ep=0.0043, w_ev=0.0009, w_sp=0.0528, w_vp=0.0919, w_vs=0.3405
-    #   Medium weights (0.06–0.5): w_se=0.4877, w_es=0.0353, w_pp=0.3616
-    #   Divisive w_pe=0.0267
-    # J_NMDA (recurrent): larger bounds [0.05, 2.0] due to gating saturation.
-    _W_LO = 0.001  # Lower bound: biological noise floor
+    _W_LO = 0.001  # Lower bound: small but nonzero.
+    # We also use jacobian loss to ensure the connection isn't nothing between each populations.
 
-    # Small excitatory weights with tightened upper bounds
-    b["w_ep"]  = ParamBound(0.001, 0.10, mode="log")   # 3× best-fit 0.0043
-    b["w_ev"]  = ParamBound(0.0005, 0.02, mode="log")  # best-fit 0.000935 requires lower_min=0.0005 (half of best-fit), upper=3×best-fit≈0.003, rounded to 0.02
-    b["w_sp"]  = ParamBound(0.001, 0.15, mode="log")   # 3× best-fit 0.0528
-    b["w_vp"]  = ParamBound(0.001, 0.25, mode="log")   # 3× best-fit 0.0919
-    b["w_vs"]  = ParamBound(0.001, 0.5,  mode="log")   # 3× best-fit 0.3405
+    _W_HI = w_hi if w_hi is not None else 0.01  # Upper bound: tightened for bistable regime search
 
-    # Larger weights: add lower bound minimum, keep upper at 0.5
-    b["w_se"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.4877 — already near ceiling
-    b["w_es"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.0353
-    b["w_pp"]  = ParamBound(_W_LO, 0.5, mode="log")    # best-fit 0.3616
+    # Synaptic weights capped at 0.01 nA/Hz
+    b["w_ep"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_ev"]  = ParamBound(_W_LO, _W_HI, mode="log")
+    b["w_sp"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_vp"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_vs"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_se"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_es"]  = ParamBound(_W_LO,  _W_HI, mode="log")
+    b["w_pp"]  = ParamBound(_W_LO,  _W_HI, mode="log")
 
     # J_NMDA: NMDA recurrent coupling with wider bounds due to gating saturation
     b["J_NMDA"] = ParamBound(0.05, 2.0, mode="log")
 
     # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
-    # Working WT solution: w_pe=0.0267. Lower bound tightened from 0 → 0.001; upper kept at 1.0.
-    b["w_pe"] = ParamBound(_W_LO, 1.0, mode="log")
+    b["w_pe"] = ParamBound(_W_LO, _W_HI, mode="log")
 
     # --- External tonic drives (nA) ---
-    # Working WT solution: I0_pyr=0.530, I0_pv=0.480, I0_som=0.528, I0_vip=0.198.
-    # Tightened 2026-04-13: I0_pv was at 92% of range [0.1, 0.6] (norm_pos=0.917), causing 96% waste below.
-    # APP solution: I0_pyr=0.435, I0_inh=0.255–0.265. Tightened from [0.01, 2.0] → [0.1, 0.8].
-    b["I0_pyr"] = ParamBound(0.1, 1.5, mode="lin")
-    b["I0_pv"]  = ParamBound(0.30, 0.65, mode="lin")  # Raise lower bound; extend upper 15% above best-fit 0.480
-    b["I0_som"] = ParamBound(0.1, 0.6, mode="lin")
-    b["I0_vip"] = ParamBound(0.1, 0.6, mode="lin")
-
-    # Transient stimulus (dimensionless fraction of I0_pyr), centered near working init 0.2.
-    b["trans_factor"] = ParamBound(0.0, 1.0, mode="lin")  # TODO: Remove from optimization (not a circuit parameter, but a stimulus parameter used for testing transient response)
+    # We set the same lower bound of 0.01 nA for all I0_x and the same upper bound of 0.6 nA for interneurons
+    # Pyr have higher upper bound as we consider that it can receive stronger external drive (e.g., from other brain areas) than interneurons.
+    b["I0_pyr"] = ParamBound(0.01, 1.5, mode="lin")
+    b["I0_pv"]  = ParamBound(0.01, 0.6, mode="lin") 
+    b["I0_som"] = ParamBound(0.01, 0.6, mode="lin")
+    b["I0_vip"] = ParamBound(0.01, 0.6, mode="lin")
 
     # --- nAChR cholinergic currents (nA) ---
-    # These add to I0_x; should be comparable fraction of (I0_x - Theta_x).
-    # Working init is 0 for all receptor-mediated currents. Tightened from [0, 2] → [0, 0.5].
-    b["I_alpha7_pv"]  = ParamBound(0.0, 0.5, mode="lin")
-    b["I_alpha7_som"] = ParamBound(0.0, 0.5, mode="lin")
-    b["I_beta2_som"]  = ParamBound(0.0, 0.5, mode="lin")
-    b["I_alpha5_vip"] = ParamBound(0.0, 0.5, mode="lin")
+    b["I_alpha7_pv"]  = ParamBound(0.01, 0.5, mode="lin")
+    b["I_alpha7_som"] = ParamBound(0.01, 0.5, mode="lin")
+    b["I_beta2_som"]  = ParamBound(0.01, 0.5, mode="lin")
+    b["I_alpha5_vip"] = ParamBound(0.01, 0.5, mode="lin")
 
     return b

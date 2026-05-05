@@ -27,7 +27,7 @@ class RingParams:
     Inter-node connectivity (all row-sum normalised to fitted single-node scalars):
     - PYR→PYR: Gaussian kernel INCLUDING diagonal; row-sum = J_NMDA (from local params)
     - PV→PYR: Uniform all-to-all INCLUDING diagonal; row-sum = w_pe (from local params)
-    - SOM→PYR: Gaussian kernel with ZERO diagonal (purely lateral); row-sum = w_se (from local params)
+    - SOM→PYR: Gaussian/uniform kernel (lateral) or local-only diagonal; row-sum = w_se (from local params)
 
     The Gaussian widths are the only structural free parameters at the ring level.
 
@@ -35,6 +35,9 @@ class RingParams:
         n_nodes: Number of nodes on the ring (default: 64)
         sigma_pyr_deg: Width of Gaussian PYR→PYR kernel (degrees, default 15)
         sigma_som_deg: Width of Gaussian SOM→PYR lateral kernel (degrees, default 15)
+        som_pattern: SOM→PYR connectivity pattern: "gaussian" (annular surround, default),
+                     "uniform" (flat all-to-all with zero diagonal, same row-sum w_se), or
+                     "none" (local only — diagonal matrix, no inter-node connections)
     """
 
     # === Network geometry ===
@@ -42,7 +45,10 @@ class RingParams:
 
     # === Gaussian kernel widths (degrees) — only free structural parameters ===
     sigma_pyr_deg: float = 15.0  # PYR→PYR Gaussian width
-    sigma_som_deg: float = 15.0  # SOM→PYR lateral Gaussian width
+    sigma_som_deg: float = 15.0  # SOM→PYR annular ring half-width (peak at 2*sigma_pyr)
+
+    # === SOM connectivity pattern ===
+    som_pattern: str = "gaussian"  # "gaussian" (annular surround), "uniform" (all-to-all, zero diagonal), or "none" (local only)
 
     # === Derived properties ===
     @property
@@ -99,5 +105,5 @@ def default_ring_bounds() -> "dict[str, object]":
     from ..params import ParamBound
     return {
         "sigma_pyr_deg": ParamBound(lo=5.0, hi=40.0, mode="lin"),
-        "sigma_som_deg": ParamBound(lo=5.0, hi=40.0, mode="lin"),
+        "sigma_som_deg": ParamBound(lo=5.0, hi=60.0, mode="lin"),
     }

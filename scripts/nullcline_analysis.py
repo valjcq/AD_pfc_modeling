@@ -383,7 +383,7 @@ def save_nullcline_json(circuit, r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F,
     print(f"Saved JSON: {out}")
 
 
-def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path(".")):
+def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path("."), no_show=False):
     """Plot 2-panel nullcline analysis for a single condition."""
     # Compute nullcline with extended sweep to [0, 250] Hz to capture all stable FPs
     r_pyr_sweep = np.linspace(0, 250, 1500)
@@ -419,19 +419,17 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
     save_nullcline_json(circuit, r_pyr_sweep, phi_pyr, r_som, r_pv, r_vip, F,
                         fixed_points, condition, params_stem, params_dir)
 
-    # Create 2-panel figure
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    # Single-panel figure: PYR nullcline only
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    # Subplot 1: PYR nullcline
-    ax = axes[0]
     ax.plot(r_pyr_sweep, phi_pyr, 'b-', linewidth=2.5, label='Phi_PYR(I_net)')
     ax.plot(r_pyr_sweep, r_pyr_sweep, 'k--', linewidth=1.5, alpha=0.5, label='Identity line')
 
     # Shade region above R_MAX_PHYS (clamp artifacts)
     ax.axvspan(R_MAX_PHYS, r_pyr_sweep.max(), alpha=0.15, color='gray', label='Clamp artifact region')
     ax.axvline(R_MAX_PHYS, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
-    ax.text(R_MAX_PHYS + 5, 250, f'R_MAX_PHYS\n({R_MAX_PHYS:.0f} Hz)', fontsize=9, color='red',
-           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, pad=0.3))
+    ax.text(R_MAX_PHYS + 5, r_pyr_sweep.max() * 0.92, f'R_MAX_PHYS\n({R_MAX_PHYS:.0f} Hz)',
+            fontsize=9, color='red', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, pad=0.3))
 
     # Mark stable fixed points (filled green)
     for r_fp, _ in stable_fps:
@@ -459,40 +457,23 @@ def plot_single_condition(circuit, args, params_stem, condition, params_dir=Path
     ax.set_ylim(0, x_limit)
     ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
     ax.set_ylabel('Phi_PYR(I_net) (Hz)', fontsize=11, fontweight='bold')
-    ax.set_title(f'PYR Nullcline — {condition}', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=9, loc='upper left')
     ax.text(0.98, 0.97, regime, transform=ax.transAxes, fontsize=13,
            fontweight='bold', verticalalignment='top', horizontalalignment='right',
            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8, pad=0.5))
 
-    # Subplot 2: Interneuron steady states
-    ax = axes[1]
-    ax.plot(r_pyr_sweep, r_pv, 'r-', linewidth=2.5, label='r_PV')
-    ax.plot(r_pyr_sweep, r_som, 'orange', linewidth=2.5, label='r_SOM')
-    ax.plot(r_pyr_sweep, r_vip, 'purple', linewidth=2.5, label='r_VIP')
-
-    # Mark fixed point locations
-    for r_fp, _ in fixed_points:
-        ax.axvline(r_fp, color='gray', linestyle=':', alpha=0.4, linewidth=1.5)
-
-    ax.set_xlim(0, x_limit)
-    ax.set_xlabel('r_PYR (Hz)', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Interneuron rate (Hz)', fontsize=11, fontweight='bold')
-    ax.set_title('Interneuron Steady States', fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=10)
-
-    fig.suptitle(f'Single-Node Nullcline Analysis — {params_stem}',
-                fontsize=14, fontweight='bold')
-    fig.subplots_adjust(top=0.93, left=0.08, right=0.98, wspace=0.35)
+    fig.suptitle(f'PYR Nullcline — {condition} — {params_stem}', fontsize=13, fontweight='bold', y=0.98)
+    fig.subplots_adjust(top=0.90, left=0.12, right=0.97, bottom=0.12)
     out = params_dir / f'nullcline_{condition}_{params_stem}.png'
     fig.savefig(out, dpi=150)
     print(f"Saved: {out}")
-    plt.show()
+    if not no_show:
+        plt.show()
+    plt.close(fig)
 
 
-def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
+def plot_all_conditions(params_dict, params_stem, params_dir=Path("."), no_show=False):
     """Plot PYR nullclines for all 4 conditions on one figure and save JSON for each."""
     conditions = ['WT', 'alpha7KO', 'beta2KO', 'alpha5KO']
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -571,7 +552,9 @@ def plot_all_conditions(params_dict, params_stem, params_dir=Path(".")):
     out = params_dir / f'nullcline_all_conditions_{params_stem}.png'
     fig.savefig(out, dpi=150)
     print(f"\nSaved: {out}")
-    plt.show()
+    if not no_show:
+        plt.show()
+    plt.close(fig)
 
 
 def main():
@@ -591,6 +574,8 @@ Examples:
                         help='Condition to analyze (default: WT)')
     parser.add_argument('--all_conditions', action='store_true',
                         help='Plot all 4 conditions on one figure')
+    parser.add_argument('--no_show', action='store_true',
+                        help='Do not call plt.show() (for batch runs)')
     args = parser.parse_args()
 
     # Load JSON
@@ -611,11 +596,11 @@ Examples:
     print(f"{'='*60}")
 
     if args.all_conditions:
-        plot_all_conditions(params_dict, params_stem, params_dir)
+        plot_all_conditions(params_dict, params_stem, params_dir, no_show=args.no_show)
     else:
         circuit = SingleNodeCircuit(params_dict)
         circuit.set_condition(args.condition)
-        plot_single_condition(circuit, args, params_stem, args.condition, params_dir)
+        plot_single_condition(circuit, args, params_stem, args.condition, params_dir, no_show=args.no_show)
 
 
 if __name__ == '__main__':

@@ -1136,6 +1136,7 @@ def plot_ring_dashboard(
 
 def plot_ring_connectome(
     ring_params,
+    local_params=None,
     ax=None,
     n_highlight: int = 8,
     excit_color: str = "#D62728",
@@ -1166,6 +1167,9 @@ def plot_ring_connectome(
     from matplotlib.collections import LineCollection
     from matplotlib.lines import Line2D
     from .connectivity import build_pyr_pyr_weights, build_pv_pyr_weights
+    if local_params is None:
+        from ..params import CircuitParams
+        local_params = CircuitParams()
 
     n = ring_params.n_nodes
     angles = ring_params.node_angles_rad
@@ -1175,8 +1179,8 @@ def plot_ring_connectome(
     y = np.cos(angles)
 
     # Build weight matrices
-    W_exc = build_pyr_pyr_weights(ring_params)
-    W_inh = build_pv_pyr_weights(ring_params)
+    W_exc = build_pyr_pyr_weights(ring_params, local_params)
+    W_inh = build_pv_pyr_weights(ring_params, local_params)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -3240,52 +3244,74 @@ def _ols_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
 
 def plot_connectivity_matrices(
     ring_params,
+    local_params=None,
     save_path: Optional[str] = None,
 ) -> "plt.Figure":
     """
-    Plot PYR→PYR and PV→PYR weight matrices + row-0 weight profile.
+    Plot PYR→PYR, PV→PYR and SOM→PYR weight matrices + row-0 weight profiles.
 
     Returns the matplotlib Figure.
     """
     import matplotlib.pyplot as plt
-    from .connectivity import build_pyr_pyr_weights, build_pv_pyr_weights
+    from .connectivity import build_pyr_pyr_weights, build_pv_pyr_weights, build_som_pyr_weights
+    if local_params is None:
+        from ..params import CircuitParams
+        local_params = CircuitParams()
 
-    W_exc = build_pyr_pyr_weights(ring_params)
-    W_inh = build_pv_pyr_weights(ring_params)
+    W_exc = build_pyr_pyr_weights(ring_params, local_params)
+    W_pv  = build_pv_pyr_weights(ring_params, local_params)
+    W_som = build_som_pyr_weights(ring_params, local_params)
 
     n = ring_params.n_nodes
     angles_deg = ring_params.node_angles_deg  # shape (n,)
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(21, 5))
 
-    pyr_label = f"w_pyr_inter={ring_params.w_pyr_pyr_inter}, σ_pyr={ring_params.sigma_pyr_deg:.1f}°"
     fig.suptitle(
-        f"Ring connectivity  |  N={n},  {pyr_label},  w_pv_global={ring_params.w_pv_global}",
+        f"Ring connectivity  |  N={n},  σ_pyr={ring_params.sigma_pyr_deg:.1f}°,  σ_som={ring_params.sigma_som_deg:.1f}°",
         fontsize=11,
     )
 
     ax = axes[0]
     im = ax.imshow(W_exc, aspect="auto", origin="lower", cmap="Reds")
     plt.colorbar(im, ax=ax, label="Weight $W_{ij}$")
-    ax.set_title("PYR → PYR (excitatory inter-node)")
+    ax.set_title(f"PYR → PYR\n(Gaussian, σ={ring_params.sigma_pyr_deg:.1f}°, incl. diagonal)")
     ax.set_xlabel("Source node j")
     ax.set_ylabel("Target node i")
 
     ax = axes[1]
-    im = ax.imshow(W_inh, aspect="auto", origin="lower", cmap="Blues")
+    im = ax.imshow(W_pv, aspect="auto", origin="lower", cmap="Blues")
     plt.colorbar(im, ax=ax, label="Weight $W_{ij}$")
-    ax.set_title("PV → PYR (inhibitory inter-node)")
+    ax.set_title("PV → PYR\n(uniform, all-to-all)")
     ax.set_xlabel("Source node j")
     ax.set_ylabel("Target node i")
 
     ax = axes[2]
+    im = ax.imshow(W_som, aspect="auto", origin="lower", cmap="Greens")
+    plt.colorbar(im, ax=ax, label="Weight $W_{ij}$")
+    _som_pattern = ring_params.som_pattern
+    if _som_pattern == "gaussian":
+        _mu_deg = 3.0 * ring_params.sigma_pyr_deg
+        _som_title = f"SOM → PYR\n(annular Gaussian, μ={_mu_deg:.1f}°, σ={ring_params.sigma_som_deg:.1f}°, zero diag)"
+    elif _som_pattern == "uniform":
+        _som_title = f"SOM → PYR\n(uniform outside, σ_hole=2×{ring_params.sigma_som_deg:.1f}°={2*ring_params.sigma_som_deg:.1f}°, zero diag)"
+    elif _som_pattern == "none":
+        _som_title = "SOM → PYR\n(local only, diagonal)"
+    else:
+        _som_title = f"SOM → PYR\n({_som_pattern})"
+    ax.set_title(_som_title)
+    ax.set_xlabel("Source node j")
+    ax.set_ylabel("Target node i")
+
+    ax = axes[3]
     ax.plot(angles_deg, W_exc[0], color="#D62728", label="PYR→PYR (exc)")
-    ax.plot(angles_deg, -W_inh[0], color="#1F77B4", label="-PV→PYR (inh)")
+    ax.plot(angles_deg, -W_pv[0],  color="#1F77B4", label="-PV→PYR (inh)")
+    ax.plot(angles_deg, -W_som[0], color="#2CA02C", label="-SOM→PYR (lat. inh)", linestyle="--")
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_title("Weight profile (row 0)")
     ax.set_xlabel("Source node angle (°)")
     ax.set_ylabel("Weight from node 0")
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.set_xlim(0, 360)
     from matplotlib.ticker import MaxNLocator, AutoMinorLocator
     ax.yaxis.set_major_locator(MaxNLocator(nbins=10))

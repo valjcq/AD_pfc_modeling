@@ -433,7 +433,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.enable_transient:
         trans_end = params.trans_start_ms + params.trans_duration_ms
         print(f"\nTransient 1 (excitatory push → high state):")
-        print(f"  trans_factor = {params.trans_factor:.2f} (fraction of I0)")
+        print(f"  trans_factor = {params.trans_factor:.2f} (fraction of PYR I0)")
         print(f"  Window: {params.trans_start_ms:.1f} - {trans_end:.1f} ms")
     if getattr(args, "enable_trans2", False):
         trans2_end = params.trans2_start_ms + params.trans2_duration_ms
@@ -696,7 +696,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     # Resolve n_samples (budget is an alias for n_samples in bistable mode)
     n_samples = args.budget if getattr(args, "budget", None) is not None else args.n_samples
 
-    bounds = default_bounds(base)
+    bounds = default_bounds(base, w_hi=getattr(args, "w_hi", None))
     freeze = parse_freeze_list(args.freeze)
     if args.no_adapt:
         freeze |= {"J_adapt_pyr", "J_adapt_som"}
@@ -726,6 +726,19 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             w_peak=args.w_peak,
             condition=getattr(args, "condition", "WT"),
         )
+
+    if mode == "bistable":
+        noops = []
+        if args.jacobian_weight != 1.0:
+            noops.append(f"--jacobian_weight {args.jacobian_weight}")
+        if args.turing_weight != 0.0:
+            noops.append(f"--turing_weight {args.turing_weight}")
+        if args.ach_ratio_weight != 0.0:
+            noops.append(f"--ach_ratio_weight {args.ach_ratio_weight}")
+        if noops:
+            print(f"WARNING: {', '.join(noops)} {'have' if len(noops) > 1 else 'has'} no effect in bistable mode "
+                  f"(Jacobian weight is fixed at BistableConfig.w_jacobian=0.1; "
+                  f"Turing and ACh ratio losses are not used).")
 
     # Print parameter status
     if args.show_params:
@@ -835,8 +848,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         seed=args.seed if args.seed is not None else 0,
         optimizer=args.optimizer,
         freeze=freeze,
-        early_stop_loss=args.early_stop_loss,
-        plateau_patience=args.plateau_patience,
         log_file=log_file_to_use,
         log_interval=log_interval_to_use,
         save_best_json=save_best_json_to_use or None,
@@ -853,7 +864,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     if not best:
-        raise RuntimeError("Optimization returned no candidates.")
+        print("No optimization candidates available (run may have been interrupted very early).")
+        return
 
     # Print results
     print("\n" + "=" * 60)
@@ -974,6 +986,18 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"Warning: could not generate loss evolution plots: {e}")
 
+    # Generate nullcline plot for best bistable params
+    if mode == "bistable" and bistable_json:
+        try:
+            import subprocess
+            _script = Path(__file__).parent.parent / "scripts" / "nullcline_analysis.py"
+            subprocess.run(
+                [sys.executable, str(_script), "--no_show", "--params_json", bistable_json],
+                check=False,
+            )
+        except Exception as e:
+            print(f"Warning: could not generate nullcline plot: {e}")
+
 
 def main() -> None:
     """Main entry point with subcommands."""
@@ -1044,7 +1068,7 @@ Examples:
     run_parser.add_argument("--trans_duration_ms", type=float, default=500.0,
                             help="Duration of first transient pulse (ms), default=500")
     run_parser.add_argument("--trans_factor", type=float, default=0.2,
-                            help="First transient as fraction of each population's I0, default=0.2")
+                            help="First transient as fraction of PYR's I0 (PYR-only), default=0.2")
     # Second transient (e.g., inhibitory pulse to return to resting state)
     run_parser.add_argument("--enable_trans2", action="store_true",
                             help="Enable second transient current (e.g., negative factor to return to low state)")
@@ -1099,10 +1123,6 @@ Examples:
                             help="Number of optimization samples")
     opt_parser.add_argument("--top_k", type=int, default=10,
                             help="Keep top K candidates")
-    opt_parser.add_argument("--early_stop_loss", type=float, default=1e-4,
-                            help="Stop if loss falls below this value")
-    opt_parser.add_argument("--plateau_patience", type=int, default=1000,
-                            help="Stop if no improvement for this many steps (0 to disable)")
     opt_parser.add_argument(
         "--optimizer", type=str, default="de",
         choices=["de", "cma", "chaining", "auto"],
@@ -1192,6 +1212,8 @@ Examples:
     opt_parser.add_argument("--r_vip_high_target", type=float, default=68.8,
                             help="Target VIP rate at the high fixed point (Hz, default: 68.8 — Rooy 2021)")
     # Loss weights
+    opt_parser.add_argument("--w_hi", type=float, default=None,
+                            help="Upper bound for synaptic weights (nA/Hz). Default: 0.02")
     opt_parser.add_argument("--w_bistab", type=float, default=5.0,
                             help="Weight of bistability sign pattern loss (default: 5.0)")
     opt_parser.add_argument("--w_rate_bistab", type=float, default=1.0,
@@ -1200,9 +1222,9 @@ Examples:
                             help="Weight of high-FP rate matching loss (default: 1.5)")
     opt_parser.add_argument("--w_margin", type=float, default=2.0,
                             help="Weight of fixed point separation margin loss (default: 2.0)")
-    opt_parser.add_argument("--nullcline_peak_max", type=float, default=200.0,
+    opt_parser.add_argument("--nullcline_peak_max", type=float, default=80.0,
                             help="Maximum allowed nullcline peak Φ (Hz). Values above this are penalised. "
-                                 "Default 200 = effectively off. Recommended: 90-100 Hz to reduce cue saturation.")
+                                 "Default 80 Hz. Increase if bistability is hard to achieve.")
     opt_parser.add_argument("--w_peak", type=float, default=0.0,
                             help="Weight of nullcline peak penalty (default: 0.0 = off)")
 

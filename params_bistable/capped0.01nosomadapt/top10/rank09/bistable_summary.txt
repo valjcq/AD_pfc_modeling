@@ -1,0 +1,45 @@
+======================================================================
+  BISTABLE OPTIMIZATION SUMMARY
+======================================================================
+
+  LOSS COMPONENTS:
+    L_bistab   (sign pattern):              0
+    L_rate     (low FP rates):          1.229
+    L_rate_high(high FP rates):         1.083
+    L_margin   (FP separation):             0
+    L_jac      (Jacobian reg.):        0.4626
+    L_peak     (nullcline peak):            0  [peak=51.4 Hz]
+    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─    ─
+    L_total                             5.606
+
+  FIXED POINTS FOUND:
+    Total crossings:               3
+      Stable:                      2
+      Unstable:                    1
+    Regime:                        BISTABLE
+    Low FP:  r_PYR =   1.71 Hz
+    High FP: r_PYR =  42.94 Hz
+
+  INTERNEURON RATES AT LOW FIXED POINT:
+    Pop       Actual    Target   Error %
+    -----------------------------------
+    PYR         1.71      1.75      -2.3
+    SOM         2.36      1.12    +110.8
+    PV          1.07      1.04      +2.9
+    VIP         1.34      1.33      +0.9
+
+  INTERNEURON RATES AT HIGH FIXED POINT:
+    Pop       Actual    Target   Error %
+    -----------------------------------
+    PYR        42.94     60.20     -28.7
+    SOM         0.00     35.20    -100.0
+    PV         34.54     35.30      -2.2
+    VIP        68.01     68.80      -1.2
+
+  CONFIGURATION:
+    r_low_target:     1.75 Hz
+    r_pyr_high_target:60.2 Hz
+    delta_r_min:      15.0 Hz
+    condition:        
+
+======================================================================

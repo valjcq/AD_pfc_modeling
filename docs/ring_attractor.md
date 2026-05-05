@@ -78,6 +78,18 @@ The state of the network at time $t$ is described by the firing rates $r_i^X(t)$
 
 ## 2. Inter-Node Connectivity
 
+### Row-sum normalisation principle
+
+All three inter-node kernels are row-sum normalised to the corresponding **single-node fitted scalar** from `CircuitParams`. This guarantees that a homogeneous ring (all nodes identical) reproduces the single-node fixed point exactly — the ring model is a consistent extension of the single-node fit, not a separate parameterisation.
+
+| Kernel | Row-sum | Derived from |
+|--------|---------|--------------|
+| PYR→PYR | $J_{\text{NMDA}}$ | `local_params.J_NMDA` |
+| PV→PYR | $w_{pe}$ | `local_params.w_pe` |
+| SOM→PYR | $w_{se}$ | `local_params.w_se` |
+
+There are **no additional free parameters** for connection strengths. The only structural free parameters are the Gaussian widths $\sigma_{\text{pyr}}$ and $\sigma_{\text{som}}$.
+
 ### 2.1 Angular Distance
 
 The angular distance between two nodes $i$ and $j$ on the ring, handling the wraparound:
@@ -86,48 +98,63 @@ $$d(\theta_i, \theta_j) = \min\bigl(|\theta_i - \theta_j|,\; 2\pi - |\theta_i - 
 
 This gives $d \in [0, \pi]$.
 
-### 2.2 PYR $\to$ PYR Excitation
+### 2.2 PYR $\to$ PYR Excitation (unified NMDA kernel)
 
-The raw Gaussian weights are computed and then **row-sum normalized** to ensure the total coupling strength is independent of $N$:
+The PYR→PYR weight matrix is a **unified** Gaussian kernel that includes the diagonal (self-weight). It replaces the previous separation between local NMDA recurrence and inter-node coupling:
 
-1. **Raw profile:**
-$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{d(\theta_i, \theta_j)^2}{2\,\sigma_{\text{pyr}}^2}\right) & \text{if } i \neq j \\[6pt] 0 & \text{if } i = j \end{cases}$$
+1. **Raw profile (including self at distance 0):**
+$$\tilde{W}_{ij} = \exp\!\left(-\frac{d(\theta_i, \theta_j)^2}{2\,\sigma_{\text{pyr}}^2}\right), \quad \text{for all } i, j$$
 
-2. **Row-sum normalization:**
-$$W_{ij}^{\text{PYR}\to\text{PYR}} = w_{\text{pyr}}^{\text{inter}} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
+2. **Row-sum normalization to $J_{\text{NMDA}}$:**
+$$W_{ij}^{\text{PYR}\to\text{PYR}} = J_{\text{NMDA}} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
 
-This guarantees $\sum_j W_{ij} = w_{\text{pyr}}^{\text{inter}}$ for every node $i$, so the total excitatory drive is invariant to network size $N$.
+This guarantees $\sum_j W_{ij} = J_{\text{NMDA}}$ for every node $i$.
 
-#### Inter-node excitatory input
+The NMDA drive at node $i$ uses the **gating variable** $S_j^{\text{NMDA}}$ (not the raw rate) — see §3.1:
 
-For both profiles, the inter-node excitatory input to PYR at node $i$ is:
+$$I_{\text{NMDA},i} = \sum_{j=0}^{N-1} W_{ij}^{\text{PYR}\to\text{PYR}} \cdot S_j^{\text{NMDA}}$$
 
-$$I_{\text{inter},i}^{\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{PYR}\to\text{PYR}} \cdot r_j^{\text{PYR}}$$
+This term enters the PYR input as $I_{\text{NMDA},i} / \text{denom}$ where the denominator carries the PV divisive inhibition (see §3.2).
 
-Self-connections ($i = j$) are always zero because local PYR $\to$ PYR recurrence is handled by the within-node NMDA gating term $J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}$.
+### 2.3 PV $\to$ PYR Global Inhibition (divisive)
 
-### 2.3 PV $\to$ PYR Global Inhibition
+PV interneurons from **all** nodes (including self) inhibit PYR at each node uniformly:
 
-PV interneurons from all nodes inhibit PYR at each node, creating an excitation-inhibition loop: local PYR excites local PV (via $w_{ep}$), then PV activity is broadcast globally to suppress PYR everywhere. This mechanism provides the competitive inhibition needed for bump formation.
+$$W_{ij}^{\text{PV}\to\text{PYR}} = \frac{w_{pe}}{N}, \quad \text{for all } i, j$$
 
-All PV-to-PYR connections have equal weight (excluding self):
+Row-sum = $w_{pe}$. The total PV drive enters as a **divisive** (shunting) denominator:
 
-$$W_{ij}^{\text{PV}\to\text{PYR}} = \begin{cases} \displaystyle\frac{w_{\text{PV}}^{\text{global}}}{N-1} & \text{if } i \neq j \\[6pt] 0 & \text{if } i = j \end{cases}$$
+$$\text{denom}_i = 1 + g_{\text{GABA}} \cdot \sum_{j=0}^{N-1} W_{ij}^{\text{PV}\to\text{PYR}} \cdot r_j^{\text{PV}}$$
 
-The inter-node inhibitory input from PV to PYR at node $i$ is:
+This models perisomatic GABAergic inhibition that reduces input resistance. At the homogeneous fixed point, $\sum_j W_{ij}^{\text{PV}} r_j = w_{pe} \cdot r^{\text{PV}}$, recovering the single-node denominator exactly.
 
-$$I_{\text{inter},i}^{\text{PV}\to\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{PV}\to\text{PYR}} \cdot r_j^{\text{PV}}$$
+### 2.4 SOM $\to$ PYR Lateral Inhibition
 
-### 2.4 Connectivity Parameters
+SOM neurons project **laterally** to PYR nodes via a Gaussian kernel with **zero diagonal** (no self-inhibition):
+
+1. **Raw profile (zero at $i = j$):**
+$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{d(\theta_i,\theta_j)^2}{2\,\sigma_{\text{som}}^2}\right) & i \neq j \\ 0 & i = j \end{cases}$$
+
+2. **Row-sum normalization to $w_{se}$:**
+$$W_{ij}^{\text{SOM}\to\text{PYR}} = w_{se} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
+
+The lateral SOM contribution enters as a **subtractive** inhibition:
+
+$$I_{\text{SOM-lat},i} = g_{\text{GABA}} \cdot \sum_{j=0}^{N-1} W_{ij}^{\text{SOM}\to\text{PYR}} \cdot r_j^{\text{SOM}}$$
+
+At the homogeneous fixed point the row-sum is $w_{se}$ and all nodes contribute equally, reproducing the single-node subtractive term $g_{\text{GABA}} \cdot w_{se} \cdot r^{\text{SOM}}$ exactly.
+
+### 2.5 Connectivity Parameters
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
 | `n_nodes` | $N$ | 64 | Number of nodes on the ring |
-| `w_pyr_pyr_inter` | $w_{\text{pyr}}^{\text{inter}}$ | 18.55 | Total row-sum of PYR→PYR weights |
-| `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 30.0 deg | Gaussian width of PYR→PYR profile |
-| `w_pv_global` | $w_{\text{PV}}^{\text{global}}$ | 0.3 | Strength of PV→PYR global inhibition |
+| `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 15.0 deg | Gaussian width of unified PYR→PYR kernel |
+| `sigma_som_deg` | $\sigma_{\text{som}}$ | 15.0 deg | Gaussian width of lateral SOM→PYR kernel |
 
-**Note on network-size invariance:** The Gaussian profile (row-sum normalization) ensures that the effective coupling is independent of $N$, so simulations at $N=64$, $N=128$, and $N=1024$ produce comparable dynamics.
+Connection strengths (`J_NMDA`, `w_pe`, `w_se`) are taken directly from `CircuitParams` and are **not** free parameters at the ring level.
+
+**Network-size invariance:** All kernels are row-sum normalised, so the total drive per node is independent of $N$. Simulations at $N=32$, $N=64$, $N=128$ produce comparable homogeneous fixed points.
 
 ---
 
@@ -166,13 +193,15 @@ This saturating nonlinearity is what replaces the linear $w_{ee} \cdot r_i^{\tex
 
 ### 3.2 Input Current Equations
 
-**PYR** receives local recurrent NMDA excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, stimulus, and noise:
+**PYR** receives unified NMDA excitation from all nodes (via $W^{\text{PYR}}$), divisive PV inhibition from all nodes (via $W^{\text{PV}}$), lateral SOM inhibition (via $W^{\text{SOM}}$), adaptation, external drive, stimulus, and noise:
 
-$$I_i^{\text{PYR}} = \frac{J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
+$$I_i^{\text{PYR}} = \frac{\displaystyle\sum_j W_{ij}^{\text{PYR}} S_j^{\text{NMDA}}}{1 + g_{\text{GABA}} \displaystyle\sum_j W_{ij}^{\text{PV}} r_j^{\text{PV}}} - g_{\text{GABA}} \sum_j W_{ij}^{\text{SOM}} r_j^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
 
-The term $\frac{J_{\text{NMDA}} \cdot S_i^{\text{NMDA}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}}$ combines two effects:
-- **NMDA saturation** (via $S_i^{\text{NMDA}}$): recurrent drive saturates at high firing rates instead of growing unboundedly.
-- **Divisive (shunting) PV inhibition** (denominator): models the effect of perisomatic GABAergic synapses on input resistance.
+- **Numerator** $(W^{\text{PYR}} S^{\text{NMDA}})$: unified Gaussian kernel (including self-weight) gates all NMDA drive — local recurrence and inter-node excitation are handled by a single matrix product.
+- **Denominator** $(1 + g_{\text{GABA}} W^{\text{PV}} r^{\text{PV}})$: all PV nodes (local + inter-node) enter divisively, modelling perisomatic shunting inhibition.
+- **Subtractive SOM** $(g_{\text{GABA}} W^{\text{SOM}} r^{\text{SOM}})$: purely lateral (zero diagonal), models dendritic SOM inhibition.
+
+At the homogeneous fixed point, the three matrix products reduce exactly to the single-node scalars $J_{\text{NMDA}} S^*$, $w_{pe} r^{\text{PV}}$, and $w_{se} r^{\text{SOM}}$.
 
 The noise term $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$ injects stochastic current into each PYR node. Injecting noise at the current level (before the transfer function $\Phi^{\text{PYR}}$) means its effect on firing rate is naturally filtered by the transfer function slope $\Phi'$, consistent with a diffusion-approximation interpretation of Poisson spiking variability. The proportionality to $I_{\text{ext}}^{\text{PYR}}$ ensures noise scales automatically across experimental conditions.
 
@@ -227,18 +256,17 @@ where $f_{\text{trans}}$ is the transient factor (fraction of baseline I0).
 
 ## 4. Spike-Frequency Adaptation
 
-PYR and SOM populations exhibit spike-frequency adaptation, which provides slow negative feedback:
+PYR exhibits spike-frequency adaptation, which provides slow negative feedback:
 
-$$\tau_{\text{adapt}}^X \frac{dI_{\text{adapt},i}^X}{dt} = -I_{\text{adapt},i}^X + J_{\text{adapt}}^X \cdot r_i^X$$
+$$\tau_{\text{adapt}}^{\text{PYR}} \frac{dI_{\text{adapt},i}^{\text{PYR}}}{dt} = -I_{\text{adapt},i}^{\text{PYR}} + J_{\text{adapt}}^{\text{PYR}} \cdot r_i^{\text{PYR}}$$
 
-for $X \in \{\text{PYR}, \text{SOM}\}$.
+SOM adaptation is present in the code (`J_adapt_som`) but **disabled by default during optimization** (`J_adapt_som = 0` in the bistable fit; freeze with `--freeze J_adapt_som`). The thesis model does not include SOM adaptation.
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
 | `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 600 ms | PYR adaptation time constant |
-| `tau_adapt_som` | $\tau_{\text{adapt}}^{\text{SOM}}$ | 150 ms | SOM adaptation time constant (slow) |
 | `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.27 | PYR adaptation strength |
-| `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 27.24 | SOM adaptation strength (strong) |
+| `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 0.0 | SOM adaptation strength (off by default) |
 
 Adaptation prevents runaway excitation and creates temporal dynamics in the bump.
 
@@ -246,9 +274,24 @@ Adaptation prevents runaway excitation and creates temporal dynamics in the bump
 
 ## 5. Transfer Function
 
-The model uses the **Wong-Wang transfer function** (Wong & Wang, 2006), derived from a mean-field reduction of spiking neural networks:
+The model uses the **Wong-Wang transfer function** (Wong & Wang, 2006):
 
 $$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = \alpha \cdot (I - \theta)$$
+
+**Interneuron soft ceiling.** To prevent pathological runaway firing, PV, SOM, and VIP use a **hyperbolic soft ceiling** applied post-hoc:
+
+$$\Phi_{\text{cap}}(I) = \frac{r_{\max} \cdot \Phi(I)}{r_{\max} + \Phi(I)}$$
+
+This asymptotes to $r_{\max}$ as $\Phi \to \infty$, while leaving low-rate behavior ($\Phi \ll r_{\max}$) unchanged. PYR uses the uncapped $\Phi$.
+
+| Population | Transfer function | $r_{\max}$ (Hz) |
+|------------|------------------|----------------|
+| PYR | $\Phi(I)$ (uncapped) | — |
+| PV | $\Phi_{\text{cap}}(I)$ | 53 |
+| SOM | $\Phi_{\text{cap}}(I)$ | 53 |
+| VIP | $\Phi_{\text{cap}}(I)$ | 103 |
+
+The ceilings are 1.5× the Rooy (2021) high-state targets for each interneuron type.
 
 **Parameters per population $X$:**
 
@@ -260,13 +303,6 @@ $$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = \alpha \cdot (I -
 | `alpha_pv` / `alpha_som` / `alpha_vip` | $\alpha^{inh}$ | PV, SOM, VIP | $615\ \text{Hz/nA}$ |
 | `g_exc` | $g_e$ | PYR | $0.16\ \text{s}$ |
 | `g_inh` | $g_i$ | PV, SOM, VIP | $0.087\ \text{s}$ |
-
-**Properties:**
-- Monotonically increasing
-- Bounded below at 0 (firing rates are non-negative)
-- Approximately linear near threshold
-- Saturates at high inputs
-- Reduces to ReLU-like behavior as $g \to \infty$
 
 **Numerical stability:** For $|g \cdot u| < \epsilon$ (near zero), a Taylor expansion is used: $\Phi \approx 1/g + u/2$.
 
@@ -474,15 +510,14 @@ Rate matching alone is necessary but not sufficient for working-memory behavior:
 
 ### 10.2 Parameter Space
 
-`ring-optimize` searches over `CircuitParams` together with ring-specific parameters:
+`ring-optimize` searches over `CircuitParams` together with the ring structural parameters:
 
 | Parameter | Symbol | Default bounds | Description |
 |-----------|--------|---------------|-------------|
-| `w_pyr_pyr_inter` | $w_\text{pyr}^\text{inter}$ | [1, 30] | Total inter-node PYR→PYR coupling (row-sum normalized) |
-| `w_pv_global` | $w_\text{PV}^\text{global}$ | [0.5, 20] | Total global PV→PYR inhibition (uniform all-to-all) |
-| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [10°, 60°] | Gaussian width of PYR→PYR profile |
+| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [5°, 40°] | Gaussian width of unified PYR→PYR kernel |
+| `sigma_som_deg` | $\sigma_\text{som}$ | [5°, 40°] | Gaussian width of lateral SOM→PYR kernel |
 
-`n_nodes` is fixed by CLI and not optimized.
+Connection strengths ($J_\text{NMDA}$, $w_{pe}$, $w_{se}$) are taken from the fitted `CircuitParams` and are **not** additional free parameters. `n_nodes` is fixed by CLI and not optimized.
 
 ### 10.3 Loss Function
 
@@ -542,7 +577,7 @@ ring_optim_output/
 └── best_ring_params.json      # Best RingParams as JSON
 ```
 
-These can be passed directly to `ring-run` or `ring-study` via `--params_json` and a manual `--w_pyr_pyr_inter / --w_pv_global / --sigma_pyr_deg` override.
+These can be passed directly to `ring-run` or `ring-study` via `--params_json` and optional `--sigma_pyr_deg / --sigma_som_deg` overrides.
 
 See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full, up-to-date argument reference.
 

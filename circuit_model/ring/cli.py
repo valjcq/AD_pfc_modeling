@@ -156,14 +156,19 @@ _ACTIVE_APP_RING_PARAMS: RingParams | None = None
 _ring_args_from_defaults: bool = False
 
 # Fallback ring param values used when no JSON file is found.
-_RING_PARAMS_FALLBACK = {"w_pyr_pyr_inter": 8.0, "sigma_pyr_deg": 30.0, "w_pv_global": 10.0, "n_nodes": 128}
+_RING_PARAMS_FALLBACK = {
+    "n_nodes":       RingParams.__dataclass_fields__["n_nodes"].default,
+    "sigma_pyr_deg": RingParams.__dataclass_fields__["sigma_pyr_deg"].default,
+    "sigma_som_deg": RingParams.__dataclass_fields__["sigma_som_deg"].default,
+    "som_pattern":   RingParams.__dataclass_fields__["som_pattern"].default,
+}
 
 
 def _print_ring_init_summary(base_circuit: CircuitParams, base_ring: RingParams, ring_means: np.ndarray, init_loss: float) -> None:
     """Print effective ring optimization initialization and its predicted ring rates."""
     print("Initial condition (effective after --set/--no_adapt):")
     print(f"  Circuit I0: pyr={base_circuit.I0_pyr:.6g}, som={base_circuit.I0_som:.6g}, pv={base_circuit.I0_pv:.6g}, vip={base_circuit.I0_vip:.6g}")
-    print(f"  Ring: n_nodes={base_ring.n_nodes}, w_pyr_pyr_inter={base_ring.w_pyr_pyr_inter:.6g}, w_pv_global={base_ring.w_pv_global:.6g}, sigma_pyr_deg={base_ring.sigma_pyr_deg:.6g}")
+    print(f"  Ring: n_nodes={base_ring.n_nodes}, sigma_pyr_deg={base_ring.sigma_pyr_deg:.6g}, sigma_som_deg={base_ring.sigma_som_deg:.6g}")
     print("Initial predicted ring rates (Hz):")
     print(f"  PYR={ring_means[0]:.4f}, SOM={ring_means[1]:.4f}, PV={ring_means[2]:.4f}, VIP={ring_means[3]:.4f}")
     print(f"  Initial loss={init_loss:.6g}")
@@ -172,19 +177,15 @@ def _print_ring_init_summary(base_circuit: CircuitParams, base_ring: RingParams,
 def _load_ring_params_json(path: str) -> RingParams:
     """Load RingParams from a JSON file."""
     import json
-    from dataclasses import fields as _fields, replace as _replace
+    from dataclasses import fields as _fields
 
     with open(path, "r", encoding="utf-8") as f:
         d = json.load(f)
     allowed = {fld.name for fld in _fields(RingParams) if not fld.name.startswith("_")}
-    # RingParams has required fields — build via replace from a dummy with placeholder values
-    clean = {k: d[k] for k in d if k in allowed}
-    # Construct with required args present; fill with loaded values
-    base = RingParams(
-        w_pyr_pyr_inter=clean.pop("w_pyr_pyr_inter"),
-        w_pv_global=clean.pop("w_pv_global"),
-    )
-    return _replace(base, **clean) if clean else base
+    # Silently discard legacy fields that no longer exist in RingParams.
+    _legacy = {"w_pyr_pyr_inter", "w_pv_global"}
+    clean = {k: d[k] for k in d if k in allowed and k not in _legacy}
+    return RingParams(**clean)
 
 
 def _load_base_params_for_ring(
@@ -272,18 +273,17 @@ def _load_base_params_for_ring(
         # True when the user did not explicitly provide connectivity args —
         # n_nodes is intentionally excluded (ring size ≠ connectivity profile).
         _ring_args_from_defaults = (
-            args.w_pyr_pyr_inter is None
-            and args.sigma_pyr_deg is None
-            and args.w_pv_global is None
+            args.sigma_pyr_deg is None
+            and args.sigma_som_deg is None
         )
-        if args.w_pyr_pyr_inter is None:
-            args.w_pyr_pyr_inter = [_rp.w_pyr_pyr_inter if _rp else fb["w_pyr_pyr_inter"]]
         if args.sigma_pyr_deg is None:
             args.sigma_pyr_deg = _rp.sigma_pyr_deg if _rp else fb["sigma_pyr_deg"]
-        if args.w_pv_global is None:
-            args.w_pv_global = _rp.w_pv_global if _rp else fb["w_pv_global"]
+        if args.sigma_som_deg is None:
+            args.sigma_som_deg = _rp.sigma_som_deg if _rp else fb["sigma_som_deg"]
         if args.n_nodes is None:
             args.n_nodes = _rp.n_nodes if _rp else fb["n_nodes"]
+        if getattr(args, "som_pattern", None) is None:
+            args.som_pattern = _rp.som_pattern if _rp else fb["som_pattern"]
 
     return result
 
@@ -346,9 +346,10 @@ def _build_common(args, amp_factor: float | None = None):
         (base_params, ring_params, T_ms, stimuli, amp_factor, load_msg)
     """
     cond_key = getattr(args, "condition", None)
-    # Save n_nodes before _load_base_params_for_ring patches it from defaults,
-    # so we can tell whether the user explicitly passed --n_nodes.
+    # Save values before _load_base_params_for_ring patches them from defaults,
+    # so we can tell whether the user explicitly passed these args.
     _explicit_n_nodes = args.n_nodes
+    _explicit_som_pattern = getattr(args, "som_pattern", None)
     base_params, load_msg = _load_base_params_for_ring(
         args.params_json,
         args,
@@ -364,12 +365,15 @@ def _build_common(args, amp_factor: float | None = None):
         if _explicit_n_nodes is not None:
             ring_params = replace(ring_params, n_nodes=_explicit_n_nodes)
             load_msg += f"\nOverriding n_nodes from CLI: {_explicit_n_nodes}"
+        if _explicit_som_pattern is not None:
+            ring_params = replace(ring_params, som_pattern=_explicit_som_pattern)
+            load_msg += f"\nOverriding som_pattern from CLI: {_explicit_som_pattern}"
     else:
         ring_params = RingParams(
             n_nodes=args.n_nodes,
-            w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
             sigma_pyr_deg=args.sigma_pyr_deg,
-            w_pv_global=args.w_pv_global,
+            sigma_som_deg=args.sigma_som_deg,
+            som_pattern=args.som_pattern,
         )
 
     factor = amp_factor if amp_factor is not None else args.amplitude[0]
@@ -516,10 +520,9 @@ def _print_config(args, amp_factor: float, base_params: CircuitParams, T_ms: flo
     if ring_params is not None:
         emit(thin)
         emit("  RING NETWORK")
-        emit(f"       n_nodes         = {ring_params.n_nodes}")
-        emit(f"       w_pyr_pyr_inter = {ring_params.w_pyr_pyr_inter:.4g}")
-        emit(f"       sigma_pyr_deg   = {ring_params.sigma_pyr_deg:.4g} deg")
-        emit(f"       w_pv_global     = {ring_params.w_pv_global:.4g}")
+        emit(f"       n_nodes       = {ring_params.n_nodes}")
+        emit(f"       sigma_pyr_deg = {ring_params.sigma_pyr_deg:.4g} deg")
+        emit(f"       sigma_som_deg = {ring_params.sigma_som_deg:.4g} deg")
 
     # ── Stimulus ─────────────────────────────────────────────────────────
     emit(thin)
@@ -616,24 +619,22 @@ def _start_mp4_progress(
 
 
 def _network_label(rp: RingParams) -> str:
-    """Build a directory-safe label encoding n_nodes, connectivity weights, and Gaussian sigma.
+    """Build a directory-safe label encoding n_nodes and Gaussian sigmas.
 
-    Example: 128_inhib_10_excit_7_sigma_30
+    Example: 64_sigma_pyr_15_sigma_som_15
     """
     return (
-        f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}"
-        f"_excit_{_fmt(rp.w_pyr_pyr_inter)}"
-        f"_sigma_{_fmt(rp.sigma_pyr_deg)}"
+        f"{rp.n_nodes}_sigma_pyr_{_fmt(rp.sigma_pyr_deg)}"
+        f"_sigma_som_{_fmt(rp.sigma_som_deg)}"
     )
 
 
 def _calibration_network_label(rp: RingParams) -> str:
-    """Label for calibration directories: inhibition + Gaussian sigma only.
+    """Label for calibration directories: n_nodes + Gaussian sigmas.
 
-    Excitation is excluded because calibration is the process that determines it.
-    Example: 128_inhib_10_sigma_30
+    Example: 64_sigma_pyr_15_sigma_som_15
     """
-    return f"{rp.n_nodes}_inhib_{_fmt(rp.w_pv_global)}_sigma_{_fmt(rp.sigma_pyr_deg)}"
+    return f"{rp.n_nodes}_sigma_pyr_{_fmt(rp.sigma_pyr_deg)}_sigma_som_{_fmt(rp.sigma_som_deg)}"
 
 
 def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
@@ -654,18 +655,11 @@ def _balance_cue_location(target_deg: float, rp: RingParams) -> float:
 def _run_type_label(args) -> str:
     """Return a folder name encoding the experiment type for ring-run outputs.
 
-    Possible values: cue, cue_transient, cue_distractor, cue_distractor_transient
+    Possible values: cue, cue_distractor
+    (response/transient is not encoded in the folder name)
     """
     has_dist = _has_distractor(args)
-    response_onset_ms = getattr(args, 'response_onset_ms', None)
-    has_trans = response_onset_ms is not None and response_onset_ms >= 0
-    if has_dist and has_trans:
-        return "cue_distractor_transient"
-    if has_dist:
-        return "cue_distractor"
-    if has_trans:
-        return "cue_transient"
-    return "cue"
+    return "cue_distractor" if has_dist else "cue"
 
 
 def _stim_label(amp_factor: float) -> str:
@@ -674,8 +668,8 @@ def _stim_label(amp_factor: float) -> str:
 
 
 def _weights_label(rp: RingParams) -> str:
-    """Short label for PYR and PV weights and sigma, used in plot titles."""
-    return f"w_pyr={_fmt(rp.w_pyr_pyr_inter)}, w_pv={_fmt(rp.w_pv_global)}, σ={_fmt(rp.sigma_pyr_deg)}°"
+    """Short label for PYR and SOM sigmas, used in plot titles."""
+    return f"σ_pyr={_fmt(rp.sigma_pyr_deg)}°, σ_som={_fmt(rp.sigma_som_deg)}°"
 
 
 def _parse_seed(value: str) -> int | None:
@@ -759,7 +753,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--ring_params_json", type=str, default="",
-        help="Load ring parameters (w_pyr_pyr_inter, w_pv_global, sigma_pyr_deg, n_nodes) from JSON file "
+        help="Load ring parameters (sigma_pyr_deg, sigma_som_deg, n_nodes) from JSON file "
              "(same format as --save_best_ring_json output from ring-optimize)",
     )
     parser.add_argument(
@@ -773,21 +767,20 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument(
         "--n_nodes", type=int, default=None,
-        help="Number of ring nodes (default: from ring params JSON or 128)",
-    )
-    parser.add_argument(
-        "--w_pyr_pyr_inter", nargs="+", type=float, default=None,
-        help="Inter-node PYR->PYR weight. "
-             "Accepts one value (shared) or one per condition for per-condition excitation. "
-             "Default: from ring params JSON or 8.0.",
+        help="Number of ring nodes (default: from ring params JSON or 64)",
     )
     parser.add_argument(
         "--sigma_pyr_deg", type=float, default=None,
-        help="PYR ring connectivity width in degrees. Default: from ring params JSON or 30.0.",
+        help="PYR lateral ring connectivity width in degrees. Default: from ring params JSON or 15.0.",
     )
     parser.add_argument(
-        "--w_pv_global", type=float, default=None,
-        help="Global PV->PYR inhibition weight. Default: from ring params JSON or 10.0.",
+        "--sigma_som_deg", type=float, default=None,
+        help="SOM lateral ring connectivity width in degrees. Default: from ring params JSON or 15.0.",
+    )
+    parser.add_argument(
+        "--som_pattern", type=str, default=None,
+        choices=["gaussian", "uniform", "none"],
+        help="SOM→PYR connectivity pattern: 'gaussian' (annular surround, default), 'uniform' (all-to-all, zero diagonal), or 'none' (local only, no inter-node connections).",
     )
 
     parser.add_argument(
@@ -1155,7 +1148,7 @@ _bump_decay_sim_args: Optional[dict] = None
 def _bump_decay_init_worker(
     base_params: CircuitParams,
     per_cond_rp: dict[str, RingParams],
-    connectivity_map: dict[float, RingConnectivity],
+    connectivity_map: dict[str, RingConnectivity],
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]],
     delay_ms: float,
     ref_offset_ms: float,
@@ -1189,16 +1182,15 @@ def _bump_decay_run_single(job: tuple) -> dict:
 
     base_params: CircuitParams = cfg['base_params']
     per_cond_rp: dict[str, RingParams] = cfg['per_cond_rp']
-    connectivity_map: dict[float, RingConnectivity] = cfg['connectivity_map']
+    connectivity_map: dict[str, RingConnectivity] = cfg['connectivity_map']
     burnin_states: dict[str, tuple[np.ndarray, np.ndarray]] = cfg['burnin_states']
     ref_offset_ms: float = cfg['ref_offset_ms']
     record_dt_ms: float = cfg['record_dt_ms']
     T_ms_full: float = cfg['T_ms_full']
 
     local_params = apply_condition(base_params, STUDY_CONDITIONS[cond_key])
-    rp_base = per_cond_rp[cond_key]
-    ring_params = replace(rp_base, w_pyr_pyr_inter=float(w_inter))
-    connectivity = connectivity_map[float(w_inter)]
+    ring_params = per_cond_rp[cond_key]
+    connectivity = connectivity_map[cond_key]
 
     r0, I_adapt0 = burnin_states[cond_key]
 
@@ -1453,12 +1445,11 @@ def _write_run_metrics(result, args, ring_params, out_dir: str, delay_end_ms: fl
 
     metrics: dict = {
         "params": {
-            "w_pyr_pyr_inter": ring_params.w_pyr_pyr_inter,
-            "w_pv_global":     ring_params.w_pv_global,
-            "sigma_pyr_deg":   ring_params.sigma_pyr_deg,
-            "n_nodes":         ring_params.n_nodes,
-            "amplitude":       _extract_scalar(getattr(args, "amplitude", float("nan"))),
-            "condition":       getattr(args, "condition", "WT"),
+            "sigma_pyr_deg": ring_params.sigma_pyr_deg,
+            "sigma_som_deg": ring_params.sigma_som_deg,
+            "n_nodes":       ring_params.n_nodes,
+            "amplitude":     _extract_scalar(getattr(args, "amplitude", float("nan"))),
+            "condition":     getattr(args, "condition", "WT"),
         },
         "steady_state": {
             "baseline_pyr_hz":      round(baseline_pyr, 3),
@@ -1538,7 +1529,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     delay_end_ms = _compute_delay_end_ms(args, stim_offset_ms)
     local_params = _apply_response_transient(local_params, args, delay_end_ms)
 
-    connectivity = RingConnectivity.from_params(ring_params)
+    connectivity = RingConnectivity.from_params(ring_params, local_params)
     result = simulate_ring(
         local_params,
         ring_params,
@@ -1556,10 +1547,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     else:
         out_dir = os.path.join(
             _output_dir("figs/ring/run", args.params_json),
-            _run_type_label(args),
             sigma_tag,
-            _network_label(ring_params),
             f"amp_{_fmt(amp_factor)}",
+            _run_type_label(args),
+            _network_label(ring_params),
             cond_key,
         )
     os.makedirs(out_dir, exist_ok=True)
@@ -1605,12 +1596,14 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     ax_conn = plot_ring_connectome(
         ring_params,
+        local_params=base_params,
         save_path=os.path.join(out_dir, "connectome.png"),
     )
     plt.close(ax_conn.figure)
 
     fig_mat = plot_connectivity_matrices(
         ring_params,
+        local_params=base_params,
         save_path=os.path.join(out_dir, "connectivity_matrices.png"),
     )
     plt.close(fig_mat)
@@ -1660,19 +1653,24 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
                   f"Valid: {', '.join(STUDY_CONDITIONS.keys())}")
             sys.exit(1)
 
-    cond_excit = _resolve_per_cond_param(args.w_pyr_pyr_inter, condition_keys, 'w_pyr_pyr_inter')
     base_rp = RingParams(
         n_nodes=args.n_nodes,
-        w_pyr_pyr_inter=args.w_pyr_pyr_inter[0],
         sigma_pyr_deg=args.sigma_pyr_deg,
-        w_pv_global=args.w_pv_global,
+        sigma_som_deg=args.sigma_som_deg,
     )
-    per_cond_rp = {ck: replace(_base_rp_for_cond(ck, base_rp), w_pyr_pyr_inter=cond_excit[ck]) for ck in condition_keys}
-    per_cond_conn = {ck: RingConnectivity.from_params(per_cond_rp[ck]) for ck in condition_keys}
+    per_cond_rp = {ck: _base_rp_for_cond(ck, base_rp) for ck in condition_keys}
+    per_cond_conn = {
+        ck: RingConnectivity.from_params(
+            per_cond_rp[ck],
+            apply_condition(base_params, STUDY_CONDITIONS[ck]),
+        )
+        for ck in condition_keys
+    }
     ring_params = base_rp  # alias for config display
+    cond_excit = {ck: 0.0 for ck in condition_keys}  # placeholder for label building
 
     amplitudes     = list(args.amplitudes) if args.amplitudes else [5.0, 10.0, 15.0, 20.0, 25.0]
-    w_inter_values = list(args.w_inter_values) if args.w_inter_values else [args.w_pyr_pyr_inter[0]]
+    w_inter_values = [0.0]  # no longer swept; kept for downstream grouping compatibility
     n_trials       = int(args.n_trials)
     n_workers      = _resolve_workers(args)
     delay_ms       = float(args.delay_ms)
@@ -1726,16 +1724,10 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
             local_params, per_cond_rp[cond_key], per_cond_conn[cond_key], seed=args.seed,
         )
 
-    # ── Precompute connectivity map {w_inter: RingConnectivity} ─────────────
-    connectivity_map: dict[float, RingConnectivity] = {}
-    for w in w_inter_values:
-        rp_w = RingParams(
-            n_nodes=base_rp.n_nodes,
-            w_pyr_pyr_inter=w,
-            sigma_pyr_deg=base_rp.sigma_pyr_deg,
-            w_pv_global=base_rp.w_pv_global,
-        )
-        connectivity_map[w] = RingConnectivity.from_params(rp_w)
+    # ── Precompute connectivity map {cond_key: RingConnectivity} ────────────
+    connectivity_map: dict[str, RingConnectivity] = {
+        ck: per_cond_conn[ck] for ck in condition_keys
+    }
 
     trial_seeds = _generate_trial_seeds(args.seed, n_trials)
     jobs = [
@@ -2020,146 +2012,18 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     """Compatibility wrapper for the ring-calibrate command.
 
     The legacy 3D calibration implementation was removed from this module.
-    We keep the public command available by running the closest maintained
-    workflow (bump-decay study) and sweeping --w_pv_values when provided.
+    We keep the public command available by running the bump-decay backend directly.
     """
-    wpv_values = list(getattr(args, 'w_pv_values', None) or [])
-    if not wpv_values:
-        # Fall back to explicit scalar if supplied; otherwise rely on defaults.
-        wpv = getattr(args, 'w_pv_global', None)
-        if wpv is not None:
-            wpv_values = [float(wpv)]
-
-    if not wpv_values:
-        print(
-            "Error: ring-calibrate requires at least one inhibitory sweep value. "
-            "Provide --w_pv_values (preferred) or --w_pv_global."
-        )
-        sys.exit(2)
-
     if getattr(args, 'conditions', None) is None:
         # Preserve historical ring-calibrate default.
         args.conditions = ['WT']
 
     base_output_dir = getattr(args, 'output_dir', None)
-    print(
-        "[ring-calibrate] Compatibility mode: using bump-decay backend "
-        "for each --w_pv_values entry."
-    )
+    print("[ring-calibrate] Compatibility mode: using bump-decay backend.")
 
-    wpv_subdirs: dict[float, str] = {}
-    for wpv in wpv_values:
-        local_args = argparse.Namespace(**vars(args))
-        local_args.w_pv_global = float(wpv)
+    cmd_bump_decay_study(args)
 
-        if base_output_dir and len(wpv_values) > 1:
-            sub_dir = os.path.join(base_output_dir, f"w_pv_{_fmt(wpv)}")
-            local_args.output_dir = sub_dir
-            wpv_subdirs[float(wpv)] = sub_dir
-        else:
-            local_args.output_dir = base_output_dir
-
-        print(f"\n[ring-calibrate] Running sweep for w_pv_global={wpv:g}")
-        cmd_bump_decay_study(local_args)
-
-    # ── Combined heatmaps (bump-decay + sanity) after all sub-sweeps ──────────
-    amplitudes_swept     = list(args.amplitudes) if getattr(args, 'amplitudes', None) else []
-    w_inter_values_swept = list(args.w_inter_values) if getattr(args, 'w_inter_values', None) else []
-
-    # Build CSV data dict: w_pv -> DataFrame
-    # For single w_pv the output_dir IS base_output_dir; for multiple, use subdirs.
-    if base_output_dir and w_inter_values_swept:
-        try:
-            import pandas as pd
-            from .plotting import plot_bump_decay_combined_heatmap, plot_sanity_heatmap, plot_sanity_timecourse
-            import matplotlib
-            if getattr(args, 'no_show', False):
-                matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            csv_data: dict[float, "pd.DataFrame"] = {}
-            if len(wpv_values) > 1:
-                for wpv, sub_dir in wpv_subdirs.items():
-                    csv_path = os.path.join(sub_dir, "bump_decay_trials.csv")
-                    if os.path.exists(csv_path):
-                        csv_data[float(wpv)] = pd.read_csv(csv_path)
-                    else:
-                        print(f"  [warn] CSV not found: {csv_path}")
-            else:
-                # Single w_pv: CSV lives directly in base_output_dir
-                csv_path = os.path.join(base_output_dir, "bump_decay_trials.csv")
-                if os.path.exists(csv_path):
-                    csv_data[float(wpv_values[0])] = pd.read_csv(csv_path)
-                else:
-                    print(f"  [warn] CSV not found: {csv_path}")
-
-            if csv_data:
-                amp_to_plot = amplitudes_swept[0] if amplitudes_swept else None
-                if amp_to_plot is None:
-                    print("[ring-calibrate] No amplitude info for heatmaps; skipping.")
-                else:
-                    cond_keys  = list(args.conditions) if getattr(args, 'conditions', None) else ['WT']
-                    wpv_sorted = sorted(csv_data.keys())
-                    os.makedirs(base_output_dir, exist_ok=True)
-                    for cond in cond_keys:
-                        # ── bump-decay combined heatmap (only meaningful with >1 w_pv) ──
-                        if len(wpv_values) > 1:
-                            hm_path = os.path.join(
-                                base_output_dir,
-                                f"calibration_heatmap_{cond}_amp{_fmt(amp_to_plot)}.png",
-                            )
-                            fig = plot_bump_decay_combined_heatmap(
-                                csv_data=csv_data,
-                                w_inter_values=w_inter_values_swept,
-                                w_pv_values=wpv_sorted,
-                                amplitude=amp_to_plot,
-                                condition=cond,
-                                save_path=hm_path,
-                            )
-                            if not getattr(args, 'no_show', False):
-                                plt.show()
-                            plt.close(fig)
-                            print(f"[ring-calibrate] Combined heatmap → {hm_path}")
-
-                        # ── sanity heatmap (all phase saturation fractions) ──────────
-                        sanity_path = os.path.join(
-                            base_output_dir,
-                            f"sanity_heatmap_{cond}_amp{_fmt(amp_to_plot)}.png",
-                        )
-                        fig = plot_sanity_heatmap(
-                            csv_data=csv_data,
-                            w_inter_values=w_inter_values_swept,
-                            w_pv_values=wpv_sorted,
-                            amplitude=amp_to_plot,
-                            condition=cond,
-                            save_path=sanity_path,
-                        )
-                        if not getattr(args, 'no_show', False):
-                            plt.show()
-                        plt.close(fig)
-                        print(f"[ring-calibrate] Sanity heatmap → {sanity_path}")
-
-                        # ── windowed saturation timecourse ───────────────────
-                        tc_path = os.path.join(
-                            base_output_dir,
-                            f"sanity_timecourse_{cond}_amp{_fmt(amp_to_plot)}.png",
-                        )
-                        fig = plot_sanity_timecourse(
-                            csv_data=csv_data,
-                            w_inter_values=w_inter_values_swept,
-                            w_pv_values=wpv_sorted,
-                            amplitude=amp_to_plot,
-                            condition=cond,
-                            save_path=tc_path,
-                        )
-                        if not getattr(args, 'no_show', False):
-                            plt.show()
-                        plt.close(fig)
-                        print(f"[ring-calibrate] Sanity timecourse → {tc_path}")
-        except Exception as _exc:
-            import traceback
-            print(f"[ring-calibrate] Could not generate heatmaps: {_exc}")
-            traceback.print_exc()
+    # Combined heatmap generation (legacy w_pv sweep) removed — no longer applicable.
 
 
 # ============================================================================
@@ -2205,18 +2069,14 @@ def add_ring_optimize_args(parser: argparse.ArgumentParser) -> None:
                         help="Load initial RingParams from JSON file (same format as --save_best_ring_json output)")
 
     # --- Ring parameter search bounds (optional overrides) ---
-    parser.add_argument("--w_pyr_pyr_inter_lo", type=float, default=0.0005,
-                        help="Lower bound for w_pyr_pyr_inter (default: 0.0005)")
-    parser.add_argument("--w_pyr_pyr_inter_hi", type=float, default=0.05,
-                        help="Upper bound for w_pyr_pyr_inter (default: 0.05)")
-    parser.add_argument("--w_pv_global_lo", type=float, default=0.0005,
-                        help="Lower bound for w_pv_global (default: 0.0005)")
-    parser.add_argument("--w_pv_global_hi", type=float, default=0.1,
-                        help="Upper bound for w_pv_global (default: 0.1)")
     parser.add_argument("--sigma_pyr_deg_lo", type=float, default=5.0,
                         help="Lower bound for sigma_pyr_deg (default: 5.0)")
-    parser.add_argument("--sigma_pyr_deg_hi", type=float, default=60.0,
-                        help="Upper bound for sigma_pyr_deg (default: 60.0)")
+    parser.add_argument("--sigma_pyr_deg_hi", type=float, default=40.0,
+                        help="Upper bound for sigma_pyr_deg (default: 40.0)")
+    parser.add_argument("--sigma_som_deg_lo", type=float, default=5.0,
+                        help="Lower bound for sigma_som_deg (default: 5.0)")
+    parser.add_argument("--sigma_som_deg_hi", type=float, default=40.0,
+                        help="Upper bound for sigma_som_deg (default: 40.0)")
 
     # --- Optimization settings ---
     parser.add_argument("--n_samples", type=int, default=5000,
@@ -2422,9 +2282,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     circuit_bounds = default_bounds(base_circuit)
     circuit_bounds.pop("trans_factor", None)
     ring_bounds = {
-        "w_pyr_pyr_inter": ParamBound(args.w_pyr_pyr_inter_lo, args.w_pyr_pyr_inter_hi, mode="lin"),
-        "w_pv_global":     ParamBound(args.w_pv_global_lo,     args.w_pv_global_hi,     mode="lin"),
-        "sigma_pyr_deg":   ParamBound(args.sigma_pyr_deg_lo,   args.sigma_pyr_deg_hi,   mode="lin"),
+        "sigma_pyr_deg": ParamBound(args.sigma_pyr_deg_lo, args.sigma_pyr_deg_hi, mode="lin"),
+        "sigma_som_deg": ParamBound(args.sigma_som_deg_lo, args.sigma_som_deg_hi, mode="lin"),
     }
 
     # --- Parse frozen parameters ---
@@ -2469,9 +2328,8 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     if target.beta2_ko_pyr is not None:
         print(f"  beta2 KO PYR: {target.beta2_ko_pyr} Hz")
     print(f"\nRing: n_nodes={base_ring.n_nodes}, "
-          f"w_pyr_pyr_inter={base_ring.w_pyr_pyr_inter}, "
-          f"w_pv_global={base_ring.w_pv_global}, "
-          f"sigma_pyr_deg={base_ring.sigma_pyr_deg}")
+          f"sigma_pyr_deg={base_ring.sigma_pyr_deg}, "
+          f"sigma_som_deg={base_ring.sigma_som_deg}")
     print("Mode: rates + trace-based Turing bistability")
     print("KO conditions on: ring")
     print(f"Output dir: {args.output_dir}")
@@ -2553,8 +2411,7 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
         print(
             f"rank {i:02d}: loss={c.loss:.3e} "
             f"means=[pyr={pyr:.4g}, som={som:.4g}, pv={pv:.4g}, vip={vip:.4g}] "
-            f"ring=[w_pyr={rp.w_pyr_pyr_inter:.4g}, w_pv={rp.w_pv_global:.4g}, "
-            f"sigma={rp.sigma_pyr_deg:.4g}]"
+            f"ring=[sigma_pyr={rp.sigma_pyr_deg:.4g}, sigma_som={rp.sigma_som_deg:.4g}]"
         )
 
     # --- Jacobian + fit summary ---
@@ -2563,10 +2420,9 @@ def cmd_ring_optimize(args: argparse.Namespace) -> None:
     J = compute_jacobian(best[0].params, r_ss)
     fit_meta = build_fit_comparison(best[0].ring_means, best[0].ko_means, target, best[0].loss, jacobian=J)
     fit_meta["ring_params"] = {
-        "w_pyr_pyr_inter": round(float(best[0].ring_params.w_pyr_pyr_inter), 6),
-        "w_pv_global":     round(float(best[0].ring_params.w_pv_global), 6),
-        "sigma_pyr_deg":   round(float(best[0].ring_params.sigma_pyr_deg), 6),
-        "n_nodes":         int(best[0].ring_params.n_nodes),
+        "sigma_pyr_deg": round(float(best[0].ring_params.sigma_pyr_deg), 6),
+        "sigma_som_deg": round(float(best[0].ring_params.sigma_som_deg), 6),
+        "n_nodes":       int(best[0].ring_params.n_nodes),
     }
 
     # --- Save final results ---

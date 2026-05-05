@@ -131,9 +131,6 @@ def _precompute_ext_currents(p: CircuitParams, n_steps: int, dt_ms: float):
         k0 = min(int(p.trans_start_ms / dt_ms), n_steps)
         k1 = min(int((p.trans_start_ms + p.trans_duration_ms) / dt_ms), n_steps)
         I_pyr[k0:k1] += p.trans_factor * p.I0_pyr
-        I_som[k0:k1] += p.trans_factor * p.I0_som
-        I_pv[k0:k1] += p.trans_factor * p.I0_pv
-        I_vip[k0:k1] += p.trans_factor * p.I0_vip
     return I_pyr, I_som, I_pv, I_vip
 
 
