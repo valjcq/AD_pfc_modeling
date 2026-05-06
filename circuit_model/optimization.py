@@ -59,12 +59,13 @@ class LossBreakdown:
     ko_firing_rate: float
     jacobian: float
     turing: float
+    ach_ratio: float
     total: float
 
     def __str__(self) -> str:
         return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_firing_rate:.3g}, "
                 f"jac={self.jacobian:.3g}, turing={self.turing:.3g}, "
-                f"total={self.total:.3g}]")
+                f"ach={self.ach_ratio:.3g}, total={self.total:.3g}]")
 
 
 def run_trials(params: CircuitParams, cfg: FitConfig, base_seed: int) -> tuple[bool, np.ndarray]:
@@ -150,7 +151,7 @@ def _loss_from_results(
 
     for name, ok, means in results:
         if not ok:
-            return 1e9, base_means, ko_means, LossBreakdown(1e9, 0., 0., 0., 1e9)
+            return 1e9, base_means, ko_means, LossBreakdown(1e9, 0., 0., 0., 0., 1e9)
         if name == "base":
             base_means = means
         elif name == "alpha7_ko":
@@ -212,7 +213,7 @@ def _loss_from_results(
 
     total = fr_loss + ko_firing_rate + jac_loss + turing_loss + ach_loss
     breakdown = LossBreakdown(firing_rate=fr_loss, ko_firing_rate=ko_firing_rate,
-                               jacobian=jac_loss, turing=turing_loss, total=total)
+                               jacobian=jac_loss, turing=turing_loss, ach_ratio=ach_loss, total=total)
 
     return total, base_means, ko_means, breakdown
 
@@ -561,13 +562,21 @@ def _log_candidate(
     if breakdown is not None:
         # Handle both LossBreakdown objects (standard mode) and dicts (bistable mode)
         if isinstance(breakdown, LossBreakdown):
+            # Only include components that have non-zero values (non-zero weight)
             breakdown_dict = {
-                "firing_rate": float(breakdown.firing_rate),
-                "ko_firing_rate": float(breakdown.ko_firing_rate),
-                "jacobian": float(breakdown.jacobian),
-                "turing": float(breakdown.turing),
                 "total": float(breakdown.total),
             }
+            # Add loss components only if they're non-zero (indicating active weight)
+            if breakdown.firing_rate > 0:
+                breakdown_dict["firing_rate"] = float(breakdown.firing_rate)
+            if breakdown.ko_firing_rate > 0:
+                breakdown_dict["ko_firing_rate"] = float(breakdown.ko_firing_rate)
+            if breakdown.jacobian > 0:
+                breakdown_dict["jacobian"] = float(breakdown.jacobian)
+            if breakdown.turing > 0:
+                breakdown_dict["turing"] = float(breakdown.turing)
+            if breakdown.ach_ratio > 0:
+                breakdown_dict["ach_ratio"] = float(breakdown.ach_ratio)
         elif isinstance(breakdown, dict):
             # Bistable mode: use the dict directly (already has L_bistab, L_rate, etc.)
             breakdown_dict = breakdown

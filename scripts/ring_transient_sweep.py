@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """
-Sweep cue amplitude × noise sigma × response transient factor for ring-run.
+Sweep cue amplitude × noise sigma for ring-run.
 
-Each combination produces a subdirectory inside --output_dir named:
-    cue{amp}_noise{sigma}_response{factor}/
+Output structure:
+    <output_dir>/
+        {noise_type}/noise{sigma}/cue{amp}/
 
-When --sigma_som_values is provided, the sweep is repeated for each sigma_som
-value, each in its own subdirectory: sigma_som{value}/cue{amp}_...
+When --sigma_som_values is provided, each sigma_som gets its own subtree:
+    <output_dir>/
+        sigma_som{value}/
+            {noise_type}/noise{sigma}/cue{amp}/
 
 Usage:
-    python scripts/ring_transient_sweep.py --input_params PATH [options]
+    python scripts/ring_transient_sweep.py --input_params PATH --noise_type {white,ou} [options]
 
 Examples:
+    # White noise sweep (sigma 0.0-1.0)
     python scripts/ring_transient_sweep.py \
-        --input_params params_bistable/vold/bistable_params.json
+        --input_params params_bistable/last_opti/bistable_params.json \
+        --noise_type white \
+        --amplitudes 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 \
+        --sigmas 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
 
+    # OU noise sweep (sigma 0.0-0.4)
     python scripts/ring_transient_sweep.py \
-        --input_params params_bistable/vold/bistable_params.json \
-        --amplitudes 0.3 0.5 0.7 \
-        --sigmas 0.0 0.1 0.3 \
-        --response_factors 0.0 0.3 0.5 \
-        --som_pattern uniform \
-        --sigma_som_values 5 10 15 20 30 \
-        --delay_ms 3000 \
-        --workers 8
+        --input_params params_bistable/last_opti/bistable_params.json \
+        --noise_type ou \
+        --amplitudes 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 \
+        --sigmas 0.0 0.05 0.1 0.15 0.2 0.25 0.3 0.35 0.4
 """
 
 import argparse
 import multiprocessing
+import re
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -57,25 +62,20 @@ def parse_args():
     p.add_argument("--sigmas", type=float, nargs="+",
                    default=[0.0, 0.1, 0.3],
                    help="Noise sigma values (0 = no noise) (default: 0.0 0.1 0.3)")
-    p.add_argument("--response_factors", type=float, nargs="+",
-                   default=[0.0, 0.3, 0.5],
-                   help="Response transient factors (0 = no transient) (default: 0.0 0.3 0.5)")
     p.add_argument("--sigma_som_values", type=float, nargs="+", default=None,
                    help="Sweep over these sigma_som_deg values; each gets its own subdir (default: use ring params JSON value)")
 
     # Ring-run fixed options
     p.add_argument("--delay_ms", type=float, default=5000.0,
                    help="Delay duration in ms (default: 5000)")
-    p.add_argument("--response_duration_ms", type=float, default=500.0,
-                   help="Response transient duration in ms (default: 500)")
-    p.add_argument("--post_response_ms", type=float, default=3000.0,
-                   help="Recording duration after response transient in ms (default: 3000)")
     p.add_argument("--seed", default="rdm",
                    help="Random seed or 'rdm' (default: rdm)")
     p.add_argument("--condition", default="WT",
                    help="Experimental condition (default: WT)")
     p.add_argument("--som_pattern", default=None, choices=["gaussian", "uniform", "none"],
                    help="SOM→PYR connectivity pattern (default: gaussian)")
+    p.add_argument("--noise_type", required=True, choices=["white", "ou"],
+                   help="Noise type: 'white' for white noise, 'ou' for Ornstein-Uhlenbeck noise")
     p.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
                    help="Parallel worker processes (default: all CPUs)")
     p.add_argument("--dry_run", action="store_true",
@@ -104,42 +104,34 @@ def build_jobs(args):
 
         for sigma in args.sigmas:
             for amp in args.amplitudes:
-                for rfactor in args.response_factors:
-                    run_outdir = run_root / f"noise{sigma}" / f"cue{amp}" / f"response{rfactor}"
+                run_outdir = run_root / args.noise_type / f"noise{sigma}" / f"cue{amp}"
 
-                    cmd = [
-                        sys.executable, "-m", "circuit_model", "ring-run",
-                        "--params_json", str(params),
-                        "--amplitude", str(amp),
-                        "--sigma_noise", str(sigma),
-                        "--delay_ms", str(args.delay_ms),
-                        "--seed", str(args.seed),
-                        "--condition", args.condition,
-                        "--no_show",
-                        "--no_snapshot_mp4",
-                        "--output_dir", str(run_outdir),
-                    ]
+                cmd = [
+                    sys.executable, "-m", "circuit_model", "ring-run",
+                    "--params_json", str(params),
+                    "--amplitude", str(amp),
+                    "--sigma_noise", str(sigma),
+                    "--noise_type", args.noise_type,
+                    "--delay_ms", str(args.delay_ms),
+                    "--seed", str(args.seed),
+                    "--condition", args.condition,
+                    "--no_show",
+                    "--no_snapshot_mp4",
+                    "--output_dir", str(run_outdir),
+                ]
 
-                    if args.ring_params_json:
-                        cmd += ["--ring_params_json", str(Path(args.ring_params_json).resolve())]
-                    if args.n_nodes is not None:
-                        cmd += ["--n_nodes", str(args.n_nodes)]
-                    if args.som_pattern is not None:
-                        cmd += ["--som_pattern", args.som_pattern]
-                    if sigma_som is not None:
-                        cmd += ["--sigma_som_deg", str(sigma_som)]
+                if args.ring_params_json:
+                    cmd += ["--ring_params_json", str(Path(args.ring_params_json).resolve())]
+                if args.n_nodes is not None:
+                    cmd += ["--n_nodes", str(args.n_nodes)]
+                if args.som_pattern is not None:
+                    cmd += ["--som_pattern", args.som_pattern]
+                if sigma_som is not None:
+                    cmd += ["--sigma_som_deg", str(sigma_som)]
 
-                    if rfactor > 0.0:
-                        cmd += [
-                            "--response_onset_ms", "0",
-                            "--response_duration_ms", str(args.response_duration_ms),
-                            "--response_factor", str(rfactor),
-                            "--post_response_ms", str(args.post_response_ms),
-                        ]
-
-                    label_base = f"noise{sigma}/cue{amp}/response{rfactor}"
-                    label = f"sigma_som{_fmt_sigma(sigma_som)}/{label_base}" if sigma_som is not None else label_base
-                    jobs.append((label, cmd))
+                label_base = f"{args.noise_type}/noise{sigma}/cue{amp}"
+                label = f"sigma_som{_fmt_sigma(sigma_som)}/{label_base}" if sigma_som is not None else label_base
+                jobs.append((label, cmd))
 
     return jobs, outdir
 
@@ -150,6 +142,37 @@ def run_job(name, cmd):
     return name, result.returncode, tail
 
 
+_SIGMA_SOM_KEY_RE = re.compile(r"^sigma_som([\d.]+)")
+
+
+def _sigma_som_sort_key(group_key: str | None) -> float:
+    """Numeric sort key for sigma_som group labels; None sorts last."""
+    if group_key is None:
+        return float("inf")
+    m = _SIGMA_SOM_KEY_RE.match(group_key)
+    return float(m.group(1)) if m else float("inf")
+
+
+def _plot_heatmap(outdir: Path) -> None:
+    """Regenerate the state heatmap from all runs completed so far."""
+    heatmap_script = Path(__file__).parent / "ring_sweep_heatmap.py"
+    if not heatmap_script.exists():
+        tqdm.write("  (ring_sweep_heatmap.py not found — skipping heatmap)")
+        return
+    output_path = outdir / "state_heatmap.png"
+    result = subprocess.run(
+        [sys.executable, str(heatmap_script),
+         "--sweep_dir", str(outdir),
+         "--output", str(output_path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        tqdm.write(f"  → Heatmap updated: {output_path}")
+    else:
+        tqdm.write(f"  → Heatmap failed:\n{result.stderr.strip()[:400]}")
+
+
 def main():
     args = parse_args()
     jobs, outdir = build_jobs(args)
@@ -158,8 +181,8 @@ def main():
     print(f"Params          : {args.input_params}")
     print(f"Output          : {outdir}")
     print(f"Amplitudes      : {args.amplitudes}")
+    print(f"Noise type      : {args.noise_type}")
     print(f"Noise sigmas    : {args.sigmas}")
-    print(f"Response factors: {args.response_factors}")
     if args.sigma_som_values:
         print(f"sigma_som sweep : {args.sigma_som_values}")
     print(f"Total runs      : {total}")
@@ -174,17 +197,31 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"Workers         : {args.workers}")
 
+    # Group jobs by sigma_som so the heatmap can be updated after each group.
+    sigma_som_groups: dict[str | None, list] = {}
+    for label, cmd in jobs:
+        key = label.split("/")[0] if "/" in label and label.split("/")[0].startswith("sigma_som") else None
+        sigma_som_groups.setdefault(key, []).append((label, cmd))
+
+    group_order = sorted(sigma_som_groups.keys(), key=_sigma_som_sort_key)
+
     failed = []
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_job, n, c): n for n, c in jobs}
-        with tqdm(total=total, unit="run") as bar:
-            for future in as_completed(futures):
-                name, rc, tail = future.result()
-                if rc != 0:
-                    failed.append(name)
-                    tqdm.write(f"FAIL {name}\n  {tail}")
-                bar.set_postfix_str(name[:55])
-                bar.update(1)
+    with tqdm(total=total, unit="run") as bar:
+        for group_key in group_order:
+            group_jobs = sigma_som_groups[group_key]
+            with ProcessPoolExecutor(max_workers=args.workers) as pool:
+                futures = {pool.submit(run_job, n, c): n for n, c in group_jobs}
+                for future in as_completed(futures):
+                    name, rc, tail = future.result()
+                    if rc != 0:
+                        failed.append(name)
+                        tqdm.write(f"FAIL {name}\n  {tail}")
+                    bar.set_postfix_str(name[:55])
+                    bar.update(1)
+
+            label_display = group_key if group_key else "(no sigma_som)"
+            tqdm.write(f"\nCompleted {label_display} — plotting heatmap...")
+            _plot_heatmap(outdir)
 
     if failed:
         print(f"\n{len(failed)} failure(s):")

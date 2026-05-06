@@ -25,6 +25,7 @@ def _extract_component_values(breakdown: dict) -> dict[str, float]:
     rate = _getf("L_rate", _getf("firing_rate", 0.0) + _getf("ring_rate", 0.0))
     ko = _getf("ko_firing_rate", 0.0) + _getf("ko_penalty", 0.0)
     jac = _getf("L_jac", _getf("jacobian", 0.0))
+    ach = _getf("ach_ratio", 0.0)  # Standard optimization mode
 
     return {
         # Canonical components used by plotting functions
@@ -32,7 +33,7 @@ def _extract_component_values(breakdown: dict) -> dict[str, float]:
         "ko": ko,
         "jacobian": jac,
         "turing": _getf("turing", 0.0),
-        "ach_ratio": _getf("ach_ratio", 0.0),
+        "ach_ratio": ach,
         "spatial_uniformity": _getf("spatial_uniformity", 0.0),
         "bump": _getf("bump", 0.0),
         # Bistable-specific terms
@@ -160,10 +161,7 @@ def plot_loss_evolution(
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
-    is_bistable = np.any(components.get("bistability", np.zeros(1)) > 0)
     active_names = [k for k in comp_keys if np.any(components[k] > 0)]
-    if is_bistable:
-        active_names = [k for k in active_names if k not in ("jacobian", "ko", "turing", "ach_ratio")]
     if not active_names:
         active_names = ["rate", "ko", "jacobian", "turing"]
 
@@ -330,10 +328,7 @@ def plot_loss_evolution_ratios(
     components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
     steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
 
-    is_bistable = np.any(components.get("bistability", np.zeros(1)) > 0)
     active_names = [k for k in comp_keys if np.any(components[k] > 0)]
-    if is_bistable:
-        active_names = [k for k in active_names if k not in ("jacobian", "ko", "turing", "ach_ratio")]
     if not active_names:
         active_names = ["rate", "ko", "jacobian", "turing"]
 

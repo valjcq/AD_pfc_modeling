@@ -407,15 +407,11 @@ def bistable_loss(
 
     if return_components:
         r_high_fp = r_high_fp_candidate
+        # Return WEIGHTED components to match what was used in L_total
+        # Only include components that have non-zero weight (active in optimization)
         components = {
-            "L_bistab": float(L_bistab),
-            "L_rate": float(L_rate),
-            "L_rate_high": float(L_rate_high),
-            "L_margin": float(L_margin),
-            "L_jac": float(L_jac),
-            "L_peak": float(L_peak),
-            "nullcline_peak_hz": float(nullcline_peak),
             "L_total": float(L_total),
+            "nullcline_peak_hz": float(nullcline_peak),
             "r_low_fp": float(r_low_fp),
             "r_high_fp": float(r_high_fp) if r_high_fp is not None else None,
             "n_stable": int(n_stable),
@@ -430,6 +426,20 @@ def bistable_loss(
             "r_som_high_fp": float(r_som_high_fp) if r_som_high_fp is not None else None,
             "r_vip_high_fp": float(r_vip_high_fp) if r_vip_high_fp is not None else None,
         }
+        # Only add loss components that have non-zero weight
+        if cfg.w_bistab > 0.0:
+            components["L_bistab"] = float(cfg.w_bistab * L_bistab)
+        if cfg.w_rate > 0.0:
+            components["L_rate"] = float(cfg.w_rate * L_rate)
+        if cfg.w_rate_high > 0.0:
+            components["L_rate_high"] = float(cfg.w_rate_high * L_rate_high)
+        if cfg.w_margin > 0.0:
+            components["L_margin"] = float(cfg.w_margin * L_margin)
+        if cfg.w_jacobian > 0.0:
+            components["L_jac"] = float(cfg.w_jacobian * L_jac)
+        if cfg.w_peak > 0.0:
+            components["L_peak"] = float(cfg.w_peak * L_peak)
+        
         return L_total, components
 
     return L_total
@@ -467,15 +477,21 @@ def save_bistable_summary(
     lines.append("")
 
     # Loss components
-    lines.append("  LOSS COMPONENTS:")
-    lines.append(f"    L_bistab   (sign pattern):     {components.get('L_bistab', 0.0):10.4g}")
-    lines.append(f"    L_rate     (low FP rates):     {components.get('L_rate', 0.0):10.4g}")
-    lines.append(f"    L_rate_high(high FP rates):    {components.get('L_rate_high', 0.0):10.4g}")
-    lines.append(f"    L_margin   (FP separation):    {components.get('L_margin', 0.0):10.4g}")
-    lines.append(f"    L_jac      (Jacobian reg.):    {components.get('L_jac', 0.0):10.4g}")
-    lines.append(f"    L_peak     (nullcline peak):   {components.get('L_peak', 0.0):10.4g}  [peak={components.get('nullcline_peak_hz', float('nan')):.1f} Hz]")
-    lines.append(f"    ─" * 35)
-    lines.append(f"    L_total                        {components.get('L_total', 0.0):10.4g}")
+    def _wrow(label, key, weight):
+        raw = components.get(key, 0.0)
+        return f"    {label:<28} {raw:8.4g}  × {weight:<5g} = {weight * raw:8.4g}"
+
+    lines.append("  LOSS COMPONENTS:                   raw      weight    weighted")
+    lines.append(_wrow("L_bistab   (sign pattern):", "L_bistab",    cfg.w_bistab))
+    lines.append(_wrow("L_rate     (low FP rates):", "L_rate",      cfg.w_rate))
+    lines.append(_wrow("L_rate_high(high FP rates):", "L_rate_high", cfg.w_rate_high))
+    lines.append(_wrow("L_margin   (FP separation):", "L_margin",   cfg.w_margin))
+    lines.append(_wrow("L_jac      (Jacobian reg.):", "L_jac",      cfg.w_jacobian))
+    peak_raw = components.get('L_peak', 0.0)
+    peak_hz  = components.get('nullcline_peak_hz', float('nan'))
+    lines.append(_wrow("L_peak     (nullcline peak):", "L_peak",    cfg.w_peak) + f"  [peak={peak_hz:.1f} Hz]")
+    lines.append("    " + "─" * 62)
+    lines.append(f"    {'L_total':<28} {'':>8}  {'':>7}   {components.get('L_total', 0.0):8.4g}")
     lines.append("")
 
     # Fixed points

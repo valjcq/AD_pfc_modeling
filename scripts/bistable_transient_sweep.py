@@ -2,23 +2,34 @@
 """
 Sweep transient amplitude × noise sigma for a single-node bistable run.
 
-sigma=0 runs with no noise; sigma>0 uses OU noise (same as ring-run).
-Each combination saves one PNG using the naming convention:
-    cue{amp}_sigma{sigma}.png
+Output layout (mirrors ring_transient_sweep.py)
+-----------------------------------------------
+    <output_dir>/
+        {noise_type}/
+            noise{sigma}/
+                cue{amp}/
+                    plot.png
+                    run_metrics.json
+
+After every noise-sigma column completes, the state heatmap is updated.
 
 Usage:
-    python scripts/bistable_transient_sweep.py --input_params PATH [options]
+    python scripts/bistable_transient_sweep.py --input_params PATH --noise_type {white,ou} [options]
 
 Examples:
+    # White noise sweep (sigma 0.0-1.0)
     python scripts/bistable_transient_sweep.py \
-        --input_params params_bistable/vold/bistable_params.json
+        --input_params params_bistable/last_opti/bistable_params.json \
+        --noise_type white \
+        --amplitudes 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 \
+        --sigmas 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
 
+    # OU noise sweep (sigma 0.0-0.4)
     python scripts/bistable_transient_sweep.py \
-        --input_params params_bistable/vnew_no_somadapt/best_params.json \
-        --amplitudes 0.2 0.5 1.0 2.0 \
-        --sigmas 0.0 0.1 0.3 \
-        --T_ms 6000 \
-        --output_dir /tmp/sweep_out
+        --input_params params_bistable/last_opti/bistable_params.json \
+        --noise_type ou \
+        --amplitudes 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 \
+        --sigmas 0.0 0.05 0.1 0.15 0.2 0.25 0.3 0.35 0.4
 """
 
 import argparse
@@ -55,8 +66,10 @@ def parse_args():
     p.add_argument("--seed", default=None,
                    help="Random seed for reproducibility (default: none)")
     p.add_argument("--condition", default=None,
-                   choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"],
+                   choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"],
                    help="Experimental condition preset (default: none)")
+    p.add_argument("--noise_type", required=True, choices=["white", "ou"],
+                   help="Noise type: 'white' for white noise, 'ou' for Ornstein-Uhlenbeck noise")
     p.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
                    help="Parallel worker processes (default: all CPUs)")
     p.add_argument("--dry_run", action="store_true",
@@ -68,11 +81,12 @@ def build_jobs(args):
     params = Path(args.input_params).resolve()
     outdir = Path(args.output_dir).resolve() if args.output_dir else params.parent / "transient_sweep"
 
-    jobs = []
-    for amp in args.amplitudes:
-        for sigma in args.sigmas:
-            name = f"cue{amp}_sigma{sigma}.png"
-            noise_type = "none" if sigma == 0.0 else "ou"
+    # Group jobs by noise sigma (so we can plot heatmap after each column)
+    sigma_groups: dict[float, list] = {}
+    for sigma in args.sigmas:
+        group = []
+        for amp in args.amplitudes:
+            run_dir = outdir / args.noise_type / f"noise{sigma}" / f"cue{amp}"
 
             cmd = [
                 sys.executable, "-m", "circuit_model", "run",
@@ -81,10 +95,11 @@ def build_jobs(args):
                 "--trans_start_ms", str(args.trans_start_ms),
                 "--trans_duration_ms", str(args.trans_duration_ms),
                 "--trans_factor", str(amp),
-                "--noise_type", noise_type,
+                "--noise_type", args.noise_type,
                 "--T_ms", str(args.T_ms),
                 "--no_show",
-                "--save_plot", str(outdir / name),
+                "--save_plot", str(run_dir / "plot.png"),
+                "--save_metrics", str(run_dir / "run_metrics.json"),
             ]
 
             if sigma > 0.0:
@@ -94,9 +109,11 @@ def build_jobs(args):
             if args.condition is not None:
                 cmd += ["--condition", args.condition]
 
-            jobs.append((name, cmd))
+            label = f"{args.noise_type}/noise{sigma}/cue{amp}"
+            group.append((label, cmd))
+        sigma_groups[sigma] = group
 
-    return jobs, outdir
+    return sigma_groups, outdir
 
 
 def run_job(name, cmd):
@@ -105,38 +122,65 @@ def run_job(name, cmd):
     return name, result.returncode, tail
 
 
+def _plot_heatmap(outdir: Path) -> None:
+    """Regenerate the state heatmap from all runs completed so far."""
+    heatmap_script = Path(__file__).parent / "bistable_sweep_heatmap.py"
+    if not heatmap_script.exists():
+        tqdm.write("  (bistable_sweep_heatmap.py not found — skipping heatmap)")
+        return
+    output_path = outdir / "state_heatmap.png"
+    result = subprocess.run(
+        [sys.executable, str(heatmap_script),
+         "--sweep_dir", str(outdir),
+         "--output", str(output_path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        tqdm.write(f"  → Heatmap updated: {output_path}")
+    else:
+        tqdm.write(f"  → Heatmap failed:\n{result.stderr.strip()[:400]}")
+
+
 def main():
     args = parse_args()
-    jobs, outdir = build_jobs(args)
-    total = len(jobs)
+    sigma_groups, outdir = build_jobs(args)
+    total = sum(len(g) for g in sigma_groups.values())
 
     print(f"Params     : {args.input_params}")
     print(f"Output     : {outdir}")
     print(f"Amplitudes : {args.amplitudes}")
+    print(f"Noise type : {args.noise_type}")
     print(f"Sigmas     : {args.sigmas}")
     print(f"Total runs : {total}")
 
     if args.dry_run:
         print("\n--- DRY RUN ---")
-        for name, cmd in jobs:
-            print(f"  {name}")
-            print("    " + " ".join(cmd))
+        for sigma, group in sigma_groups.items():
+            for name, cmd in group:
+                print(f"  {name}")
+                print("    " + " ".join(cmd))
         return
 
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"Workers    : {args.workers}")
 
     failed = []
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_job, n, c): n for n, c in jobs}
-        with tqdm(total=total, unit="run") as bar:
-            for future in as_completed(futures):
-                name, rc, tail = future.result()
-                if rc != 0:
-                    failed.append(name)
-                    tqdm.write(f"FAIL {name}\n  {tail}")
-                bar.set_postfix_str(name[:55])
-                bar.update(1)
+    with tqdm(total=total, unit="run") as bar:
+        for sigma in sorted(sigma_groups.keys()):
+            group = sigma_groups[sigma]
+            with ProcessPoolExecutor(max_workers=args.workers) as pool:
+                futures = {pool.submit(run_job, n, c): n for n, c in group}
+                for future in as_completed(futures):
+                    name, rc, tail = future.result()
+                    if rc != 0:
+                        failed.append(name)
+                        tqdm.write(f"FAIL {name}\n  {tail}")
+                    bar.set_postfix_str(name[:55])
+                    bar.update(1)
+
+            tqdm.write(f"\nCompleted noise={sigma} — plotting heatmap...")
+            _plot_heatmap(outdir)
 
     if failed:
         print(f"\n{len(failed)} failure(s):")
@@ -144,7 +188,7 @@ def main():
             print(f"  {f}")
         sys.exit(1)
     else:
-        print(f"\nDone. {total} plots saved to {outdir}")
+        print(f"\nDone. {total} runs saved to {outdir}")
 
 
 if __name__ == "__main__":

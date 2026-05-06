@@ -27,6 +27,7 @@ from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBrea
 from .simulation import simulate_circuit
 from .jacobian import print_sanity_check, compute_jacobian
 from .defaults import DEFAULT_WT_PARAMS_PATH, DEFAULT_APP_PARAMS_PATH, DEFAULT_WT_RING_PARAMS_PATH, DEFAULT_APP_RING_PARAMS_PATH
+from .random_search import RandomBistableSearchConfig, run_random_bistable_search
 
 # Hardcoded fallback initialization used when params/fit_init.json is unavailable.
 DEFAULT_FIT_INIT_KWARGS = {
@@ -275,7 +276,7 @@ def add_simulation_args(parser: argparse.ArgumentParser) -> None:
         "--condition",
         type=str,
         default="",
-        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"],
+        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"],
         help=(
             "Apply an experimental condition preset. If --params_json is not provided, "
             "the command auto-loads default project WT/WT_APP fitted files when available."
@@ -511,6 +512,64 @@ def cmd_run(args: argparse.Namespace) -> None:
         smooth_ms=getattr(args, "smooth_ms", 0.0),
     )
 
+    if getattr(args, "save_metrics", ""):
+        _save_run_metrics_bistable(result, params, args, args.save_metrics)
+
+
+def _save_run_metrics_bistable(result, params, args, metrics_path: str) -> None:
+    """Compute and save pre/post-transient state metrics as JSON.
+
+    Time windows
+    ------------
+    pre-transient  : [100 ms, trans_start - 100 ms)   — settled baseline
+    during          : [trans_start, trans_end]          — peak only
+    post-transient  : [trans_end + 300 ms, T_ms]        — settled post state
+    """
+    import json
+    from pathlib import Path as _Path
+
+    t      = result.t_ms
+    r_pyr  = result.r[:, 0]
+
+    trans_start = params.trans_start_ms if params.trans_enabled else float("nan")
+    trans_end   = (trans_start + params.trans_duration_ms) if params.trans_enabled else float("nan")
+    SETTLE_MS   = 300.0
+
+    if params.trans_enabled and not np.isnan(trans_start):
+        pre_mask   = (t >= 100.0) & (t < trans_start - 100.0)
+        trans_mask = (t >= trans_start) & (t <= trans_end)
+        post_mask  = t >= (trans_end + SETTLE_MS)
+    else:
+        pre_mask   = t >= 100.0
+        trans_mask = np.zeros(len(t), dtype=bool)
+        post_mask  = t >= (t[-1] * 0.5)
+
+    pre_pyr   = float(r_pyr[pre_mask].mean())   if np.any(pre_mask)   else float("nan")
+    trans_peak = float(r_pyr[trans_mask].max())  if np.any(trans_mask) else float("nan")
+    post_pyr  = float(r_pyr[post_mask].mean())  if np.any(post_mask)  else float("nan")
+
+    actual_sigma = 0.0 if getattr(args, "noise_type", "none") == "none" else float(params.sigma_noise)
+
+    metrics = {
+        "params": {
+            "amplitude":        round(float(params.trans_factor), 4),
+            "sigma_noise":      round(actual_sigma, 6),
+            "trans_start_ms":   float(trans_start),
+            "trans_duration_ms": float(params.trans_duration_ms) if params.trans_enabled else float("nan"),
+            "T_ms":             float(t[-1]),
+        },
+        "steady_state": {
+            "pre_trans_pyr_hz":  round(pre_pyr,   3),
+            "trans_peak_pyr_hz": round(trans_peak, 3),
+            "post_trans_pyr_hz": round(post_pyr,  3),
+        },
+    }
+
+    out = _Path(metrics_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(metrics, f, indent=2)
+
 
 def cmd_study(args: argparse.Namespace) -> None:
     """Run batch study across experimental conditions and generate box plots."""
@@ -599,6 +658,93 @@ def cmd_study(args: argparse.Namespace) -> None:
         show=not args.no_show,
         unit=args.unit,
     )
+
+
+def cmd_random_bistable_search(args: argparse.Namespace) -> None:
+    """Run random parameter sampling and log only bistable hits."""
+    from dataclasses import replace
+    from .bistable_loss import BistableConfig
+
+    condition_key = args.condition if getattr(args, "condition", "") else None
+    base, load_msg = _load_params_with_optional_condition(
+        params_json=args.params_json,
+        condition_key=condition_key,
+        context="random-bistable-search",
+    )
+    print(load_msg)
+
+    if args.set_params:
+        overrides = parse_set_params(args.set_params)
+        allowed = {f.name for f in fields(CircuitParams)}
+        clean = {k: v for k, v in overrides.items() if k in allowed}
+        if clean:
+            base = replace(base, **clean)
+            print(f"Overrides applied: {', '.join(f'{k}={v}' for k, v in clean.items())}")
+
+    freeze = parse_freeze_list(args.freeze)
+    if args.no_adapt:
+        base = replace(base, J_adapt_pyr=0.0, J_adapt_som=0.0)
+        freeze |= {"J_adapt_pyr", "J_adapt_som"}
+        print("--no_adapt: J_adapt_pyr=0, J_adapt_som=0 (frozen)")
+
+    bounds = default_bounds(base, w_hi=getattr(args, "w_hi", None))
+
+    if args.show_params:
+        print_parameter_status(bounds, freeze, base)
+
+    bistable_cfg = BistableConfig(
+        r_low_target=args.r_low_hz,
+        delta_r_min=args.delta_r_min,
+        r_pv_target=args.r_pv_low_target,
+        r_som_target=args.r_som_low_target,
+        r_vip_target=args.r_vip_low_target,
+        r_pyr_high_target=args.r_pyr_high_target,
+        r_som_high_target=args.r_som_high_target,
+        r_pv_high_target=args.r_pv_high_target,
+        r_vip_high_target=args.r_vip_high_target,
+    )
+
+    search_cfg = RandomBistableSearchConfig(
+        n_samples=args.n_samples,
+        seed=args.seed,
+        show_every=args.show_every,
+        output_jsonl=args.output_jsonl,
+        summary_txt=args.summary_txt,
+        append=args.append,
+        max_hits=args.max_hits,
+        sim_T_ms=args.T_ms,
+        sim_dt_ms=args.dt_ms,
+        sim_burn_in_ms=args.burn_in_ms,
+        sim_window_ms=args.window_ms,
+        sim_noise_type=args.noise_type,
+        sim_tau_noise_ms=args.tau_noise_ms,
+    )
+
+    print("\nRandom bistable search:")
+    print(f"  samples:    {search_cfg.n_samples}")
+    print(f"  seed:       {search_cfg.seed}")
+    print(f"  freeze:     {len(freeze)} params")
+    print(f"  output:     {search_cfg.output_jsonl}")
+    print("  simulation: "
+          f"T={search_cfg.sim_T_ms} ms, dt={search_cfg.sim_dt_ms} ms, "
+          f"burn_in={search_cfg.sim_burn_in_ms} ms, window={search_cfg.sim_window_ms} ms, "
+          f"noise={search_cfg.sim_noise_type}")
+    print()
+
+    summary = run_random_bistable_search(
+        base=base,
+        bounds=bounds,
+        freeze=freeze,
+        bistable_cfg=bistable_cfg,
+        search_cfg=search_cfg,
+    )
+
+    print("\nSearch complete:")
+    print(f"  bistable hits:      {summary['bistable_hits']}")
+    print(f"  evaluation errors:  {summary['evaluation_errors']}")
+    print(f"  hit rate:           {summary['hit_rate_pct']:.6f}%")
+    print(f"  hits JSONL:         {summary['hits_jsonl']}")
+    print(f"  summary TXT:        {summary['summary_txt']}")
 
 
 def cmd_optimize(args: argparse.Namespace) -> None:
@@ -722,23 +868,15 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             w_rate=args.w_rate_bistab,
             w_rate_high=args.w_rate_high,
             w_margin=args.w_margin,
+            w_jacobian=args.jacobian_weight,
             nullcline_peak_max=args.nullcline_peak_max,
             w_peak=args.w_peak,
             condition=getattr(args, "condition", "WT"),
         )
 
     if mode == "bistable":
-        noops = []
-        if args.jacobian_weight != 1.0:
-            noops.append(f"--jacobian_weight {args.jacobian_weight}")
-        if args.turing_weight != 0.0:
-            noops.append(f"--turing_weight {args.turing_weight}")
-        if args.ach_ratio_weight != 0.0:
-            noops.append(f"--ach_ratio_weight {args.ach_ratio_weight}")
-        if noops:
-            print(f"WARNING: {', '.join(noops)} {'have' if len(noops) > 1 else 'has'} no effect in bistable mode "
-                  f"(Jacobian weight is fixed at BistableConfig.w_jacobian=0.1; "
-                  f"Turing and ACh ratio losses are not used).")
+        if args.turing_weight != 0.0 or args.ach_ratio_weight != 0.0:
+            print("WARNING (bistable mode): --turing_weight and --ach_ratio_weight have no effect.")
 
     # Print parameter status
     if args.show_params:
@@ -1025,6 +1163,9 @@ Examples:
     # Run batch study across conditions
     python -m circuit_model study --n_runs 100 --noise_type white --tau_noise_ms 5
 
+    # Random parameter search for bistable regimes
+    python -m circuit_model random-bistable-search --n_samples 100000 --show_every 2000
+
     # Ring attractor: single condition
     python -m circuit_model ring-run --condition WT --amplitude 3
 
@@ -1057,6 +1198,8 @@ Examples:
                             help="Time range to plot: 'start,end' in ms (e.g., '1000,2000')")
     run_parser.add_argument("--save_plot", type=str, default="",
                             help="Save plot to file (e.g., 'output.png')")
+    run_parser.add_argument("--save_metrics", type=str, default="",
+                            help="Save pre/post-transient state metrics to JSON (e.g., 'run_metrics.json')")
     run_parser.add_argument("--no_show", action="store_true",
                             help="Don't display the plot (useful for batch processing)")
 
@@ -1252,7 +1395,7 @@ Examples:
         "--condition",
         type=str,
         default="",
-        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"],
+        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"],
         help=(
             "Apply an experimental condition preset. If --params_json is not provided, "
             "the command auto-loads default project WT/WT_APP fitted files when available."
@@ -1358,6 +1501,90 @@ Examples:
     study_parser.add_argument("--unit", type=str, default="Hz",
                               choices=["Hz"],
                               help="Rate unit for display (default: Hz)")
+
+    # =========================================================================
+    # RANDOM-BISTABLE-SEARCH subcommand
+    # =========================================================================
+    random_parser = subparsers.add_parser(
+        "random-bistable-search",
+        help="Randomly sample parameter sets and record bistable hits",
+        description=(
+            "Sample parameters from default bounds (respecting --freeze), evaluate bistability "
+            "with nullcline tools, and for bistable hits simulate low/high states and log their rates."
+        ),
+    )
+    random_parser.add_argument("--n_samples", type=int, default=100000,
+                               help="Number of random parameter sets to evaluate (default: 100000)")
+    random_parser.add_argument("--seed", type=int, default=0,
+                               help="Random seed for reproducibility (default: 0)")
+    random_parser.add_argument("--show_every", type=int, default=1000,
+                               help="Progress print interval in number of evaluated samples (default: 1000)")
+    random_parser.add_argument("--max_hits", type=int, default=None,
+                               help="Optional early stop after this many bistable hits")
+    random_parser.add_argument("--output_jsonl", type=str, default="figs/optim/random_bistable_hits.jsonl",
+                               help="Output JSONL file for bistable hits")
+    random_parser.add_argument("--summary_txt", type=str, default="figs/optim/random_bistable_summary.txt",
+                               help="Output summary text file")
+    random_parser.add_argument("--append", action="store_true",
+                               help="Append hits to --output_jsonl instead of overwriting")
+
+    random_parser.add_argument("--params_json", type=str, default="",
+                               help="Load base parameters from JSON file")
+    random_parser.add_argument(
+        "--condition",
+        type=str,
+        default="",
+        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"],
+        help=(
+            "Apply an experimental condition preset. If --params_json is not provided, "
+            "the command auto-loads default project WT/WT_APP fitted files when available."
+        ),
+    )
+    random_parser.add_argument("--set", dest="set_params", type=str, default="",
+                               help="Override parameter values: 'name=val,name=val'")
+    random_parser.add_argument("--freeze", type=str, default="",
+                               help="Comma-separated parameter names to freeze to base values")
+    random_parser.add_argument("--w_hi", type=float, default=None,
+                               help="Upper bound for synaptic weights (nA/Hz). Default: 0.01")
+    random_parser.add_argument("--show_params", action="store_true",
+                               help="Show which parameters are free vs frozen")
+    random_parser.add_argument("--no_adapt", action="store_true",
+                               help="Set and freeze J_adapt_pyr=0 and J_adapt_som=0")
+
+    random_parser.add_argument("--r_low_hz", type=float, default=8.0,
+                               help="Target low-state PYR fixed point for bistability check (Hz)")
+    random_parser.add_argument("--r_som_low_target", type=float, default=5.0,
+                               help="Target low-state SOM fixed point (Hz)")
+    random_parser.add_argument("--r_pv_low_target", type=float, default=3.0,
+                               help="Target low-state PV fixed point (Hz)")
+    random_parser.add_argument("--r_vip_low_target", type=float, default=2.0,
+                               help="Target low-state VIP fixed point (Hz)")
+    random_parser.add_argument("--delta_r_min", type=float, default=15.0,
+                               help="Minimum high-vs-low PYR fixed-point separation (Hz)")
+    random_parser.add_argument("--r_pyr_high_target", type=float, default=60.2,
+                               help="Target high-state PYR fixed point (Hz)")
+    random_parser.add_argument("--r_som_high_target", type=float, default=35.2,
+                               help="Target high-state SOM fixed point (Hz)")
+    random_parser.add_argument("--r_pv_high_target", type=float, default=35.3,
+                               help="Target high-state PV fixed point (Hz)")
+    random_parser.add_argument("--r_vip_high_target", type=float, default=68.8,
+                               help="Target high-state VIP fixed point (Hz)")
+
+    random_parser.add_argument("--T_ms", type=float, default=2500.0,
+                               help="Simulation duration for low/high state validation (ms)")
+    random_parser.add_argument("--dt_ms", type=float, default=0.1,
+                               help="Simulation integration step for state validation (ms)")
+    random_parser.add_argument("--burn_in_ms", type=float, default=1800.0,
+                               help="Burn-in period when computing low/high state means (ms)")
+    random_parser.add_argument("--window_ms", type=float, default=500.0,
+                               help="Averaging window for low/high state means (ms)")
+    random_parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="none",
+                               help="Noise model for low/high state simulation checks")
+    random_parser.add_argument("--tau_noise_ms", type=float, default=5.0,
+                               help="OU noise time constant (ms) for low/high state validation")
+    random_parser.add_argument("--n_workers", type=int, default=10,
+                               help="Number of parallel workers for multiprocessing (default: 10). "
+                                    "Set to 1 for serial execution.")
 
     # =========================================================================
     # RING-RUN subcommand
@@ -1782,7 +2009,7 @@ Examples:
     if args.command is None:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', 'diagnostic', "
-              "'plot-transfer', "
+              "'plot-transfer', 'random-bistable-search', "
               "'ring-run', 'ring-study', "
               "'ring-diffusion', 'ring-noise-floor', "
               "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
@@ -1798,6 +2025,8 @@ Examples:
         cmd_optimize(args)
     elif args.command == "study":
         cmd_study(args)
+    elif args.command == "random-bistable-search":
+        cmd_random_bistable_search(args)
     elif args.command == "ring-run":
         from .ring.cli import cmd_run as cmd_ring_run
         cmd_ring_run(args)

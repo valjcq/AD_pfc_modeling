@@ -837,6 +837,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
     parser.add_argument(
+        "--noise_type", type=str, default="white", choices=["white", "ou"],
+        help="Noise type: 'white' for white noise (default), 'ou' for Ornstein-Uhlenbeck colored noise.",
+    )
+
+    parser.add_argument(
         "--snapshot_anim_step_ms", type=float, default=2.0,
         help="Frame spacing for snapshot MP4 export in ms (default: 2)",
     )
@@ -1092,6 +1097,7 @@ def _ring_run_single(job: tuple) -> dict:
         stimuli=stimuli_short, r0=r0, I_adapt0=I_adapt0,
         seed=seed, connectivity=connectivity,
         record_dt_ms=args_d.get('record_dt_ms', 5.0),
+        noise_type=args_d.get('noise_type', 'white'),
     )
 
     result.t_ms += BURN_IN_MS
@@ -1354,6 +1360,7 @@ def _args_to_dict(args: argparse.Namespace) -> dict:
         'response_duration_ms': getattr(args, 'response_duration_ms', 500.0),
         'response_factor': getattr(args, 'response_factor', 0.5),
         'record_dt_ms': getattr(args, 'record_dt_ms', 5.0),
+        'noise_type': getattr(args, 'noise_type', 'white'),
     }
 
 
@@ -1539,6 +1546,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         connectivity=connectivity,
         record_dt_ms=args.record_dt_ms,
         record_adaptation=True,
+        noise_type=args.noise_type,
     )
 
     sigma_tag = f"sigma{local_params.sigma_noise:.3g}"

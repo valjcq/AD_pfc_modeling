@@ -1,0 +1,14 @@
+======================================================================
+RANDOM BISTABLE SEARCH SUMMARY
+======================================================================
+samples_evaluated: 100000
+samples_requested: 100000
+seed: 0
+workers: 10
+bistable_hits: 778
+evaluation_errors: 99222
+hit_rate: 0.778000%
+hits_jsonl: figs/optim/random_bistable_100k.jsonl
+summary_txt: figs/optim/random_bistable_summary_100k.txt
+simulation: T_ms=2500.0, dt_ms=0.1, burn_in_ms=1800.0, window_ms=500.0, noise=none
+======================================================================

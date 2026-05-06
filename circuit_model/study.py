@@ -128,10 +128,20 @@ STUDY_CONDITIONS: dict[str, ExperimentalCondition] = {
         ko_alpha5=True,
         act_alpha5=0.0,
     ),
+    # APP condition simulated via nicotinic receptor blockade (Koukouli et al. 2025):
+    #   α7: −90% activation, α5: −40% activation, β2: −12.5% activation (midpoint of 0–25% range)
+    "APP_sim": ExperimentalCondition(
+        name="APP sim",
+        label="APP simulated (nAChR blockade)",
+        is_app=False,
+        act_alpha7=0.10,
+        act_alpha5=0.60,
+        act_beta2=0.875,
+    ),
 }
 
 # Condition order for plotting
-CONDITION_ORDER = ["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP"]
+CONDITION_ORDER = ["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"]
 
 
 # =============================================================================
