@@ -48,8 +48,11 @@ class BistableConfig:
     # Window around r_pyr_high_target where F must be positive (high basin check).
     # Prevents the optimizer from satisfying the high-basin condition with a
     # spurious low-rate bump (e.g., at 17 Hz instead of 60 Hz).
+    # Upper bound is 1.0 (not >1.0): the high basin is strictly below the high FP,
+    # where F crosses zero from + to −. Above the FP, F is negative (tail region)
+    # and is handled separately by L_tail.
     r_high_basin_lo_frac: float = 0.7   # lower bound = r_pyr_high_target × this
-    r_high_basin_hi_frac: float = 1.2   # upper bound = r_pyr_high_target × this
+    r_high_basin_hi_frac: float = 1.0   # upper bound = r_pyr_high_target × this
 
     # Nullcline peak constraint: penalises max(Φ) above this value
     nullcline_peak_max: float = 80.0    # Hz

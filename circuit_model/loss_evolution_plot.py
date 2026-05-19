@@ -423,5 +423,110 @@ def plot_loss_evolution_ratios(
     plt.savefig(str(output_file), dpi=dpi, bbox_inches='tight')
 
     plt.close(fig)
-    
+
+    return str(output_file)
+
+
+def plot_loss_evolution_thesis(
+    log_file: str,
+    output_dir: Optional[str] = None,
+    figsize: Optional[tuple[float, float]] = None,
+    dpi: int = 150,
+) -> str:
+    """
+    Create a clean 2-panel loss figure for the thesis.
+
+    Left panel:  total loss on log scale.
+    Right panel: stacked loss components on log scale.
+
+    Args:
+        log_file: Path to JSONL optimization log file
+        output_dir: Directory to save the plot. If None, uses parent of log_file
+        figsize: (width, height) in inches. Default: (10, 4)
+        dpi: DPI for saved figure
+
+    Returns:
+        Path to saved figure
+    """
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    if figsize is None:
+        figsize = (10, 4)
+
+    if output_dir is None:
+        output_dir = str(Path(log_file).parent)
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    comp_keys = [
+        "rate", "ko", "jacobian", "turing", "ach_ratio", "spatial_uniformity",
+        "bump", "bistability", "margin", "rate_high", "physiology", "ceiling",
+    ]
+
+    steps, total_losses_list, comp_lists = [], [], {k: [] for k in comp_keys}
+    with open(log_file, "r", encoding="utf-8") as f:
+        for line in f:
+            entry = json.loads(line.strip())
+            steps.append(entry["step"])
+            total_losses_list.append(entry["loss"])
+            comp_vals = _extract_component_values(entry.get("breakdown", {}))
+            for k in comp_keys:
+                comp_lists[k].append(comp_vals.get(k, 0.0))
+
+    steps = np.array(steps)
+    total_losses = np.array(total_losses_list)
+    components = {k: np.array(v, dtype=float) for k, v in comp_lists.items()}
+    steps, total_losses, components = _drop_aberrant_initial_steps(steps, total_losses, components)
+
+    active_names = [k for k in comp_keys if np.any(components[k] > 0)]
+    if not active_names:
+        active_names = ["rate", "ko", "jacobian", "turing"]
+
+    colors = {
+        "rate": "#1f77b4",
+        "ko": "#ff7f0e",
+        "jacobian": "#2ca02c",
+        "turing": "#d62728",
+        "ach_ratio": "#9467bd",
+        "spatial_uniformity": "#8c564b",
+        "bump": "#17becf",
+        "bistability": "#e377c2",
+        "margin": "#bcbd22",
+        "rate_high": "#17becf",
+        "physiology": "#7f7f7f",
+        "ceiling": "#aec7e8",
+    }
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+
+    # --- Left: total loss (log scale) ---
+    ax1.plot(steps, total_losses, color="black", linewidth=2)
+    ax1.set_yscale("log")
+    ax1.set_xlabel("Optimisation step")
+    ax1.set_ylabel("Total loss")
+    ax1.set_title("Total loss evolution")
+    ax1.grid(True, alpha=0.3, which="both")
+
+    # --- Right: stacked components (log scale) ---
+    # stackplot needs all-non-negative values; floor at a tiny positive value
+    floor = 1e-10
+    stack_arrays = [np.maximum(components[n], floor) for n in active_names]
+    stack_labels = [_pretty_component_name(n) for n in active_names]
+    stack_colors = [colors.get(n, "#7f7f7f") for n in active_names]
+    ax2.stackplot(steps, *stack_arrays, labels=stack_labels, colors=stack_colors, alpha=0.75)
+    ax2.set_yscale("log")
+    ax2.set_xlabel("Optimisation step")
+    ax2.set_ylabel("Loss (stacked components)")
+    ax2.set_title("Loss components (stacked)")
+    ax2.legend(loc="upper right", fontsize=8, framealpha=0.8)
+    ax2.grid(True, alpha=0.3, which="both")
+
+    plt.tight_layout()
+
+    output_file = Path(output_dir) / "loss_evolution_thesis.pdf"
+    plt.savefig(str(output_file), bbox_inches="tight")
+    plt.close(fig)
+
     return str(output_file)

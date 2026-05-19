@@ -20,7 +20,7 @@ from pathlib import Path
 import warnings
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from circuit_model.constants import R_MAX_PHYS
+from circuit_model.constants import R_MAX_PHYS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
 
 
 class SingleNodeCircuit:
@@ -94,8 +94,14 @@ class SingleNodeCircuit:
         elif condition == 'alpha5KO':
             self.act_alpha5 = 0.0
 
-    def transfer_function(self, I, Theta, alpha, g):
-        """Wong-Wang transfer function with numerically stable overflow guards."""
+    def transfer_function(self, I, Theta, alpha, g, r_max=None):
+        """Wong-Wang transfer function with numerically stable overflow guards.
+
+        If ``r_max`` is provided, applies the hyperbolic soft ceiling
+        ``r_max · Φ / (r_max + Φ)`` used by circuit_model.transfer.phi_capped
+        for interneuron populations (PV, SOM, VIP). Must match the formulation
+        used during optimisation, otherwise nullclines disagree with the loss.
+        """
         u = alpha * (I - Theta)
 
         if np.isscalar(u):
@@ -134,6 +140,8 @@ class SingleNodeCircuit:
 
         # Clamp to [0, 200] Hz
         phi = np.clip(phi, 0.0, 200.0)
+        if r_max is not None:
+            phi = r_max * phi / (r_max + phi)
         return phi
 
     def get_g_GABA(self):
@@ -148,7 +156,7 @@ class SingleNodeCircuit:
         # VIP input with nAChR modulation
         I_vip_nach = self.act_alpha5 * self.I_alpha5_vip
         I_vip = self.w_ev * r_pyr + self.I0_vip + I_vip_nach
-        r_vip = self.transfer_function(I_vip, self.Theta_vip, self.alpha_vip, self.g_e)
+        r_vip = self.transfer_function(I_vip, self.Theta_vip, self.alpha_vip, self.g_e, r_max=R_MAX_VIP)
 
         # Define the 2D system for SOM and PV
         def equations(x):
@@ -158,14 +166,14 @@ class SingleNodeCircuit:
             I_som_nach = self.act_alpha7 * self.I_alpha7_som + self.act_beta2 * self.I_beta2_som
             I_som = (self.w_es * r_pyr - self.w_vs * r_vip
                      - self.J_adapt_som * r_som + self.I0_som + I_som_nach)
-            f_som = self.transfer_function(I_som, self.Theta_som, self.alpha_som, self.g_i) - r_som
+            f_som = self.transfer_function(I_som, self.Theta_som, self.alpha_som, self.g_i, r_max=R_MAX_SOM) - r_som
 
             # PV input with nAChR modulation
             I_pv_nach = self.act_alpha7 * self.I_alpha7_pv
             g_GABA = self.get_g_GABA()
             I_pv = (self.w_ep * r_pyr - g_GABA * self.w_pp * r_pv
                     - g_GABA * self.w_sp * r_som - self.w_vp * r_vip + self.I0_pv + I_pv_nach)
-            f_pv = self.transfer_function(I_pv, self.Theta_pv, self.alpha_pv, self.g_i) - r_pv
+            f_pv = self.transfer_function(I_pv, self.Theta_pv, self.alpha_pv, self.g_i, r_max=R_MAX_PV) - r_pv
 
             return [f_som, f_pv]
 
