@@ -1,2 +1,0 @@
-condition,amplitude,w_inter,trial_idx,seed,ref_amplitude,end_val_normalized,pre_frac_sat,cue_frac_sat,post_frac_sat,post_frac_bump,post_frac_rest,late_frac_sat,late_frac_bump,late_frac_rest,win00_frac_sat,win00_frac_bump,win00_frac_rest
-WT,5.0,0.0,0,1168784116,0.0878050808470711,1.0,0.0,0.1875,0.0,1.0,0.0,nan,nan,nan,0.0,1.0,0.0
