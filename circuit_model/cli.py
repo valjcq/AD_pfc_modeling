@@ -1380,68 +1380,7 @@ Examples:
     opt_parser.add_argument("--resume", action="store_true",
                             help="Resume from best_params.json, appending to existing log")
 
-    # =========================================================================
-    # PLOT-TRANSFER subcommand
-    # =========================================================================
-    tf_parser = subparsers.add_parser(
-        "plot-transfer",
-        help="Plot transfer functions for all 4 populations",
-        description="Plot Phi(I) = u / (1 - exp(-g*u)) for each population on a single axis."
-    )
-    tf_parser.add_argument("--params_json", type=str, default="",
-                           help="Load parameters from JSON file (default: use built-in defaults)")
-    tf_parser.add_argument(
-        "--condition",
-        type=str,
-        default="",
-        choices=["WT", "WT_APP", "a7_KO", "a7_KO_APP", "b2_KO", "b2_KO_APP", "a5_KO", "a5_KO_APP", "APP_sim"],
-        help=(
-            "Apply an experimental condition preset. If --params_json is not provided, "
-            "the command auto-loads default project WT/WT_APP fitted files when available."
-        ),
-    )
-    tf_parser.add_argument("--set", dest="set_params", type=str, default="",
-                           help="Override parameter values: 'name=val,name=val'")
-    tf_parser.add_argument("--I_min", type=float, default=-5.0,
-                           help="Minimum input current to plot (default: -5)")
-    tf_parser.add_argument("--I_max", type=float, default=7.0,
-                           help="Maximum input current to plot (default: 7)")
-    tf_parser.add_argument("--save_plot", type=str, default="",
-                           help="Save plot to file (e.g., 'transfer_functions.png')")
-    tf_parser.add_argument("--no_show", action="store_true",
-                           help="Don't display the plot")
-
-    # =========================================================================
-    # DIAGNOSTIC subcommand
-    # =========================================================================
-    diag_parser = subparsers.add_parser(
-        "diagnostic",
-        help="Analytical diagnostic plots (Turing gain product + transfer functions)",
-        description=(
-            "Generate analytical (no-simulation) diagnostic plots:\n"
-            "  1. Turing gain product vs PYR firing rate\n"
-            "  2. Transfer functions for all 4 populations with operating point markers\n"
-            "\n"
-            "If --params_json and --ring_params_json are omitted, defaults are loaded from:\n"
-            "  - params/new/ring_firing_rate/WT_1mo_article_ko.json\n"
-            "  - params/new/ring_firing_rate/WT_1mo_article_ko_ring.json"
-        ),
-    )
-    diag_parser.add_argument("--params_json", type=str, default="",
-                            help="Path to circuit parameters JSON file (default: auto-load if available)")
-    diag_parser.add_argument("--ring_params_json", type=str, default="",
-                            help="Path to ring parameters JSON file (default: auto-load if available)")
-    diag_parser.add_argument("--target_pyr", type=float, default=8.0,
-                            help="Rest PYR firing rate for operating point marker (Hz, default: 8.0)")
-    diag_parser.add_argument("--turing_bump_hz", type=float, default=40.0,
-                            help="PYR firing rate for the bump operating point marker (Hz, default: 40.0)")
-    diag_parser.add_argument("--turing_cue_hz", type=float, default=60.0,
-                            help="PYR firing rate for the cue operating point marker (Hz, default: 60.0)")
-    diag_parser.add_argument("--out_dir", type=str, default="figs/diagnostic",
-                            help="Output directory for figures (default: figs/diagnostic)")
-    diag_parser.add_argument("--no_show", action="store_true",
-                            help="Don't display the plots")
-
+    # ==================================================================
     # =========================================================================
     # STUDY subcommand
     # =========================================================================
