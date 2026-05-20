@@ -15,17 +15,9 @@ This module contains:
 
 from __future__ import annotations
 
-<<<<<<< HEAD
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, fields, replace
 from typing import Any, Optional
-=======
-from concurrent.futures import Future, ProcessPoolExecutor
-from contextlib import nullcontext
-from dataclasses import dataclass, fields, replace
-from typing import Any, Optional
-import os
->>>>>>> origin/main
 from pathlib import Path
 
 import nevergrad as ng
@@ -133,18 +125,6 @@ def _build_conditions(
         ("alpha5_ko", replace(params, act_alpha5=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
         ("beta2_ko",  replace(params, act_beta2=0.0),  cfg, int(rng.integers(0, 2**31 - 1))),
     ]
-<<<<<<< HEAD
-=======
-    # alpha7 KO: remove alpha7-mediated currents AND GABA enhancement
-    if target.alpha7_ko_pyr is not None:
-        conditions.append(("alpha7_ko", replace(params, act_alpha7=0.0, g_alpha7=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
-    # alpha5 KO: remove alpha5 contribution to VIP
-    if target.alpha5_ko_pyr is not None:
-        conditions.append(("alpha5_ko", replace(params, act_alpha5=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
-    # beta2 KO: remove beta2 contribution to SOM
-    if target.beta2_ko_pyr is not None:
-        conditions.append(("beta2_ko", replace(params, act_beta2=0.0), cfg, int(rng.integers(0, 2**31 - 1))))
->>>>>>> origin/main
     return conditions
 
 
@@ -152,7 +132,6 @@ def _loss_from_results(
     results: list[ConditionResult],
     target: TargetRates,
     cfg: FitConfig,
-<<<<<<< HEAD
     params: CircuitParams,
     *,
     squared_loss: bool = True,
@@ -168,10 +147,6 @@ def _loss_from_results(
     Returns:
         Tuple of (total_loss, base_means, ko_means, breakdown).
     """
-=======
-) -> tuple[float, np.ndarray, KOMeans]:
-    """Compute total loss from a list of condition simulation results."""
->>>>>>> origin/main
     ko_means = KOMeans()
     base_means = np.zeros(4, dtype=float)
 
@@ -195,33 +170,21 @@ def _loss_from_results(
     ko_loss = 0.0
     n_ko = 0
     if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
-<<<<<<< HEAD
         ko_loss += loss_from_ko_pyr(
-=======
-        total += loss_from_ko_pyr(
->>>>>>> origin/main
             float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
         n_ko += 1
     if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
-<<<<<<< HEAD
         ko_loss += loss_from_ko_pyr(
-=======
-        total += loss_from_ko_pyr(
->>>>>>> origin/main
             float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
         n_ko += 1
     if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
-<<<<<<< HEAD
         ko_loss += loss_from_ko_pyr(
-=======
-        total += loss_from_ko_pyr(
->>>>>>> origin/main
             float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
@@ -400,7 +363,6 @@ def nevergrad_optimize(
     save_best_json: Optional[str] = None,
     step_offset: int = 0,
     append_log: bool = False,
-<<<<<<< HEAD
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
     turing_weight: float = 2.0,
@@ -409,8 +371,6 @@ def nevergrad_optimize(
     turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
     bistable_cfg: Optional[Any] = None,
-=======
->>>>>>> origin/main
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -453,32 +413,15 @@ def nevergrad_optimize(
     max_workers = batch_size * n_conditions
 
     parametrization = build_nevergrad_parametrization(base, bounds, freeze)
-<<<<<<< HEAD
     ng_optimizer = _build_optimizer(optimizer, parametrization, n_samples, num_workers=1)
 
     if seed is not None:
         ng_optimizer.parametrization.random_state = np.random.RandomState(seed)
-=======
-    optimizer = ng.optimizers.TwoPointsDE(
-        parametrization=parametrization,
-        budget=n_samples,
-        num_workers=batch_size,
-    )
-
-    if seed is not None:
-        optimizer.parametrization.random_state = np.random.RandomState(seed)
->>>>>>> origin/main
 
     if log_file:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         if not append_log:
             open(log_file, "w", encoding="utf-8").close()
-<<<<<<< HEAD
-=======
-
-    if save_best_json:
-        Path(save_best_json).parent.mkdir(parents=True, exist_ok=True)
->>>>>>> origin/main
 
     if save_best_json:
         Path(save_best_json).parent.mkdir(parents=True, exist_ok=True)
@@ -495,7 +438,6 @@ def nevergrad_optimize(
     best: list[Candidate] = []
     last_step = 0
 
-<<<<<<< HEAD
     interrupted = False
     pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
     try:
@@ -543,58 +485,11 @@ def nevergrad_optimize(
 
             # Update progress bar: show best loss only
             pbar.set_postfix({"loss": f"{best[0].loss:.4g}" if best else "N/A"})
-=======
-    with pool_cm as executor:
-        last_step = 0
-        stopped_early = False
-        # Steps counted per candidate, not per batch
-        pbar = tqdm(range(1, n_samples + 1, batch_size), desc="Optimizing", unit="step")
-
-        for step in pbar:
-            last_step = step
-
-            # Ask batch_size candidates from the optimizer
-            xs = [optimizer.ask() for _ in range(batch_size)]
-            params_list = [params_from_ng_dict(x.value, base) for x in xs]
-
-            if use_parallel:
-                # Submit all candidate × condition tasks at once for maximum throughput
-                tagged_futures: list[tuple[int, Future[ConditionResult]]] = []
-                for i, p in enumerate(params_list):
-                    for cond in _build_conditions(p, target, fit_cfg, rng):
-                        tagged_futures.append((i, executor.submit(run_condition, cond)))
-
-                results_by_cand: list[list[ConditionResult]] = [[] for _ in range(batch_size)]
-                for i, fut in tagged_futures:
-                    results_by_cand[i].append(fut.result())
-            else:
-                results_by_cand = [
-                    [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
-                    for p in params_list
-                ]
-
-            prev_best_loss = best[0].loss if best else float("inf")
-
-            for x, p, cond_results in zip(xs, params_list, results_by_cand):
-                L, means, ko_means = _loss_from_results(cond_results, target, fit_cfg)
-                optimizer.tell(x, L)
-
-                cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p)
-                if len(best) < top_k:
-                    best.append(cand)
-                    best.sort(key=lambda c: c.loss)
-                elif L < best[-1].loss:
-                    best[-1] = cand
-                    best.sort(key=lambda c: c.loss)
-
-            pbar.set_postfix(loss=f"{best[0].loss:.4g}" if best else "N/A", step=step)
->>>>>>> origin/main
 
             if save_best_json and best and best[0].loss < prev_best_loss:
                 save_params_json(save_best_json, best[0].params)
 
             if log_file and step % log_interval == 0 and best:
-<<<<<<< HEAD
                 # In bistable mode, ensure firing rates are available before logging
                 best_to_log = best[0]
                 if bistable_cfg is not None:
@@ -629,20 +524,6 @@ def nevergrad_optimize(
 
     if interrupted and best:
         print(f"Best-so-far loss after interruption: {best[0].loss:.4g}")
-=======
-                _log_candidate(log_file, step + step_offset, best[0], target)
-
-            if early_stop_loss is not None and best and best[0].loss <= early_stop_loss:
-                if log_file:
-                    _log_candidate(log_file, step + step_offset, best[0], target)
-                stopped_early = True
-                break
-
-        pbar.close()
-
-        if log_file and best and (not stopped_early) and last_step % log_interval != 0:
-            _log_candidate(log_file, last_step + step_offset, best[0], target)
->>>>>>> origin/main
 
     return best
 

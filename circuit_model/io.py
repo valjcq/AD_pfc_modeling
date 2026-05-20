@@ -59,7 +59,6 @@ def load_params_json(path: str) -> "CircuitParams":
     return replace(base, **clean)
 
 
-<<<<<<< HEAD
 def load_ring_params_json(path: str) -> "RingParams":
     """Load RingParams from a JSON file."""
     from .ring.params import RingParams
@@ -152,11 +151,6 @@ def save_params_json(
     if fit_meta is not None:
         out["_fit_metadata"] = fit_meta
     out.update(sorted_params)
-=======
-def save_params_json(path: str, params: "CircuitParams") -> None:
-    """Save CircuitParams to a JSON file."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
->>>>>>> origin/main
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
