@@ -129,7 +129,7 @@ A table of gain product values at the three operating points:
 
 ```
 [TURING GAIN PRODUCT ANALYSIS]
-
+==========================================================
 ---
 
 ## `run`
