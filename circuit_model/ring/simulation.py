@@ -343,15 +343,10 @@ def simulate_ring(
             np.arange(1, n_base_rec + 1, dtype=float) * record_step * dt_ms
         )
 
-<<<<<<< HEAD
         if need_extra_final:
             r_stored[-1] = r_final_nb
             t_stored[-1] = (n_steps - 1) * dt_ms
             i_adapt_nb[-1] = i_adapt_final_nb
-=======
-        # VIP: local only (no inter-node connections)
-        I_vip = p.w_ev * r_pyr + I_ext_vip_val
->>>>>>> origin/main
 
         if record_adaptation:
             I_adapt_stored = i_adapt_nb
@@ -612,16 +607,6 @@ def simulate_ring_batch(
         I_pv_c = w_ep * r_pyr - ggaba * w_pp * r_pv - ggaba * w_sp * r_som \
                  - w_vp * r_vip + I_ext_pv_k
         I_vip  = w_ev * r_pyr + I_ext_vip_k
-<<<<<<< HEAD
-=======
-
-        Phi = np.stack([
-            _phi_numpy(I_pyr,  Theta_pyr, alpha_pyr, g_e),
-            _phi_numpy(I_som,  Theta_som, alpha_som, g_i),
-            _phi_numpy(I_pv_c, Theta_pv,  alpha_pv,  g_i),
-            _phi_numpy(I_vip,  Theta_vip, alpha_vip, g_i),
-        ], axis=-1)  # (n_batch, n_nodes, 4)
->>>>>>> origin/main
 
         if use_noise:
             xi = rng.standard_normal((n_batch, n_nodes))

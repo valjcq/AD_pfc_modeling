@@ -132,7 +132,6 @@ def simulate_circuit(
         else:
             noise_arr = rng.standard_normal(n_steps - 1)
 
-<<<<<<< HEAD
         _euler_loop(
             r, I_adapt, noise_arr,
             n_steps, dt_ms,
@@ -156,63 +155,6 @@ def simulate_circuit(
             float(params.Theta_pv),  float(params.alpha_pv),
             float(params.Theta_vip), float(params.alpha_vip),
             float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP),
-=======
-        # =====================================================================
-        # COMPUTE INPUT CURRENTS FOR EACH POPULATION
-        # =====================================================================
-
-        # --- EXTERNAL CURRENTS (time-dependent if transient enabled) ---
-        if use_transient:
-            I_ext_pyr_val = params.I_ext_pyr_at_time(t[k])
-            I_ext_som_val = params.I_ext_som_at_time(t[k])
-            I_ext_pv_val = params.I_ext_pv_at_time(t[k])
-            I_ext_vip_val = params.I_ext_vip_at_time(t[k])
-        else:
-            I_ext_pyr_val = params.I_ext_pyr()
-            I_ext_som_val = params.I_ext_som()
-            I_ext_pv_val = params.I_ext_pv()
-            I_ext_vip_val = params.I_ext_vip()
-
-        # --- PYR INPUT ---
-        # PV provides DIVISIVE (shunting) inhibition: models perisomatic GABA
-        # synapses that reduce input resistance, effectively dividing excitation.
-        # This is biologically accurate: PV targets soma/proximal dendrites.
-        denom = 1.0 + ggaba * params.w_pe * r_pv  # Shunting denominator
-        I_pyr = (
-            (params.w_ee * r_pyr) / denom  # Recurrent excitation (divided by PV)
-            - ggaba * params.w_se * r_som  # SOM dendritic inhibition (subtractive)
-            - Iap                          # Spike-frequency adaptation
-            + I_ext_pyr_val                # External input (baseline + transient)
-        )
-
-        # --- SOM INPUT ---
-        # SOM receives excitation from PYR and inhibition from PV and VIP.
-        # VIP->SOM is the core "disinhibition" pathway.
-        I_som = (
-            params.w_es * r_pyr            # Excitation from PYR
-            - ggaba * params.w_ps * r_pv   # Inhibition from PV
-            - params.w_vs * r_vip          # Inhibition from VIP (disinhibition pathway)
-            - Ias                          # Spike-frequency adaptation
-            + I_ext_som_val                # External (baseline + alpha7 + beta2 + transient)
-        )
-
-        # --- PV INPUT ---
-        # PV receives strong excitation from PYR and inhibits itself.
-        I_pv = (
-            params.w_ep * r_pyr            # Strong excitation from PYR
-            - ggaba * params.w_pp * r_pv   # Self-inhibition (limits PV rate)
-            - ggaba * params.w_sp * r_som  # Weak inhibition from SOM
-            - params.w_vp * r_vip          # Weak inhibition from VIP
-            + I_ext_pv_val                 # External (baseline + alpha7 + transient)
-        )
-
-        # --- VIP INPUT ---
-        # VIP receives weak input from PYR.
-        # VIP is largely driven by top-down or neuromodulatory inputs.
-        I_vip = (
-            params.w_ev * r_pyr   # Very weak excitation from PYR
-            + I_ext_vip_val        # External (baseline + alpha5 + transient)
->>>>>>> origin/main
         )
 
     else:

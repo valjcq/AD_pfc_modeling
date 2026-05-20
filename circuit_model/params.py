@@ -87,13 +87,8 @@ class CircuitParams:
     w_sp: float = 0.002   # SOM -> PV:  Cross-inhibition
 
     # --- Connections FROM VIP (inhibitory, disinhibitory) ---
-<<<<<<< HEAD
     w_vp: float = 0.002   # VIP -> PV:  Weak disinhibition of PV
     w_vs: float = 0.002   # VIP -> SOM: Core disinhibition pathway (VIP→SOM→PYR)
-=======
-    w_vp: float = 0.0105234  # VIP -> PV:  Weak disinhibition of PV
-    w_vs: float = 1.27414    # VIP -> SOM: Core disinhibition pathway (VIP->SOM->PYR)
->>>>>>> origin/main
 
     # =========================================================================
     # EXTERNAL CURRENTS
@@ -280,12 +275,8 @@ def default_bounds(base: CircuitParams, w_hi: float | None = None) -> dict[str, 
     b["w_es"]  = ParamBound(_W_LO,  _W_HI, mode="log")
     b["w_pp"]  = ParamBound(_W_LO,  _W_HI, mode="log")
 
-<<<<<<< HEAD
     # J_NMDA: NMDA recurrent coupling with wider bounds due to gating saturation
     b["J_NMDA"] = ParamBound(0.05, 2.0, mode="log")
-=======
-    b["w_ps"] = ParamBound(0.0, 5.0 * base.w_pe, mode="log")
->>>>>>> origin/main
 
     # w_pe: DIVISIVE (shunting) inhibition — enters denominator as 1 + g_gaba*w_pe*r_pv.
     b["w_pe"] = ParamBound(_W_LO, _W_HI, mode="log")
