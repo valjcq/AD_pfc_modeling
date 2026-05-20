@@ -73,7 +73,6 @@ SOM interneurons provide dendritic inhibition that:
 The model implements the following synaptic weight matrix (`w_XY` = weight from population Y to population X). PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`:
 
 ```
-<<<<<<< HEAD
                        FROM
               PYR        PV      SOM     VIP
           ┌──────────────────────────────────┐
@@ -82,16 +81,6 @@ The model implements the following synaptic weight matrix (`w_XY` = weight from 
       SOM │ w_es        —       —       w_vs │  (excitation from PYR, inhibition from VIP)
       VIP │ w_ev        —       —       —    │  (weak excitation from PYR, no local inhibition)
           └──────────────────────────────────┘
-=======
-            FROM
-         PYR    PV     SOM    VIP
-      ┌─────────────────────────────┐
-  PYR │ w_ee   w_pe   w_se    -     │  (recurrent, inhibition from PV/SOM)
-  PV  │ w_ep   w_pp   w_sp   w_vp   │  (excitation from PYR, inhibition)
-T SOM │ w_es    -      -     w_vs   │  (excitation from PYR, inhib from VIP)
-O VIP │ w_ev    -      -      -     │  (weak from PYR, no local inhibition)
-      └─────────────────────────────┘
->>>>>>> origin/main
 ```
 
 PV→PYR enters the PYR input *divisively* (shunting) rather than as a subtraction; see the input-current equations below.
@@ -375,22 +364,12 @@ All weights are in nA/Hz (weight × rate → nA of input current). Dataclass def
 
 | Parameter | Default | Connection | Biological Role |
 |-----------|---------|------------|-----------------|
-<<<<<<< HEAD
 | `w_pe` | 0.002 | PV → PYR | Perisomatic inhibition (divisive / shunting) |
 | `w_se` | 0.002 | SOM → PYR | Dendritic inhibition (subtractive) |
 | `w_pp` | 0.002 | PV → PV | Self-inhibition |
 | `w_sp` | 0.002 | SOM → PV | Cross-inhibition |
 | `w_vp` | 0.002 | VIP → PV | Weak disinhibition of PV |
 | `w_vs` | 0.002 | VIP → SOM | Core disinhibition pathway (VIP→SOM→PYR) |
-=======
-| `w_pe` | 2.22 | PV → PYR | Perisomatic inhibition (divisive) |
-| `w_se` | 2.62 | SOM → PYR | Dendritic inhibition (subtractive) |
-| `w_pp` | 105.44 | PV → PV | Self-inhibition; limits PV firing |
-| `w_sp` | 6.13e-6 | SOM → PV | Weak cross-inhibition |
-| `w_vp` | 0.011 | VIP → PV | Weak disinhibition of PV |
-| `w_ps` | 2.22 | PV → SOM | Cross-inhibition between interneuron types |
-| `w_vs` | 1.27 | VIP → SOM | Core disinhibition pathway |
->>>>>>> origin/main
 
 ### External Currents (nA)
 
