@@ -3,7 +3,7 @@ Ring Attractor Network for Working Memory Simulations.
 
 This subpackage implements a ring attractor network built on top of the
 4-population PFC circuit model. Each node on the ring is a full local
-circuit (PYR, PV, SOM, VIP) with inter-node connectivity enabling
+circuit (PYR, SOM, PV, VIP) with inter-node connectivity enabling
 persistent activity bumps for working memory.
 
 Architecture:
@@ -60,6 +60,7 @@ from .connectivity import (
     gaussian_profile,
     build_pyr_pyr_weights,
     build_pv_pyr_weights,
+    build_som_pyr_weights,
     RingConnectivity,
 )
 
@@ -117,6 +118,7 @@ __all__ = [
     "gaussian_profile",
     "build_pyr_pyr_weights",
     "build_pv_pyr_weights",
+    "build_som_pyr_weights",
     "RingConnectivity",
     # Stimulus
     "RingStimulus",

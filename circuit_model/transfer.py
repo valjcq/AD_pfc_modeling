@@ -54,3 +54,27 @@ def phi_wong_wang(I: Any, *, theta: float, c: float, g: float) -> np.ndarray:
     eps = 1e-8
     out = np.where(np.abs(z) < eps, 1.0 / g + u / 2.0, u / denom)
     return np.maximum(out, 0.0)  # Firing rates must be non-negative
+
+
+def phi_capped(I: Any, r_max: float, *, theta: float, c: float, g: float) -> np.ndarray:
+    """
+    Hyperbolic soft ceiling applied to the Wong-Wang transfer function.
+
+    Used for interneuron populations (PV, SOM, VIP) to prevent pathological
+    runaway firing while leaving the low-rate operating regime unchanged.
+
+    Mathematical form:
+        Phi_capped(I) = r_max * Phi(I) / (r_max + Phi(I))
+
+    Properties:
+        - For Phi << r_max: Phi_capped ≈ Phi  (unchanged at physiological rates)
+        - As Phi → ∞: Phi_capped → r_max       (hard asymptote)
+        - Smooth gain compression above r_max
+
+    Parameters:
+        I: Input current (can be array)
+        r_max: Ceiling firing rate (Hz)
+        theta, c, g: Wong-Wang parameters (same as phi_wong_wang)
+    """
+    phi = phi_wong_wang(I, theta=theta, c=c, g=g)
+    return r_max * phi / (r_max + phi)

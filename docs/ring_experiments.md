@@ -34,6 +34,8 @@ This document describes the experimental analysis commands and protocols for the
     - [13.5 Statistical Tests](#135-statistical-tests)
     - [13.6 Outputs](#136-outputs)
     - [13.7 Caching](#137-caching)
+<<<<<<< HEAD
+=======
 14. [Burn-in Stationarity Analysis](#14-burn-in-stationarity-analysis)
     - [14.1 Purpose](#141-purpose)
     - [14.2 Protocol](#142-protocol)
@@ -205,6 +207,7 @@ This assumption may be violated in the **APP condition**, where network hyperact
 #### Summary: what to compute and when
 
 | Quantity | Seeholzer et al. ref. | When to compute | What it reveals |
+>>>>>>> origin/main
 |---|---|---|---|
 | $\hat{\varphi}$, $\hat{A}$ (pop. vector) | — | All timepoints | Bump position and integrity |
 | $S$ (normalization constant) | Eqs. 18–19 (static: Eq. 19 simplified) | Once per condition, clean delay | Analytical predictor of distractor susceptibility |
@@ -752,86 +755,10 @@ The trial CSV is used as a cache on subsequent runs. Before launching simulation
 
 ---
 
-## 15. Oscillation-Distractor Experiment
-
-CLI command: `ring-osc-distractor-study`
-
-### 15.1 Purpose
-
-This experiment extends the oscillation study by inserting a distractor stimulus during the delay period. Instead of tracking the global bump amplitude, it measures oscillatory dynamics **per node** (at the cue location and the distractor location) and their **phase coupling** (PLV). The goal is to understand how a competing stimulus disrupts or synchronises the oscillatory memory trace.
-
-Key questions:
-- Does the cue node's oscillatory power change after the distractor arrives?
-- Does a new oscillatory pattern appear at the distractor node?
-- Do the two nodes become phase-locked (PLV ≈ 1) or remain independent (PLV ≈ 0)?
-- How does this depend on the distractor's angular offset and relative amplitude?
-
-### 15.2 Protocol Timeline
-
-```
-[burn-in 10 s] → [pre-cue 0.5 s] → [cue 0.25 s] → [delay1] → [distractor] → [delay2]
-                                                       ↑              ↑             ↑
-                                                   1500 ms        200 ms        3000 ms  (defaults)
-```
-
-- **Cue**: Gaussian profile (σ = 18°) at 180°; amplitude swept via `--amplitudes`.
-- **Distractor**: Same σ and spatial structure as cue; amplitude = `distractor_factor × cue_amplitude` (factors: 0.75, 1.0 by default); presented at `180° + offset_deg` for offsets [30, 70, 90, 120, 170]°.
-- **Control**: No-distractor trials at each amplitude; plotted as baseline (black dashed).
-- Burn-in states are cached per condition and reused across all trials (same pattern as other experiments).
-
-### 15.3 Measured Quantities
-
-For each trial, after simulation the PYR firing rate is extracted at two nodes:
-
-| Symbol | Description |
-|--------|-------------|
-| `cue_rate(t)` | PYR rate at the node closest to 180° |
-| `dist_rate(t)` | PYR rate at the node closest to `180° + offset_deg` |
-
-Both extracted over the full post-cue window (cue offset → trial end) so the STFT spans delay1 + distractor + delay2 in one contiguous block.
-
-### 15.4 Analysis Methods
-
-#### STFT (per node)
-
-`compute_oscillation_band_timecourse` (from `analysis.py`) is applied independently to `cue_rate` and `dist_rate`:
-- Hann-window STFT with configurable window length and overlap
-- Band-limited to [min\_freq\_hz, max\_freq\_hz] (default 2–12 Hz)
-- Per-window dominant frequency extracted via quadratic interpolation (sub-bin accuracy)
-- SNR thresholding: bins where dominant power ≤ 2× median noise floor are set to NaN
-
-#### Phase Locking Value (PLV)
-
-`compute_plv_timecourse` (new function in `analysis.py`):
-1. Bandpass-filter `cue_rate` and `dist_rate` in [min\_freq\_hz, max\_freq\_hz] using a zero-phase 4th-order Butterworth filter (`filtfilt`)
-2. Instantaneous phase via Hilbert transform: φ₁(t), φ₂(t)
-3. Phase difference: Δφ(t) = φ₁(t) − φ₂(t)
-4. Sliding window PLV: `PLV = |mean(exp(i·Δφ))|` over windows with the same `nperseg` and step as the STFT → the PLV time axis is co-registered with the STFT time axis
-
-PLV ∈ [0, 1]: 0 = independent phases, 1 = perfectly locked.
-
-#### Time alignment
-
-All timecourses are in "seconds since cue offset" coordinates. The distractor onset is at `dist_onset_rel_s = delay1_ms / 1000.0`. Plots show time relative to distractor onset (t = 0), with vertical markers at t = 0 (onset) and t = `distractor_duration_ms / 1000.0` (offset).
-
-### 15.5 Outputs
-
-Output root: `figs/ring/osc_distractor/{network_label}/{condition_key}/factor{F}/`
-
-| File | Description |
-|------|-------------|
-| `osc_distractor_trials.csv` | Trial-level summary: cue/dist dominant freq median, power median, PLV median in post-distractor window |
-| `.osc_dist_cache_{key}.pkl` | Pickle cache of raw trial results (simulation output + STFT + PLV timecourses) |
-| `factor{F}/osc_distractor_timecourses_amp{X}.png` | 3-row figure: cue node dominant power (row 1), distractor node dominant power (row 2), PLV (row 3). One colored line per offset angle; black dashed = no-distractor baseline. Time axis: seconds relative to distractor onset. |
-| `factor{F}/osc_distractor_spectrograms_amp{X}_offset{Y}.png` | 2-column STFT heatmap (left: cue node, right: distractor node). Log-power colormap; white curve = trial-averaged dominant frequency; cyan vertical lines = distractor onset and offset. |
-| `factor{F}/osc_distractor_amp_sweep.png` | Summary amplitude sweep: x = cue amplitude, y = mean PLV in post-distractor window, one line per offset angle. |
-
-### 15.6 Caching
-
-Results are pickled to `.osc_dist_cache_{key}.pkl` in the output root. The cache key encodes all simulation parameters (network, conditions, amplitudes, factors, offsets, timing, analysis band). Pass `--no_cache` to force re-simulation.
-
 ---
 
+<<<<<<< HEAD
+=======
 ## 16. Phase-Dependent Distractor Experiment
 
 CLI command: `ring-osc-phase-distractor`
@@ -923,6 +850,7 @@ Results are pickled to `.osc_phase_cache_{key}.pkl`. The cache key encodes netwo
 
 ---
 
+>>>>>>> origin/main
 ## 17. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.

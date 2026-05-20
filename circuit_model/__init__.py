@@ -2,10 +2,10 @@
 PFC Circuit Model: 4-Population Rate Model with Parameter Optimization.
 
 This package implements a computational model of the prefrontal cortex (PFC)
-microcircuit with 4 neural populations:
+microcircuit with 4 neural populations (stored in arrays as [PYR, SOM, PV, VIP]):
 - PYR: Pyramidal cells (excitatory)
-- PV: Parvalbumin interneurons (fast-spiking inhibitory)
 - SOM: Somatostatin interneurons (inhibitory, dendritic targeting)
+- PV: Parvalbumin interneurons (fast-spiking inhibitory)
 - VIP: VIP interneurons (inhibitory, disinhibitory)
 
 The model uses the Wong-Wang transfer function and supports:
@@ -28,13 +28,13 @@ Usage:
     # From command line
     python -m circuit_model run                    # single-node simulation
     python -m circuit_model ring-run               # ring attractor simulation
-    python -m circuit_model ring-study             # ring attractor study
+    python -m circuit_model ring-optimize          # joint circuit + ring fit
 """
 
 from .params import CircuitParams, ParamBound, default_bounds
 from .transfer import phi_wong_wang
-from .simulation import SimulationResult, simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr
+from .simulation import SimulationResult, simulate_circuit, mean_rates, NoiseType, validate_fast_loop
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, ach_ratio_penalty
 from .optimization import (
     KOMeans,
     Candidate,
@@ -80,11 +80,13 @@ __all__ = [
     "simulate_circuit",
     "mean_rates",
     "NoiseType",
+    "validate_fast_loop",
     # Loss/targets
     "TargetRates",
     "FitConfig",
     "loss_from_means",
     "loss_from_ko_pyr",
+    "ach_ratio_penalty",
     # Optimization
     "KOMeans",
     "Candidate",

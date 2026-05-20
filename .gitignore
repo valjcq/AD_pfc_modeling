@@ -1,6 +1,11 @@
 .venv*
 .claude/
 .pytest_cache/
+.rtk/
+.github/
+.ruff_cache/
+.pytest_cache/
+.**cache/
 
 *.pyc
 */*.pyc
@@ -11,6 +16,7 @@ __pycache__/
 
 
 log.md
+CLAUDE.md
 writing/
 AD_data/
 
@@ -18,4 +24,14 @@ AD_data/
 figs/**/.osc_cache_*.pkl
 figs/**/study_metrics.csv
 
-*.pkl
+*.pklfigs/**/*.png
+results/**/*.png
+
+figs/**/*.png
+figs/**/*.pkl
+
+old_figs/
+
+
+params_bistable/**/*.png
+params_bistable/**/*.pdf

@@ -1,0 +1,50 @@
+
+══════════════════════════════════════════════════════════════════
+  Run started: 2026-04-14  10:03:32
+══════════════════════════════════════════════════════════════════
+  CIRCUIT PARAMETERS
+  ── Time constants (ms)
+       tau_s         = 20
+       tau_adapt_pyr = 1119
+  ── Adaptation
+       J_adapt_pyr   = 0.005891
+  ── Noise
+       sigma_noise   = 0.1  (noise current std = 0.107 nA)
+  ── GABA scaling
+       g_gaba_base   = 1.191
+       g_alpha7      = 1.449
+       g_gaba (total)= 2.639
+  ── Receptor activation
+       act_alpha7    = 1   act_beta2 = 1   act_alpha5 = 1
+  ── Synaptic weights
+       J_NMDA=0.05371   w_ep=0.004577  w_es=0.001579  w_ev=1.70e-03
+       w_pe=0.01495   w_pp=0.03743
+       w_se=0.1867    w_sp=1.66e-02
+       w_vp=0.004572  w_vs=0.014
+  ── External currents
+       PYR: I0=1.07  → I_ext_pyr=1.07
+       PV:  I0=0.4458  + act_alpha7×0.1517  → I_ext_pv=0.5974
+       SOM: I0=0.2705  + act_alpha7×0.09894  + act_beta2×0.2702  → I_ext_som=0.6396
+       VIP: I0=0.1564  + act_alpha5×0.1125  → I_ext_vip=0.2689
+  ── Transfer function
+       g_exc=0.16 (PYR)   g_inh=0.087 (SOM/PV/VIP)
+       PYR: Theta=0.4032  alpha=310
+       PV:  Theta=0.2878  alpha=615
+       SOM: Theta=0.2878  alpha=615
+       VIP: Theta=0.2878  alpha=615
+──────────────────────────────────────────────────────────────────
+  RING NETWORK
+       n_nodes         = 128
+       w_pyr_pyr_inter = 0.002
+       sigma_pyr_deg   = 30 deg
+       w_pv_global     = 0.06
+──────────────────────────────────────────────────────────────────
+  STIMULUS
+       amplitude     = 0.55× I_ext_pyr = 0.5887   (I_ext_pyr baseline = 1.07)
+       sigma         = 18 deg   duration = 250 ms   onset = 10500 ms
+       total sim time= 12750 ms
+──────────────────────────────────────────────────────────────────
+  EXPERIMENT
+       Condition: WT   seed=442
+       Delay:     2000 ms
+══════════════════════════════════════════════════════════════════

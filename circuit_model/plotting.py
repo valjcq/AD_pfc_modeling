@@ -12,6 +12,7 @@ Note: Requires matplotlib. Install with: pip install matplotlib
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
@@ -50,6 +51,21 @@ ADAPTATION_COLORS = {
     "SOM": "#0072B2",  # Blue (darker)
 }
 TRANSIENT_COLOR = "#888888"  # Gray for transient markers
+
+
+def _smooth_rates(r: np.ndarray, t_ms: np.ndarray, smooth_ms: float) -> np.ndarray:
+    """Apply uniform (boxcar) smoothing over a window of smooth_ms milliseconds."""
+    if smooth_ms <= 0 or len(t_ms) < 2:
+        return r
+    dt = float(t_ms[1] - t_ms[0])
+    w = max(1, int(round(smooth_ms / dt)))
+    if w <= 1:
+        return r
+    kernel = np.ones(w) / w
+    smoothed = np.empty_like(r)
+    for i in range(r.shape[1]):
+        smoothed[:, i] = np.convolve(r[:, i], kernel, mode="same")
+    return smoothed
 
 
 def _add_transient_markers(
@@ -96,7 +112,8 @@ def plot_firing_rates(
     show_legend: bool = True,
     time_range: Optional[tuple[float, float]] = None,
     show_transient: bool = True,
-    unit: str = "transients/min",
+    unit: str = "Hz",
+    smooth_ms: float = 0.0,
 ):
     """
     Plot firing rates over time for all 4 populations.
@@ -108,7 +125,8 @@ def plot_firing_rates(
         show_legend: Whether to show legend
         time_range: Optional (t_start, t_end) in ms to zoom in
         show_transient: Whether to show transient window markers (if present)
-        unit: Rate unit for Y-axis label (default: "transients/min")
+        unit: Rate unit for Y-axis label (default: "Hz")
+        smooth_ms: Boxcar smoothing window in ms (0 = no smoothing)
 
     Returns:
         The matplotlib axis object
@@ -119,7 +137,7 @@ def plot_firing_rates(
         fig, ax = plt.subplots(figsize=(10, 5))
 
     t = result.t_ms
-    r = result.r
+    r = _smooth_rates(result.r, result.t_ms, smooth_ms)
 
     # Apply time range filter if specified
     if time_range is not None:
@@ -130,13 +148,16 @@ def plot_firing_rates(
     # Draw transient markers first (so they're behind the data)
     if show_transient and result.transient_window is not None:
         _add_transient_markers(ax, result.transient_window, time_range, add_legend=show_legend)
+    if show_transient and getattr(result, "transient_window2", None) is not None:
+        _add_transient_markers(ax, result.transient_window2, time_range, add_legend=False)
 
     for i, name in enumerate(POPULATION_NAMES):
         ax.plot(t, r[:, i], label=name, color=POPULATION_COLORS[name], linewidth=1.5)
 
     ax.set_xlabel("Time (ms)", fontsize=11)
     ax.set_ylabel(f"Firing Rate ({unit})", fontsize=11)
-    ax.set_title(title, fontsize=12, fontweight="bold")
+    display_title = f"{title} [smoothed {smooth_ms:.0f} ms]" if smooth_ms > 0 else title
+    ax.set_title(display_title, fontsize=12, fontweight="bold")
     ax.set_xlim(t[0], t[-1])
     ax.set_ylim(bottom=0)
     ax.spines["top"].set_visible(False)
@@ -187,9 +208,10 @@ def plot_adaptation(
     # Draw transient markers first (so they're behind the data)
     if show_transient and result.transient_window is not None:
         _add_transient_markers(ax, result.transient_window, time_range, add_legend=False)
+    if show_transient and getattr(result, "transient_window2", None) is not None:
+        _add_transient_markers(ax, result.transient_window2, time_range, add_legend=False)
 
     ax.plot(t, I_adapt[:, 0], label="I_adapt (PYR)", color=ADAPTATION_COLORS["PYR"], linewidth=1.5)
-    ax.plot(t, I_adapt[:, 1], label="I_adapt (SOM)", color=ADAPTATION_COLORS["SOM"], linewidth=1.5)
 
     ax.set_xlabel("Time (ms)", fontsize=11)
     ax.set_ylabel("Adaptation Current", fontsize=11)
@@ -211,7 +233,8 @@ def plot_simulation_dashboard(
     figsize: tuple[float, float] = (12, 8),
     save_path: Optional[str] = None,
     show: bool = True,
-    unit: str = "transients/min",
+    unit: str = "Hz",
+    smooth_ms: float = 0.0,
 ):
     """
     Create a comprehensive dashboard showing simulation results.
@@ -228,7 +251,7 @@ def plot_simulation_dashboard(
         figsize: Figure size (width, height)
         save_path: If provided, save figure to this path
         show: Whether to call plt.show()
-        unit: Rate unit for Y-axis labels (default: "transients/min")
+        unit: Rate unit for Y-axis labels (default: "Hz")
 
     Returns:
         The matplotlib figure object
@@ -245,11 +268,11 @@ def plot_simulation_dashboard(
 
     # Top plot: Combined firing rates
     ax_combined = fig.add_subplot(gs[0, :])
-    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range, unit=unit)
+    plot_firing_rates(result, ax=ax_combined, title="All Populations", time_range=time_range, unit=unit, smooth_ms=smooth_ms)
 
     # Middle row: Individual populations
     t = result.t_ms
-    r = result.r
+    r = _smooth_rates(result.r, result.t_ms, smooth_ms)
     if time_range is not None:
         mask = (t >= time_range[0]) & (t <= time_range[1])
         t_plot = t[mask]
@@ -278,6 +301,7 @@ def plot_simulation_dashboard(
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
     if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Figure saved to: {save_path}")
 
@@ -300,7 +324,7 @@ def plot_mean_rates_bar(
     target: Optional[np.ndarray] = None,
     ax=None,
     title: str = "Mean Firing Rates",
-    unit: str = "transients/min",
+    unit: str = "Hz",
 ):
     """
     Plot mean firing rates as a bar chart, optionally with target comparison.
@@ -310,7 +334,7 @@ def plot_mean_rates_bar(
         target: Optional array of shape (4,) with target rates
         ax: Matplotlib axis (creates new figure if None)
         title: Plot title
-        unit: Rate unit for Y-axis label (default: "transients/min")
+        unit: Rate unit for Y-axis label (default: "Hz")
 
     Returns:
         The matplotlib axis object
@@ -351,13 +375,96 @@ def plot_mean_rates_bar(
     return ax
 
 
-def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0) -> dict:
+def plot_transfer_functions(
+    params,
+    ax=None,
+    I_range: tuple[float, float] = (-5.0, 80.0),
+    n_points: int = 500,
+    title: str = "Transfer Functions",
+    show_legend: bool = True,
+    save_path: Optional[str] = None,
+    show: bool = True,
+):
+    """
+    Plot the Wong-Wang transfer function Phi(I) for each population on a single axis.
+
+    Each population uses its own (Theta, alpha, A) parameters from `params`, with
+    the shared curvature `g`. The four curves can be directly compared.
+
+    Parameters:
+        params: CircuitParams instance
+        ax: Matplotlib axis (creates new figure if None)
+        I_range: (I_min, I_max) range of input current to plot
+        n_points: Number of points in the sweep
+        title: Plot title
+        show_legend: Whether to show a legend
+        save_path: If provided, save figure to this path
+        show: Whether to call plt.show()
+
+    Returns:
+        The matplotlib axis object
+    """
+    import matplotlib.pyplot as plt
+    from .transfer import phi_wong_wang
+
+    I = np.linspace(I_range[0], I_range[1], n_points)
+
+    pop_params = [
+        ("PYR", params.Theta_pyr, params.alpha_pyr, params.g_exc),
+        ("SOM", params.Theta_som, params.alpha_som, params.g_inh),
+        ("PV",  params.Theta_pv,  params.alpha_pv,  params.g_inh),
+        ("VIP", params.Theta_vip, params.alpha_vip, params.g_inh),
+    ]
+
+    created_fig = ax is None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+    for name, theta, alpha, g_pop in pop_params:
+        phi = phi_wong_wang(I, theta=theta, c=alpha, g=g_pop)
+        ax.plot(I, phi, label=f"{name}  (Θ={theta:.1f}, α={alpha:.2g})",
+                color=POPULATION_COLORS[name], linewidth=2.0)
+
+    ax.set_xlabel("Input current I", fontsize=11)
+    ax.set_ylabel("Firing rate Φ(I)", fontsize=11)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlim(I_range)
+    ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if show_legend:
+        ax.legend(loc="upper left", framealpha=0.9, fontsize=9)
+
+    if created_fig:
+        fig = ax.get_figure()
+        fig.tight_layout()
+
+        if save_path:
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"Figure saved to: {save_path}")
+
+        if show:
+            if _check_display_available():
+                plt.show(block=True)
+            else:
+                fallback_path = save_path or "transfer_functions.png"
+                if not save_path:
+                    fig.savefig(fallback_path, dpi=150, bbox_inches="tight")
+                    print(f"No display available. Figure saved to: {fallback_path}")
+
+    return ax
+
+
+def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0, params=None) -> dict:
     """
     Print and return a summary of simulation results.
 
     Parameters:
         result: SimulationResult from simulate_circuit
         burn_in_ms: Time to skip for computing statistics
+        params: Optional CircuitParams — if provided, prints external currents section
 
     Returns:
         Dictionary with summary statistics
@@ -368,7 +475,6 @@ def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0
     start_idx = int(np.floor(burn_in_ms / dt))
 
     r_after_burnin = result.r[start_idx:]
-    t_after_burnin = result.t_ms[start_idx:]
 
     means = np.mean(r_after_burnin, axis=0)
     stds = np.std(r_after_burnin, axis=0)
@@ -380,10 +486,24 @@ def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0
     print("=" * 60)
     print(f"Duration: {result.t_ms[-1]:.1f} ms | Burn-in: {burn_in_ms:.1f} ms | dt: {dt:.2f} ms")
     print("-" * 60)
-    print(f"{'Population':<10} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}")
+    print(f"{'Population':<10} {'Mean (Hz)':>10} {'Std':>10} {'Min':>10} {'Max':>10}")
     print("-" * 60)
     for i, name in enumerate(POPULATION_NAMES):
         print(f"{name:<10} {means[i]:>10.3f} {stds[i]:>10.3f} {mins[i]:>10.3f} {maxs[i]:>10.3f}")
+
+    if params is not None:
+        I_ext = [
+            params.I_ext_pyr(),
+            params.I_ext_som(),
+            params.I_ext_pv(),
+            params.I_ext_vip(),
+        ]
+        print("-" * 60)
+        print(f"{'Population':<10} {'I_ext (nA)':>10}")
+        print("-" * 60)
+        for name, I in zip(POPULATION_NAMES, I_ext):
+            print(f"{name:<10} {I:>10.4f}")
+
     print("=" * 60 + "\n")
 
     return {

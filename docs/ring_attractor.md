@@ -8,21 +8,45 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
 
 ## Table of Contents
 
-1. [Network Architecture](#1-network-architecture)
-2. [Inter-Node Connectivity](#2-inter-node-connectivity)
-   - [2.1 Angular Distance](#21-angular-distance)
-   - [2.2 PYR → PYR Excitation](#22-pyr--pyr-excitation)
-   - [2.3 PV → PYR Global Inhibition](#23-pv--pyr-global-inhibition)
-   - [2.4 Connectivity Parameters](#24-connectivity-parameters)
-3. [Local Circuit Dynamics](#3-local-circuit-dynamics)
-4. [Spike-Frequency Adaptation](#4-spike-frequency-adaptation)
-5. [Transfer Function](#5-transfer-function)
-6. [Stimulus & Distractor Protocol](#6-stimulus--distractor-protocol)
-   - [6.6 Distractor Stimulus](#66-distractor-stimulus)
-7. [Noise](#7-noise)
-8. [Experimental Conditions](#8-experimental-conditions)
-9. [Bump Amplitude Oscillations](#9-bump-amplitude-oscillations)
-10. [References](#10-references)
+- [Ring Attractor Network — Model \& Implementation](#ring-attractor-network--model--implementation)
+  - [Table of Contents](#table-of-contents)
+  - [1. Network Architecture](#1-network-architecture)
+  - [2. Inter-Node Connectivity](#2-inter-node-connectivity)
+    - [2.1 Angular Distance](#21-angular-distance)
+    - [2.2 PYR to PYR Excitation](#22-pyr-to-pyr-excitation)
+      - [Inter-node excitatory input](#inter-node-excitatory-input)
+    - [2.3 PV to PYR Global Inhibition](#23-pv-to-pyr-global-inhibition)
+    - [2.4 Connectivity Parameters](#24-connectivity-parameters)
+  - [3. Local Circuit Dynamics](#3-local-circuit-dynamics)
+    - [3.1 NMDA Gating Variable](#31-nmda-gating-variable)
+    - [3.2 Input Current Equations](#32-input-current-equations)
+    - [3.3 Weight Notation](#33-weight-notation)
+    - [3.4 GABA Scaling](#34-gaba-scaling)
+    - [3.5 External Currents](#35-external-currents)
+    - [3.6 Transient Current](#36-transient-current)
+  - [4. Spike-Frequency Adaptation](#4-spike-frequency-adaptation)
+  - [5. Transfer Function](#5-transfer-function)
+  - [6. Stimulus \& Distractor Protocol](#6-stimulus--distractor-protocol)
+    - [6.1 Spatial Profile](#61-spatial-profile)
+    - [6.2 Temporal Profile](#62-temporal-profile)
+    - [6.3 Total Stimulus Current](#63-total-stimulus-current)
+    - [6.4 Working Memory Protocol](#64-working-memory-protocol)
+    - [6.5 Stimulus Parameters](#65-stimulus-parameters)
+    - [6.6 Distractor Stimulus](#66-distractor-stimulus)
+  - [7. Noise](#7-noise)
+    - [Noise equation](#noise-equation)
+    - [Noise processes](#noise-processes)
+    - [Relation to Seeholzer et al. (2019)](#relation-to-seeholzer-et-al-2019)
+  - [8. Experimental Conditions](#8-experimental-conditions)
+  - [9. Joint Ring + Circuit Optimization](#9-joint-ring--circuit-optimization)
+    - [9.1 Motivation](#91-motivation)
+    - [9.2 Parameter Space](#92-parameter-space)
+    - [9.3 Loss Function](#93-loss-function)
+      - [Trace-based Turing bistability loss (optional, `--turing_weight`)](#trace-based-turing-bistability-loss-optional---turing_weight)
+      - [Deprecated bump mode](#deprecated-bump-mode)
+    - [9.4 Computational Cost](#94-computational-cost)
+    - [9.5 Output](#95-output)
+  - [10. References](#10-references)
 
 ---
 
@@ -49,6 +73,18 @@ The state of the network at time $t$ is described by the firing rates $r_i^X(t)$
 
 ## 2. Inter-Node Connectivity
 
+### Row-sum normalisation principle
+
+All three inter-node kernels are row-sum normalised to the corresponding **single-node fitted scalar** from `CircuitParams`. This guarantees that a homogeneous ring (all nodes identical) reproduces the single-node fixed point exactly — the ring model is a consistent extension of the single-node fit, not a separate parameterisation.
+
+| Kernel | Row-sum | Derived from |
+|--------|---------|--------------|
+| PYR→PYR | $J_{\text{NMDA}}$ | `local_params.J_NMDA` |
+| PV→PYR | $w_{pe}$ | `local_params.w_pe` |
+| SOM→PYR | $w_{se}$ | `local_params.w_se` |
+
+There are **no additional free parameters** for connection strengths. The only structural free parameters are the Gaussian widths $\sigma_{\text{pyr}}$ and $\sigma_{\text{som}}$.
+
 ### 2.1 Angular Distance
 
 The angular distance between two nodes $i$ and $j$ on the ring, handling the wraparound:
@@ -57,48 +93,70 @@ $$d(\theta_i, \theta_j) = \min\bigl(|\theta_i - \theta_j|,\; 2\pi - |\theta_i - 
 
 This gives $d \in [0, \pi]$.
 
-### 2.2 PYR $\to$ PYR Excitation
+### 2.2 PYR $\to$ PYR Excitation (unified NMDA kernel)
 
-The raw Gaussian weights are computed and then **row-sum normalized** to ensure the total coupling strength is independent of $N$:
+The PYR→PYR weight matrix is a **unified** Gaussian kernel that includes the diagonal (self-weight). It replaces the previous separation between local NMDA recurrence and inter-node coupling:
 
-1. **Raw profile:**
-$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{d(\theta_i, \theta_j)^2}{2\,\sigma_{\text{pyr}}^2}\right) & \text{if } i \neq j \\[6pt] 0 & \text{if } i = j \end{cases}$$
+1. **Raw profile (including self at distance 0):**
+$$\tilde{W}_{ij} = \exp\!\left(-\frac{d(\theta_i, \theta_j)^2}{2\,\sigma_{\text{pyr}}^2}\right), \quad \text{for all } i, j$$
 
-2. **Row-sum normalization:**
-$$W_{ij}^{\text{PYR}\to\text{PYR}} = w_{\text{pyr}}^{\text{inter}} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
+2. **Row-sum normalization to $J_{\text{NMDA}}$:**
+$$W_{ij}^{\text{PYR}\to\text{PYR}} = J_{\text{NMDA}} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
 
-This guarantees $\sum_j W_{ij} = w_{\text{pyr}}^{\text{inter}}$ for every node $i$, so the total excitatory drive is invariant to network size $N$.
+This guarantees $\sum_j W_{ij} = J_{\text{NMDA}}$ for every node $i$.
 
-#### Inter-node excitatory input
+The NMDA drive at node $i$ uses the **gating variable** $S_j^{\text{NMDA}}$ (not the raw rate) — see §3.1:
 
-For both profiles, the inter-node excitatory input to PYR at node $i$ is:
+$$I_{\text{NMDA},i} = \sum_{j=0}^{N-1} W_{ij}^{\text{PYR}\to\text{PYR}} \cdot S_j^{\text{NMDA}}$$
 
-$$I_{\text{inter},i}^{\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{PYR}\to\text{PYR}} \cdot r_j^{\text{PYR}}$$
+This term enters the PYR input as $I_{\text{NMDA},i} / \text{denom}$ where the denominator carries the PV divisive inhibition (see §3.2).
 
-Self-connections ($i = j$) are always zero because local PYR $\to$ PYR recurrence is handled by the within-node weight $w_{ee}$.
+### 2.3 PV $\to$ PYR Global Inhibition (divisive)
 
-### 2.3 PV $\to$ PYR Global Inhibition
+PV interneurons from **all** nodes (including self) inhibit PYR at each node uniformly:
 
-PV interneurons from all nodes inhibit PYR at each node, creating an excitation-inhibition loop: local PYR excites local PV (via $w_{ep}$), then PV activity is broadcast globally to suppress PYR everywhere. This mechanism provides the competitive inhibition needed for bump formation.
+$$W_{ij}^{\text{PV}\to\text{PYR}} = \frac{w_{pe}}{N}, \quad \text{for all } i, j$$
 
-All PV-to-PYR connections have equal weight (excluding self):
+Row-sum = $w_{pe}$. The total PV drive enters as a **divisive** (shunting) denominator:
 
-$$W_{ij}^{\text{PV}\to\text{PYR}} = \begin{cases} \displaystyle\frac{w_{\text{PV}}^{\text{global}}}{N-1} & \text{if } i \neq j \\[6pt] 0 & \text{if } i = j \end{cases}$$
+$$\text{denom}_i = 1 + g_{\text{GABA}} \cdot \sum_{j=0}^{N-1} W_{ij}^{\text{PV}\to\text{PYR}} \cdot r_j^{\text{PV}}$$
 
-The inter-node inhibitory input from PV to PYR at node $i$ is:
+This models perisomatic GABAergic inhibition that reduces input resistance. At the homogeneous fixed point, $\sum_j W_{ij}^{\text{PV}} r_j = w_{pe} \cdot r^{\text{PV}}$, recovering the single-node denominator exactly.
 
-$$I_{\text{inter},i}^{\text{PV}\to\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{PV}\to\text{PYR}} \cdot r_j^{\text{PV}}$$
+### 2.4 SOM $\to$ PYR Lateral Inhibition
 
-### 2.4 Connectivity Parameters
+The SOM→PYR kernel is selected via `RingParams.som_pattern` and is always row-sum normalised to $w_{se}$. Three patterns are available; the default is `gaussian` (annular surround).
+
+**(a) `gaussian` (default) — annular Gaussian surround.** SOM inhibition peaks at the *edge* of the PYR excitation zone, mirroring the experimentally observed Mexican-hat motif. The peak distance is $\mu = 3\,\sigma_{\text{pyr}}$ (≈ tail of the PYR Gaussian) and the ring width is $\sigma_{\text{som}}$:
+
+$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{(d(\theta_i,\theta_j) - \mu)^2}{2\,\sigma_{\text{som}}^2}\right) & i \neq j \\ 0 & i = j \end{cases}$$
+
+**(b) `uniform` — flat surround with hole.** Uniform lateral inhibition everywhere except a Gaussian "hole" of half-width $2\,\sigma_{\text{som}}$ around each source node:
+
+$$\tilde{W}_{ij} = 1 - \exp\!\left(-\dfrac{d(\theta_i,\theta_j)^2}{2\,(2\sigma_{\text{som}})^2}\right) \quad (i \neq j),\qquad \tilde{W}_{ii} = 0$$
+
+**(c) `none` — local only.** Diagonal matrix with $w_{se}$ on every entry; recovers the single-node subtractive SOM term node-by-node, no lateral coupling.
+
+In each case the kernel is normalised so $\sum_j W_{ij}^{\text{SOM}\to\text{PYR}} = w_{se}$ for every row (for `none` this is trivial: the diagonal carries the full $w_{se}$).
+
+The SOM contribution enters as a **subtractive** inhibition:
+
+$$I_{\text{SOM-lat},i} = g_{\text{GABA}} \cdot \sum_{j=0}^{N-1} W_{ij}^{\text{SOM}\to\text{PYR}} \cdot r_j^{\text{SOM}}$$
+
+At the homogeneous fixed point the row-sum is $w_{se}$ and all nodes contribute equally, reproducing the single-node subtractive term $g_{\text{GABA}} \cdot w_{se} \cdot r^{\text{SOM}}$ exactly regardless of the pattern.
+
+### 2.5 Connectivity Parameters
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
 | `n_nodes` | $N$ | 64 | Number of nodes on the ring |
-| `w_pyr_pyr_inter` | $w_{\text{pyr}}^{\text{inter}}$ | 18.55 | Total row-sum of PYR→PYR weights |
-| `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 30.0 deg | Gaussian width of PYR→PYR profile |
-| `w_pv_global` | $w_{\text{PV}}^{\text{global}}$ | 0.3 | Strength of PV→PYR global inhibition |
+| `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 15.0 deg | Gaussian width of unified PYR→PYR kernel |
+| `sigma_som_deg` | $\sigma_{\text{som}}$ | 15.0 deg | Lateral SOM→PYR width (annular ring half-width for `gaussian`; hole half-width for `uniform`) |
+| `som_pattern` | — | `"gaussian"` | SOM→PYR pattern: `gaussian` (annular surround), `uniform` (flat with hole), or `none` (local only) |
 
-**Note on network-size invariance:** The Gaussian profile (row-sum normalization) ensures that the effective coupling is independent of $N$, so simulations at $N=64$, $N=128$, and $N=1024$ produce comparable dynamics.
+Connection strengths (`J_NMDA`, `w_pe`, `w_se`) are taken directly from `CircuitParams` and are **not** free parameters at the ring level.
+
+**Network-size invariance:** All kernels are row-sum normalised, so the total drive per node is independent of $N$. Simulations at $N=32$, $N=64$, $N=128$ produce comparable homogeneous fixed points.
 
 ---
 
@@ -106,47 +164,77 @@ $$I_{\text{inter},i}^{\text{PV}\to\text{PYR}} = \sum_{j=0}^{N-1} W_{ij}^{\text{P
 
 Each node follows rate dynamics governed by:
 
-$$\tau_s \frac{dr_i^X}{dt} = -r_i^X + \Phi^X(I_i^X) + \sigma_s \, \xi_i^X(t)$$
+$$\tau_s \frac{dr_i^X}{dt} = -r_i^X + \Phi^X(I_i^X)$$
 
-where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, $I_i^X$ is the total input current, $\sigma_s$ is the noise amplitude, and $\xi_i^X(t)$ is a noise process.
+where $\tau_s$ is the synaptic time constant, $\Phi^X$ is the transfer function for population $X$, and $I_i^X$ is the total input current. Noise is injected into the input current of all populations, each scaled by its own baseline drive (see [Section 7](#7-noise)).
 
 Firing rates are clamped to $r_i^X \in [0,\, 200]$ Hz at each integration step. The upper bound acts as a safety net against numerical overflow in large networks while remaining well above physiological firing rates.
 
-### 3.1 Input Current Equations
+### 3.1 NMDA Gating Variable
 
-**PYR** receives local recurrent excitation (with divisive PV inhibition), inter-node excitation, inter-node PV inhibition, SOM subtractive inhibition, adaptation, external drive, and stimulus:
+Local recurrent self-excitation in PYR is mediated through NMDA receptors. Instead of an instantaneous weight $w_{ee} \cdot r_i^{\text{PYR}}$, the recurrent drive is proportional to a **saturable NMDA gating variable** $S_i^{\text{NMDA}} \in [0, 1]$ that evolves according to:
 
-$$I_i^{\text{PYR}} = \frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}} + I_{\text{inter},i}^{\text{PYR}} - g_{\text{GABA}} \, I_{\text{inter},i}^{\text{PV}\to\text{PYR}} - g_{\text{GABA}} \, w_{se} \, r_i^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t)$$
+$$\tau_{\text{NMDA}} \frac{dS_i^{\text{NMDA}}}{dt} = -S_i^{\text{NMDA}} + (1 - S_i^{\text{NMDA}}) \cdot \gamma_{\text{NMDA}} \cdot r_i^{\text{PYR}}$$
 
-The term $\frac{w_{ee} \, r_i^{\text{PYR}}}{1 + g_{\text{GABA}} \, w_{pe} \, r_i^{\text{PV}}}$ implements **divisive (shunting) inhibition** from PV interneurons, modeling the effect of perisomatic GABAergic synapses on input resistance.
+The $(1 - S_i^{\text{NMDA}})$ factor captures **saturation**: at high firing rates, the fraction of open NMDA channels approaches 1 and the gating variable cannot increase further. This is the kinetic model from Wong & Wang (2006).
+
+| Constant | Symbol | Value | Description |
+|----------|--------|-------|-------------|
+| `GAMMA_NMDA` | $\gamma_{\text{NMDA}}$ | 0.641 | Kinetic opening rate (dimensionless) |
+| `TAU_NMDA_MS` | $\tau_{\text{NMDA}}$ | 100 ms | NMDA decay time constant |
+
+These are **fixed physics constants**, not fitted parameters. The fitted parameter is $J_{\text{NMDA}}$ (the synaptic coupling strength).
+
+**Steady state:** At a fixed firing rate $r^*$, the gating variable converges to:
+
+$$S^* = \frac{\gamma_{\text{NMDA}} \cdot \tau_{\text{NMDA}} \cdot r^*}{1 + \gamma_{\text{NMDA}} \cdot \tau_{\text{NMDA}} \cdot r^*}$$
+
+This saturating nonlinearity is what replaces the linear $w_{ee} \cdot r_i^{\text{PYR}}$ used in earlier versions of the model.
+
+**Initialization:** $S_i^{\text{NMDA}}(0)$ is set to the steady-state value $S^*$ computed from the initial PYR firing rates, so the network starts without a NMDA transient.
+
+### 3.2 Input Current Equations
+
+**PYR** receives unified NMDA excitation from all nodes (via $W^{\text{PYR}}$), divisive PV inhibition from all nodes (via $W^{\text{PV}}$), lateral SOM inhibition (via $W^{\text{SOM}}$), adaptation, external drive, stimulus, and noise:
+
+$$I_i^{\text{PYR}} = \frac{\displaystyle\sum_j W_{ij}^{\text{PYR}} S_j^{\text{NMDA}}}{1 + g_{\text{GABA}} \displaystyle\sum_j W_{ij}^{\text{PV}} r_j^{\text{PV}}} - g_{\text{GABA}} \sum_j W_{ij}^{\text{SOM}} r_j^{\text{SOM}} - I_{\text{adapt},i}^{\text{PYR}} + I_{\text{ext}}^{\text{PYR}} + I_{\text{stim},i}(t) + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$$
+
+- **Numerator** $(W^{\text{PYR}} S^{\text{NMDA}})$: unified Gaussian kernel (including self-weight) gates all NMDA drive — local recurrence and inter-node excitation are handled by a single matrix product.
+- **Denominator** $(1 + g_{\text{GABA}} W^{\text{PV}} r^{\text{PV}})$: all PV nodes (local + inter-node) enter divisively, modelling perisomatic shunting inhibition.
+- **Subtractive SOM** $(g_{\text{GABA}} W^{\text{SOM}} r^{\text{SOM}})$: purely lateral (zero diagonal), models dendritic SOM inhibition.
+
+At the homogeneous fixed point, the three matrix products reduce exactly to the single-node scalars $J_{\text{NMDA}} S^*$, $w_{pe} r^{\text{PV}}$, and $w_{se} r^{\text{SOM}}$.
+
+The noise term $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PYR}} \cdot \xi_i(t)$ injects stochastic current into each PYR node. Injecting noise at the current level (before the transfer function $\Phi^{\text{PYR}}$) means its effect on firing rate is naturally filtered by the transfer function slope $\Phi'$, consistent with a diffusion-approximation interpretation of Poisson spiking variability. The proportionality to $I_{\text{ext}}^{\text{PYR}}$ ensures noise scales automatically across experimental conditions.
 
 **SOM** (local connections only):
 
-$$I_i^{\text{SOM}} = w_{es} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{ps} \, r_i^{\text{PV}} - w_{vs} \, r_i^{\text{VIP}} - I_{\text{adapt},i}^{\text{SOM}} + I_{\text{ext}}^{\text{SOM}}$$
+$$I_i^{\text{SOM}} = w_{es} \, r_i^{\text{PYR}} - w_{vs} \, r_i^{\text{VIP}} - I_{\text{adapt},i}^{\text{SOM}} + I_{\text{ext}}^{\text{SOM}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{SOM}} \cdot \xi_i(t)$$
 
 **PV** (local connections only; PV's global effect is on PYR, not on other PV):
 
-$$I_i^{\text{PV}} = w_{ep} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{pp} \, r_i^{\text{PV}} - g_{\text{GABA}} \, w_{sp} \, r_i^{\text{SOM}} - w_{vp} \, r_i^{\text{VIP}} + I_{\text{ext}}^{\text{PV}}$$
+$$I_i^{\text{PV}} = w_{ep} \, r_i^{\text{PYR}} - g_{\text{GABA}} \, w_{pp} \, r_i^{\text{PV}} - g_{\text{GABA}} \, w_{sp} \, r_i^{\text{SOM}} - w_{vp} \, r_i^{\text{VIP}} + I_{\text{ext}}^{\text{PV}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{PV}} \cdot \xi_i(t)$$
 
 **VIP** (local connections only):
 
-$$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} - w_{vv} \, r_i^{\text{VIP}} + I_{\text{ext}}^{\text{VIP}}$$
+$$I_i^{\text{VIP}} = w_{ev} \, r_i^{\text{PYR}} + I_{\text{ext}}^{\text{VIP}} + \sigma_{\text{noise}} \cdot I_{\text{ext}}^{\text{VIP}} \cdot \xi_i(t)$$
 
-### 3.2 Weight Notation
+### 3.3 Weight Notation
 
 Weights follow the convention $w_{XY}$ = connection **from** population $Y$ **to** population $X$:
 - e = PYR (excitatory), p = PV, s = SOM, v = VIP
 - Example: $w_{ep}$ = weight from PYR to PV
+- $J_{\text{NMDA}}$ is the recurrent PYR→PYR NMDA coupling strength (replaces the former $w_{ee}$)
 
-### 3.3 GABA Scaling
+### 3.4 GABA Scaling
 
 Inhibitory weights are multiplied by a GABA scaling factor:
 
-$$g_{\text{GABA}} = g_{\text{GABA}}^{\text{base}} + \text{act}_{\alpha 7} \cdot g_{\alpha 7}$$
+$$g_{\text{GABA}} = g_{\text{GABA}}^{\text{base}} + g_{\alpha 7}$$
 
-where $\text{act}_{\alpha 7} \in [0, 1]$ is the alpha7 nAChR activation level (0 under knockout).
+The α7 contribution $g_{\alpha 7}$ is itself an optimised parameter; under α7 knockout the CLI sets both $\text{act}_{\alpha 7} = 0$ (zeroing the α7-mediated external currents in §3.5) and $g_{\alpha 7} = 0$ (removing the α7-driven GABA enhancement), so the homogeneous KO condition is consistent at every level.
 
-### 3.4 External Currents
+### 3.5 External Currents
 
 Each population receives baseline tonic drive plus receptor-mediated currents:
 
@@ -158,30 +246,29 @@ $$I_{\text{ext}}^{\text{SOM}} = I_0^{\text{SOM}} + \text{act}_{\alpha 7} \cdot I
 
 $$I_{\text{ext}}^{\text{VIP}} = I_0^{\text{VIP}} + \text{act}_{\alpha 5} \cdot I_{\alpha 5}^{\text{VIP}}$$
 
-### 3.5 Transient Current
+### 3.6 Transient Current
 
-An optional nonspecific transient current can be applied to all populations simultaneously during a window $[t_{\text{start}}, t_{\text{start}} + \Delta t_{\text{trans}})$:
+An optional transient current can be applied **to PYR only** during a window $[t_{\text{start}}, t_{\text{start}} + \Delta t_{\text{trans}})$:
 
-$$I_{\text{ext}}^{X}(t) = I_{\text{ext}}^{X} + \begin{cases} f_{\text{trans}} \cdot I_0^X & \text{if } t_{\text{start}} \leq t < t_{\text{start}} + \Delta t_{\text{trans}} \\ 0 & \text{otherwise} \end{cases}$$
+$$I_{\text{ext}}^{\text{PYR}}(t) = I_{\text{ext}}^{\text{PYR}} + \begin{cases} f_{\text{trans}} \cdot I_0^{\text{PYR}} & \text{if } t_{\text{start}} \leq t < t_{\text{start}} + \Delta t_{\text{trans}} \\ 0 & \text{otherwise} \end{cases}$$
 
-where $f_{\text{trans}}$ is the transient factor (fraction of baseline I0).
+where $f_{\text{trans}}$ is the transient factor (fraction of PYR's baseline $I_0$). PV/SOM/VIP external currents are unchanged. A second independent transient (`trans2_*`) can be enabled separately, with the same PYR-only behavior.
 
 ---
 
 ## 4. Spike-Frequency Adaptation
 
-PYR and SOM populations exhibit spike-frequency adaptation, which provides slow negative feedback:
+PYR exhibits spike-frequency adaptation, which provides slow negative feedback:
 
-$$\tau_{\text{adapt}}^X \frac{dI_{\text{adapt},i}^X}{dt} = -I_{\text{adapt},i}^X + J_{\text{adapt}}^X \cdot r_i^X$$
+$$\tau_{\text{adapt}}^{\text{PYR}} \frac{dI_{\text{adapt},i}^{\text{PYR}}}{dt} = -I_{\text{adapt},i}^{\text{PYR}} + J_{\text{adapt}}^{\text{PYR}} \cdot r_i^{\text{PYR}}$$
 
-for $X \in \{\text{PYR}, \text{SOM}\}$.
+SOM adaptation is present in the code (`J_adapt_som`) but **disabled by default during optimization** (`J_adapt_som = 0` in the bistable fit; freeze with `--freeze J_adapt_som`). The thesis model does not include SOM adaptation.
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 186.6 ms | PYR adaptation time constant |
-| `tau_adapt_som` | $\tau_{\text{adapt}}^{\text{SOM}}$ | 2320.5 ms | SOM adaptation time constant (slow) |
-| `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.27 | PYR adaptation strength |
-| `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 27.24 | SOM adaptation strength (strong) |
+| `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 600 ms | PYR adaptation time constant |
+| `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.002 nA/Hz | PYR adaptation strength (`CircuitParams` default; fitted values typically larger) |
+| `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 0.0 | SOM adaptation strength (off by default) |
 
 Adaptation prevents runaway excitation and creates temporal dynamics in the bump.
 
@@ -189,24 +276,35 @@ Adaptation prevents runaway excitation and creates temporal dynamics in the bump
 
 ## 5. Transfer Function
 
-The model uses the **Wong-Wang transfer function** (Wong & Wang, 2006), derived from a mean-field reduction of spiking neural networks:
+The model uses the **Wong-Wang transfer function** (Wong & Wang, 2006):
 
-$$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = c \cdot (I - \theta)$$
+$$\Phi(I) = \frac{u}{1 - e^{-g \, u}}, \quad \text{where } u = \alpha \cdot (I - \theta)$$
+
+**Interneuron soft ceiling.** To prevent pathological runaway firing, PV, SOM, and VIP use a **hyperbolic soft ceiling** applied post-hoc:
+
+$$\Phi_{\text{cap}}(I) = \frac{r_{\max} \cdot \Phi(I)}{r_{\max} + \Phi(I)}$$
+
+This asymptotes to $r_{\max}$ as $\Phi \to \infty$, while leaving low-rate behavior ($\Phi \ll r_{\max}$) unchanged. PYR uses the uncapped $\Phi$.
+
+| Population | Transfer function | $r_{\max}$ (Hz) |
+|------------|------------------|----------------|
+| PYR | $\Phi(I)$ (uncapped) | — |
+| PV | $\Phi_{\text{cap}}(I)$ | 70.6 |
+| SOM | $\Phi_{\text{cap}}(I)$ | 70.4 |
+| VIP | $\Phi_{\text{cap}}(I)$ | 137.6 |
+
+The ceilings are 2× the Rooy (2021) high-state targets for each interneuron type. See [transfer_function_ceiling.md](transfer_function_ceiling.md) for the rationale.
 
 **Parameters per population $X$:**
 
-| Parameter | Symbol | Description |
-|-----------|--------|-------------|
-| `Theta_X` | $\theta^X$ | Threshold current |
-| `alpha_X` | $c^X$ | Gain / slope parameter |
-| `g_e` / `g_i` | $g$ | Curvature parameter ($g_e$ for PYR, $g_i$ for PV/SOM/VIP) |
-
-**Properties:**
-- Monotonically increasing
-- Bounded below at 0 (firing rates are non-negative)
-- Approximately linear near threshold
-- Saturates at high inputs
-- Reduces to ReLU-like behavior as $g \to \infty$
+| Parameter | Symbol | Population | Value |
+|-----------|--------|------------|-------|
+| `Theta_pyr` | $\theta^{pyr}$ | PYR | $125/310 \approx 0.403\ \text{nA}$ |
+| `Theta_pv` / `Theta_som` / `Theta_vip` | $\theta^{inh}$ | PV, SOM, VIP | $177/615 \approx 0.288\ \text{nA}$ |
+| `alpha_pyr` | $\alpha^{pyr}$ | PYR | $310\ \text{Hz/nA}$ |
+| `alpha_pv` / `alpha_som` / `alpha_vip` | $\alpha^{inh}$ | PV, SOM, VIP | $615\ \text{Hz/nA}$ |
+| `g_exc` | $g_e$ | PYR | $0.16\ \text{s}$ |
+| `g_inh` | $g_i$ | PV, SOM, VIP | $0.087\ \text{s}$ |
 
 **Numerical stability:** For $|g \cdot u| < \epsilon$ (near zero), a Taylor expansion is used: $\Phi \approx 1/g + u/2$.
 
@@ -220,7 +318,7 @@ The stimulus is a current injection to PYR neurons with a Gaussian spatial profi
 
 $$S_{\text{spatial}}(\theta_i) = \exp\!\left(-\frac{d(\theta_i, \theta_{\text{stim}})^2}{2\,\sigma_{\text{stim}}^2}\right)$$
 
-where $\sigma_{\text{stim}}$ is the stimulus spatial width (default: $18\degree$ from Yang et Liu, 2023).
+where $\sigma_{\text{stim}}$ is the stimulus spatial width (`RingStimulus.sigma_deg`, default $20\degree$).
 
 ### 6.2 Temporal Profile
 
@@ -252,10 +350,10 @@ The standard working memory protocol consists of:
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| `center_deg` | $\theta_{\text{stim}}$ | 180 deg | Stimulus angular location |
-| `amplitude` | $A$ | 150.0 | Peak current amplitude |
-| `sigma_deg` | $\sigma_{\text{stim}}$ | 18.0 deg | Spatial width (Gaussian sigma) |
-| `onset_ms` | $t_{\text{on}}$ | 10500 ms | Stimulus onset time |
+| `center_deg` | $\theta_{\text{stim}}$ | — (required) | Stimulus angular location (CLI fixes it to 180° via `STIM_CENTER_DEG`) |
+| `amplitude` | $A$ | — (required) | Peak current amplitude (set per experiment) |
+| `sigma_deg` | $\sigma_{\text{stim}}$ | 20.0 deg | Spatial width (Gaussian sigma) — `RingStimulus` default |
+| `onset_ms` | $t_{\text{on}}$ | 500 ms | Stimulus onset time — `RingStimulus` default (the ring CLI shifts it to `STIM_ONSET_MS = 10500 ms`) |
 | `duration_ms` | $\Delta t_{\text{stim}}$ | 250 ms | Stimulus duration |
 
 ---
@@ -282,112 +380,163 @@ Multiple stimuli are summed: $I_{\text{stim},i}(t) = \sum_k I_{\text{stim},i}^{(
 
 ## 7. Noise
 
-Three noise modes are available, added to each population at each node:
+Noise is injected as a shared stochastic current perturbation into **all four populations** (PYR, SOM, PV, VIP) at each node independently. All populations share the same noise process $\xi_i(t)$ at each node, but each population's noise amplitude is proportional to its own baseline external drive. This ensures correlated variability across populations while keeping the relative noise level consistent for each population. This models the variability in synaptic drive (diffusion approximation of Poisson spike trains).
 
-### White Noise
-$$\xi_i^X(t) \sim \mathcal{N}(0, 1) \quad \text{(i.i.d. at each time step)}$$
+### Noise equation
 
-### Ornstein-Uhlenbeck (OU) Noise
-$$d\xi_i^X = -\frac{\xi_i^X}{\tau_{\text{noise}}} \, dt + \sqrt{\frac{2}{\tau_{\text{noise}}}} \, dW_i^X$$
+The noisy input current for each population $X \in \{\text{PYR, SOM, PV, VIP}\}$ at node $i$ is:
+
+$$I_i^{X}(t) = I_i^{X,\text{det}}(t) + \underbrace{\sigma_{\text{noise}} \cdot I_{\text{ext}}^{X}}_{\text{noise scale (nA)}} \cdot \xi_i(t)$$
+
+where $I_i^{X,\text{det}}$ is the deterministic part (all synaptic, adaptation, and stimulus terms), $\sigma_{\text{noise}}$ is the dimensionless noise amplitude, and $\xi_i(t)$ is the shared noise process (see below). Each population's noise scale is proportional to its own baseline drive $I_{\text{ext}}^{X}$, so the dimensionless noise amplitude $\sigma_{\text{noise}}$ has the same meaning across all populations.
+
+| Parameter | Symbol | Default | Description |
+|-----------|--------|---------|-------------|
+| `sigma_noise` | $\sigma_{\text{noise}}$ | `0.3` | Dimensionless noise amplitude. Noise current std for population $X$ = `sigma_noise × I_ext_X` (nA) |
+
+### Noise processes
+
+Two stochastic processes are available for $\xi_i(t)$:
+
+**White noise** (default): i.i.d. Gaussian samples at each integration step
+$$\xi_i(t) \sim \mathcal{N}(0, 1) \quad \text{independent across nodes and time steps}$$
+
+**Ornstein-Uhlenbeck (OU) noise**: temporally correlated noise with time constant $\tau_{\text{noise}}$
+$$d\xi_i = -\frac{\xi_i}{\tau_{\text{noise}}} \, dt + \sqrt{\frac{2}{\tau_{\text{noise}}}} \, dW_i$$
 
 Discretized (Euler-Maruyama):
-$$\xi_i^X(t + \Delta t) = \xi_i^X(t) - \frac{\xi_i^X(t)}{\tau_{\text{noise}}} \Delta t + \sqrt{\frac{2\,\Delta t}{\tau_{\text{noise}}}} \, \eta_i^X, \quad \eta_i^X \sim \mathcal{N}(0, 1)$$
+$$\xi_i(t + \Delta t) = \xi_i(t) - \frac{\xi_i(t)}{\tau_{\text{noise}}} \Delta t + \sqrt{\frac{2\,\Delta t}{\tau_{\text{noise}}}} \, \eta_i, \quad \eta_i \sim \mathcal{N}(0, 1)$$
 
-### No Noise
-$$\xi_i^X(t) = 0$$
+**No noise**: $\xi_i(t) = 0$ (set `sigma_noise = 0`).
 
 ---
 
 ### Relation to Seeholzer et al. (2019)
 
-The Langevin equation (their Eq. 4) contains a single white noise term $\sqrt{B}\,\eta(t)$ with 
-$\langle\eta(t)\,\eta(t')\rangle = \delta(t - t')$. This is **not** a noise injected into the network 
-directly; it is the *emergent* effective noise on the bump center $\varphi(t)$, obtained by projecting 
-the full $N$-dimensional spiking variability onto the 1D attractor manifold via the left eigenvector 
+The Langevin equation (their Eq. 4) contains a single white noise term $\sqrt{B}\,\eta(t)$ with
+$\langle\eta(t)\,\eta(t')\rangle = \delta(t - t')$. This is **not** a noise injected into the network
+directly; it is the *emergent* effective noise on the bump center $\varphi(t)$, obtained by projecting
+the full $N$-dimensional spiking variability onto the 1D attractor manifold via the left eigenvector
 $e_l$ (their §"Diffusion", p. 24).
 
-The underlying noise source in the paper is **independent white Gaussian noise per neuron** — 
+The underlying noise source in the paper is **independent white Gaussian noise per neuron** —
 a diffusion approximation to Poisson spike emission:
 
-$$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad 
+$$\xi_i(t) \approx \phi_{0,i} + \sqrt{\phi_{0,i}}\,\eta_i(t), \qquad
 \langle\eta_i(t)\,\eta_j(t')\rangle = \delta(t-t')\,\delta_{ij}$$
 
-(their p. 24, lines immediately before Eq. 20). This is exactly our **white noise** mode (up to 
-the $\sqrt{\phi_{0,i}}$ amplitude scaling, which in our rate model is absorbed into $\sigma_{\text{noise}}$).
+(their p. 24, lines immediately before Eq. 20). Our model injects current-space noise into each population $X$ with amplitude $\sigma_{\text{noise}} \cdot I_{\text{ext}}^{X}$, which after passing through the transfer function slope $\Phi'$ produces effective rate noise consistent with this formulation. The $\sqrt{\phi_{0,i}}$ amplitude scaling of the original is absorbed into $\sigma_{\text{noise}}$.
 
-**OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside 
-the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion 
-coefficient $B$ in Eq. (5) to hold. OU noise is instead motivated as a model of slowly fluctuating 
+**OU noise** introduces temporal correlations with timescale $\tau_{\text{noise}}$ and falls outside
+the Seeholzer et al. derivation, which requires white (delta-correlated) noise for the diffusion
+coefficient $B$ in Eq. (5) to hold. OU noise is instead motivated as a model of slowly fluctuating
 background input from other cortical areas, independent of the bump attractor theory.
 
-**In practice:** white noise is the appropriate mode for comparing empirical diffusion coefficients 
-$\hat{B}$ to the theoretical prediction of Eq. (5). OU noise produces trial-to-trial variability 
-with a characteristic timescale but will not match the $\langle[\varphi(t)-\varphi(0)]^2\rangle = B \cdot t$ 
+**In practice:** white noise is the appropriate mode for comparing empirical diffusion coefficients
+$\hat{B}$ to the theoretical prediction of Eq. (5). OU noise produces trial-to-trial variability
+with a characteristic timescale but will not match the $\langle[\varphi(t)-\varphi(0)]^2\rangle = B \cdot t$
 scaling predicted by the theory.
 
 ## 8. Experimental Conditions
 
-The model simulates 8 conditions by modifying receptor activation multipliers $(\text{act}_{\alpha 7}, \text{act}_{\beta 2}, \text{act}_{\alpha 5})$ and the GABA scaling parameter $g_{\alpha 7}$:
+The model can simulate 8 conditions by combining two fitted parameter families (WT and WT_APP) with knockout toggles. APP is represented by using the WT_APP fitted parameters, not by sampling receptor desensitization multipliers.
 
-| Condition | $\text{act}_{\alpha 7}$ | $\text{act}_{\beta 2}$ | $\text{act}_{\alpha 5}$ | $g_{\alpha 7}$ |
-|-----------|:---:|:---:|:---:|:---:|
-| **WT** | 1.0 | 1.0 | 1.0 | default |
-| **WT + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | $\sim \mathcal{N}(0.875, 0.06)$ | $\sim \mathcal{N}(0.60, 0.05)$ | default |
-| **$\alpha 7$ KO** | 0.0 | 1.0 | 1.0 | 0.0 |
-| **$\alpha 7$ KO + APP** | 0.0 | $\sim \mathcal{N}(0.875, 0.06)$ | $\sim \mathcal{N}(0.60, 0.05)$ | 0.0 |
-| **$\beta 2$ KO** | 1.0 | 0.0 | 1.0 | default |
-| **$\beta 2$ KO + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | 0.0 | $\sim \mathcal{N}(0.60, 0.05)$ | default |
-| **$\alpha 5$ KO** | 1.0 | 1.0 | 0.0 | default |
-| **$\alpha 5$ KO + APP** | $\sim \mathcal{N}(0.10, 0.03)$ | $\sim \mathcal{N}(0.875, 0.06)$ | 0.0 | default |
-
-APP desensitization distributions are clipped to biologically plausible ranges:
-- $\text{act}_{\alpha 7}$: [0.02, 0.20] (80-98% inactivated)
-- $\text{act}_{\beta 2}$: [0.75, 1.00] (0-25% inactivated)
-- $\text{act}_{\alpha 5}$: [0.45, 0.75] (25-55% inactivated)
+| Condition | Parameter family | $\text{act}_{\alpha 7}$ | $\text{act}_{\beta 2}$ | $\text{act}_{\alpha 5}$ | $g_{\alpha 7}$ |
+|-----------|------------------|:---:|:---:|:---:|:---:|
+| **WT** | WT | 1.0 | 1.0 | 1.0 | default |
+| **WT_APP** | WT_APP | 1.0 | 1.0 | 1.0 | default |
+| **$\alpha 7$ KO** | WT | 0.0 | 1.0 | 1.0 | 0.0 |
+| **$\alpha 7$ KO_APP** | WT_APP | 0.0 | 1.0 | 1.0 | 0.0 |
+| **$\beta 2$ KO** | WT | 1.0 | 0.0 | 1.0 | default |
+| **$\beta 2$ KO_APP** | WT_APP | 1.0 | 0.0 | 1.0 | default |
+| **$\alpha 5$ KO** | WT | 1.0 | 1.0 | 0.0 | default |
+| **$\alpha 5$ KO_APP** | WT_APP | 1.0 | 1.0 | 0.0 | default |
 
 ---
 
-## 9. Bump Amplitude Oscillations
+## 9. Joint Ring + Circuit Optimization
 
-### 9.1 Mechanism
+The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the ring network at rest reproduces target firing rates while enforcing bump-supporting bistability constraints.
 
-After the stimulus offset, the bump amplitude does not settle immediately to a steady value. Instead, it undergoes **damped oscillations** driven by the slow negative feedback of spike-frequency adaptation (SFA). The sequence is:
+### 9.1 Motivation
 
-1. Stimulus drives strong activation → bump forms, amplitude rises.
-2. Adaptation builds up during the stimulus → suppresses activity slightly after offset.
-3. When the stimulus turns off, adaptation current is still elevated → amplitude undershoots.
-4. Adaptation decays → amplitude recovers, overshoots.
-5. This bounce repeats with exponentially decaying amplitude until the attractor settles.
+Rate matching alone is necessary but not sufficient for working-memory behavior: a parameter set can match quiet-wakefulness means and still fail to sustain a bump after cue offset. The current optimizer therefore combines:
 
-In practice (default parameters, 128 nodes), the dominant oscillation frequency is around **~9–10 Hz (period ≈ 100 ms)**. The oscillations are visible in the trial-averaged amplitude and are systematic (not noise-driven): they represent a genuine resonance of the bump attractor.
+1. rate + KO + Jacobian terms,
+2. an optional **trace-based Turing bistability loss** computed from a deterministic cue simulation,
+3. optional additional regularizers (spatial uniformity, ACh ratio).
 
-### 9.2 Effect on MSD
+### 9.2 Parameter Space
 
-The bump position $\varphi(t)$ is estimated as the phase of the population vector. When the amplitude oscillates, the effective signal-to-noise on the phase estimate also oscillates. Moreover, the position itself may experience small correlated displacements at the oscillation frequency.
+`ring-optimize` searches over `CircuitParams` together with the ring structural parameters:
 
-The oscillation adds a periodic term to the theoretical MSD:
+| Parameter | Symbol | Default bounds | Description |
+|-----------|--------|---------------|-------------|
+| `sigma_pyr_deg` | $\sigma_\text{pyr}$ | [5°, 40°] | Gaussian width of unified PYR→PYR kernel |
+| `sigma_som_deg` | $\sigma_\text{som}$ | [5°, 40°] | Gaussian width of lateral SOM→PYR kernel |
 
-$$\text{MSD}(\tau) \approx B\,\tau + C\left(1 - \cos\!\left(\frac{2\pi\tau}{T_\text{osc}}\right)\right) + \text{offset}$$
+Connection strengths ($J_\text{NMDA}$, $w_{pe}$, $w_{se}$) are taken from the fitted `CircuitParams` and are **not** additional free parameters. `n_nodes` is fixed by CLI and not optimized.
 
-where $B$ is the true diffusion coefficient, $C$ is the oscillation contribution, and $T_\text{osc} = 1/f_\text{osc}$. Fitting a pure line $B\tau$ in the early regime ($\tau < T_\text{osc}$) **overestimates $\hat{B}$** because the oscillation increases apparent displacement at short lags.
+### 9.3 Loss Function
 
-### 9.3 Approaches to Correct or Mitigate the Problem
+Base objective:
 
-Five strategies are available, from simplest to most principled:
+$$\mathcal{L}_\text{base} = \mathcal{L}_\text{rate} + \frac{1}{N_\text{KO}}\sum_k \mathcal{L}_k^\text{KO} + \mathcal{L}_\text{Jacobian}$$
 
-| Strategy | Description | Pros | Cons |
-|----------|-------------|------|------|
-| **A. Exclude early transient** | Start MSD fit range after $N$ oscillation periods (e.g. `fit_range_s[0] = 3 × T_osc`) | Simple, no pre-processing | Wastes early data; requires knowing $T_\text{osc}$ |
-| **B. Low-pass filter position** ✓ | Apply zero-phase Butterworth LP filter to $\varphi(t)$ at $f_\text{cut} < f_\text{osc}$ before MSD | Clean, preserves slow drift, intuitive | Introduces slight edge effects; needs $f_\text{cut}$ choice |
-| **C. Oscillation-corrected fit** ✓ | Fit $\text{MSD} = B\tau + C(1-\cos(2\pi f\tau))$ with $f$ fixed from FFT | Separates diffusion and oscillation rigorously | Requires prior knowledge of $f_\text{osc}$; 3-param fit |
-| **D. Time-windowed averaging** | Replace instantaneous $\varphi$ with running mean over 1 cycle | Simple, no filter needed | Introduces temporal smearing of genuine drift |
-| **E. Fit only long lags** | Restrict fit to $\tau \gg T_\text{osc}$ where cosine term averages out | No preprocessing | Greatly reduces usable lag range; noisier fit |
+where
 
-**Current implementation**: strategies **B** (low-pass filter) and **C** (oscillation-corrected fit) are applied automatically when a dominant oscillation is detected by FFT of the per-trial amplitude. The filter cutoff defaults to $0.4 \times f_\text{osc}$ and can be overridden with `--filter_cutoff_hz` (set to `0` to disable).
+$$\mathcal{L}_\text{rate} = \frac{1}{4} \sum_{X \in \{\text{PYR},\text{SOM},\text{PV},\text{VIP}\}} \left(\frac{\bar r^X - r^X_\text{target}}{r^X_\text{target}}\right)^2$$
 
-### 9.4 Oscillation Detection
+and
 
-The `compute_oscillation_spectrum` function (in `analysis.py`) computes the power spectrum of the bump amplitude for each trial, averages across trials, and identifies the dominant frequency as the peak exceeding **3× the median power** in the band $[1, 50]$ Hz. The result is reported in `diffusion_oscillation.csv` and visualised in `diffusion_oscillation_spectrum.png`.
+$$\bar r^X = \frac{1}{N}\sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}.$$
+
+KO conditions (alpha7, alpha5, beta2) are evaluated **on the ring** in `evaluate_ring_params` — there is no single-node KO fast-path, and there is no `--ko_on_ring` CLI flag.
+
+#### Trace-based Turing bistability loss (optional, `--turing_weight`)
+
+The current implementation is simulation-based (not analytical). For each candidate:
+
+1. Run one deterministic cue simulation (`noise_type="none"`) with cue parameters:
+   - `--turing_cue_amplitude`
+   - `--turing_cue_duration_ms`
+   - `--turing_cue_sigma_deg`
+2. Reconstruct gain traces from recorded rates/adaptation and inter-node currents.
+3. Score rest-vs-delay constraints with margin `--turing_margin`:
+   - rest gain below threshold,
+   - late-delay bump-node rate band (`--turing_bump_min_hz`, `--turing_bump_max_hz`),
+   - late-delay sustain floor on gain,
+   - anti-runaway ceilings (gain/background activity).
+
+Top bump-support nodes are chosen from late-delay PYR activity using `--turing_topk_nodes`; late-delay window size is `--turing_late_delay_ms`.
+
+The combined objective is:
+
+$$\mathcal{L} = \mathcal{L}_\text{base} + w_T \cdot \mathcal{L}_\text{Turing,trace} + w_U \cdot \mathcal{L}_\text{uniformity} + w_A \cdot \mathcal{L}_\text{ACh}.$$
+
+#### Deprecated bump mode
+
+`--bump_mode` is deprecated and ignored. Bump constraints are integrated in the trace-based Turing term.
+
+### 9.4 Computational Cost
+
+Ring optimization remains expensive. Practical defaults:
+
+- `n_nodes = 64` during optimization,
+- moderate `n_trials_ring` for stochastic averaging,
+- nonzero `turing_weight` adds one deterministic cue simulation per evaluation.
+
+### 9.5 Output
+
+```
+ring_optim_output/
+├── best_circuit_params.json   # Best CircuitParams (same format as optimize)
+└── best_ring_params.json      # Best RingParams as JSON
+```
+
+These can be passed directly to `ring-run` or `ring-study` via `--params_json` and optional `--sigma_pyr_deg / --sigma_som_deg` overrides.
+
+See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full, up-to-date argument reference.
 
 ---
 
