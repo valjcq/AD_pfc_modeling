@@ -1,0 +1,14 @@
+{
+  "params": {
+    "amplitude": 0.5,
+    "sigma_noise": 0.25,
+    "trans_start_ms": 1000.0,
+    "trans_duration_ms": 500.0,
+    "T_ms": 4000.0
+  },
+  "steady_state": {
+    "pre_trans_pyr_hz": 46.498,
+    "trans_peak_pyr_hz": 108.915,
+    "post_trans_pyr_hz": 48.996
+  }
+}

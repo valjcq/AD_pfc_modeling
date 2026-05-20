@@ -1,0 +1,24 @@
+{
+  "params": {
+    "sigma_pyr_deg": 15.0,
+    "sigma_som_deg": 15.0,
+    "n_nodes": 64,
+    "amplitude": 0.4,
+    "condition": "WT"
+  },
+  "steady_state": {
+    "baseline_pyr_hz": 58.4,
+    "peak_pyr_cue_hz": 105.22,
+    "delay_pyr_center_hz": 58.866,
+    "delay_pyr_opposite_hz": 57.723
+  },
+  "bump_metrics": {
+    "center_mean_deg": 4.8892,
+    "center_std_deg": 128.5168,
+    "amplitude_mean": 0.0059,
+    "width_mean_deg": 54.4725,
+    "drift_rate_deg_per_s": 233.7792,
+    "diffusion_deg2_per_s": 210518.2425,
+    "error_from_cue_deg": 175.1108
+  }
+}
