@@ -64,7 +64,7 @@ def annular_gaussian_profile(distance: np.ndarray, mu: float, sigma: float) -> n
 
     Parameters:
         distance: Angular distance in radians
-        mu:    Peak distance in radians (derived from sigma_pyr, not hardcoded)
+        mu:    Peak distance in radians (set by caller, typically 3*sigma_pyr)
         sigma: Width of the annular ring in radians
 
     Returns:
@@ -116,8 +116,8 @@ def build_som_pyr_weights_gaussian(ring_params: RingParams, local_params: "Circu
     Build SOM→PYR weight matrix: annular (offset) Gaussian that peaks at
     the edge of the PYR excitation zone and falls off on both sides.
 
-    The peak distance mu is set to 2*sigma_pyr so the SOM surround starts
-    where PYR excitation stops — derived automatically, never hardcoded.
+    The peak distance mu is set to 3*sigma_pyr (the ~tail of the PYR
+    Gaussian), so the SOM surround starts where PYR excitation stops.
     sigma_som controls the width of the inhibitory ring.
 
     Row-sum = local_params.w_se (single-node fitted value).

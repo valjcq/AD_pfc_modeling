@@ -5,15 +5,10 @@ These values are used across optimization, loss computation, and analysis script
 """
 
 # Maximum physiological firing rate for PYR neurons (Hz)
-# The model clamps Phi to [0, 200] Hz, but the clamp ceiling creates spurious
-# fixed points in nullcline analysis. This defines the biologically plausible
-# upper bound for PYR firing rates, excluding clamp artifacts.
+# Used by nullcline analysis (bistable_loss) to filter out spurious fixed points
+# created by hard clamping at high rates. PYR is uncapped in the integrator, so
+# this is an analysis-only ceiling, not a clamp.
 R_MAX_PHYS = 100.0  # Hz
-
-# Physiological ceiling for the upper stable fixed point in bistability mode (Hz)
-# The optimizer should not be allowed to "solve" bistability by pushing the
-# upper fixed point into the clamp region (above R_MAX_PHYS).
-R_HIGH_MAX = 80.0  # Hz
 
 # NMDA gating constants (Wong & Wang 2006) — fixed physics, not fitted
 TAU_NMDA_MS = 100.0   # ms

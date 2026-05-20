@@ -494,7 +494,10 @@ def simulate_ring_batch(
     Run multiple simulations in parallel using numpy batch vectorization.
 
     All simulations share the same ring_params, stimuli, and initial state.
-    Each simulation can have different CircuitParams and/or random seed.
+    Each simulation can have different CircuitParams. Only ``seeds[0]`` is
+    used to seed a single shared noise stream — trials within the batch
+    share the same Wiener increments. To get independent noise per trial,
+    call ``simulate_ring`` individually with distinct seeds.
     """
     if noise_type == "ou":
         raise ValueError("OU noise is not supported in batch mode. Use 'white' or 'none'.")

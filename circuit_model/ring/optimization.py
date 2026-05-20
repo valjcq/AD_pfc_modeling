@@ -29,8 +29,8 @@ import nevergrad as ng
 import numpy as np
 from tqdm import tqdm
 
-from ..params import CircuitParams, ParamBound, default_bounds
-from ..loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty, transfer_function_slope
+from ..params import CircuitParams, ParamBound
+from ..loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty
 from ..constants import GAMMA_NMDA, TAU_NMDA_MS
 from ..optimization import (
     KOMeans,
@@ -40,7 +40,7 @@ from ..optimization import (
 )
 from ..io import save_params_json
 
-from .params import RingParams, default_ring_bounds
+from .params import RingParams
 from .simulation import simulate_ring, mean_rates_ring, NoiseType
 from .connectivity import RingConnectivity
 from .stimulus import RingStimulus
@@ -105,7 +105,7 @@ class RingLossBreakdown:
     ring_rate: float
     ko_penalty: float
     jacobian: float
-    ack_ratio: float
+    ach_ratio: float
     turing: float
     spatial_uniformity: float
     bump: float
@@ -493,7 +493,7 @@ def evaluate_ring_params(
     # --- Step 1: Ring baseline ---
     ok, ring_means, spatial_cv = run_ring_trials(params, ring_params, cfg, rng, connectivity=connectivity)
     if not ok:
-        bd = RingLossBreakdown(ring_rate=1e9, ko_penalty=0., jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
+        bd = RingLossBreakdown(ring_rate=1e9, ko_penalty=0., jacobian=0., ach_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
         return 1e9, ring_means, KOMeans(), bd
 
     ring_rate_loss = loss_from_means(ring_means, target)
@@ -519,7 +519,7 @@ def evaluate_ring_params(
         for ko_name, ko_params in ko_conditions:
             ko_ok, ko_m, _ = run_ring_trials(ko_params, ring_params, cfg, rng, connectivity=connectivity)
             if not ko_ok:
-                bd = RingLossBreakdown(ring_rate=ring_rate_loss, ko_penalty=1e9, jacobian=0., ack_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
+                bd = RingLossBreakdown(ring_rate=ring_rate_loss, ko_penalty=1e9, jacobian=0., ach_ratio=0., turing=0., spatial_uniformity=0., bump=0., total=1e9)
                 return 1e9, ring_means, ko_means, bd
             if ko_name == "alpha7_ko":
                 ko_means.alpha7_ko = ko_m
@@ -606,7 +606,7 @@ def evaluate_ring_params(
         ring_rate=float(ring_rate_loss),
         ko_penalty=float(ko_penalty),
         jacobian=float(jacobian_loss),
-        ack_ratio=float(ach_loss),
+        ach_ratio=float(ach_loss),
         turing=float(turing_loss),
         spatial_uniformity=float(spatial_loss),
         bump=float(bump_loss),
@@ -1248,7 +1248,7 @@ def _log_ring_candidate(path: str, step: int, cand: RingCandidate, target: Targe
             "ring_rate": float(cand.breakdown.ring_rate),
             "ko_penalty": float(cand.breakdown.ko_penalty),
             "jacobian": float(cand.breakdown.jacobian),
-            "ach_ratio": float(cand.breakdown.ack_ratio),
+            "ach_ratio": float(cand.breakdown.ach_ratio),
             "turing": float(cand.breakdown.turing),
             "spatial_uniformity": float(cand.breakdown.spatial_uniformity),
             "bump": float(cand.breakdown.bump),

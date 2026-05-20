@@ -122,7 +122,6 @@ DEFAULT_FIT_INIT_KWARGS = {
     "g_gaba_base": 1.0,
     "g_inh": 0.087,
     "sigma_noise": 0.3,
-    "sigma_s": 0.0,
     "tau_adapt_pyr": 600.0,
     "tau_adapt_som": 150.0,
     "tau_s": 20.0,
@@ -1554,7 +1553,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         out_dir = args.output_dir
     else:
         out_dir = os.path.join(
-            _output_dir("figs/ring/run", args.params_json),
+            _output_dir("figs/ring/run"),
             sigma_tag,
             f"amp_{_fmt(amp_factor)}",
             _run_type_label(args),
@@ -1705,7 +1704,7 @@ def cmd_bump_decay_study(args: argparse.Namespace) -> None:
         out_dir = str(user_out_dir)
     else:
         out_dir = os.path.join(
-            _output_dir("figs/ring/bump_decay", args.params_json),
+            _output_dir("figs/ring/bump_decay"),
             conn_label,
         )
     os.makedirs(out_dir, exist_ok=True)

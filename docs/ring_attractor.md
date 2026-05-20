@@ -38,20 +38,15 @@ For experimental analysis commands see [ring_experiments.md](ring_experiments.md
     - [Noise processes](#noise-processes)
     - [Relation to Seeholzer et al. (2019)](#relation-to-seeholzer-et-al-2019)
   - [8. Experimental Conditions](#8-experimental-conditions)
-  - [9. Bump Amplitude Oscillations](#9-bump-amplitude-oscillations)
-    - [9.1 Mechanism](#91-mechanism)
-    - [9.2 Effect on MSD](#92-effect-on-msd)
-    - [9.3 Approaches to Correct or Mitigate the Problem](#93-approaches-to-correct-or-mitigate-the-problem)
-    - [9.4 Oscillation Detection](#94-oscillation-detection)
-  - [10. Joint Ring + Circuit Optimization](#10-joint-ring--circuit-optimization)
-    - [10.1 Motivation](#101-motivation)
-    - [10.2 Parameter Space](#102-parameter-space)
-    - [10.3 Loss Function](#103-loss-function)
+  - [9. Joint Ring + Circuit Optimization](#9-joint-ring--circuit-optimization)
+    - [9.1 Motivation](#91-motivation)
+    - [9.2 Parameter Space](#92-parameter-space)
+    - [9.3 Loss Function](#93-loss-function)
       - [Trace-based Turing bistability loss (optional, `--turing_weight`)](#trace-based-turing-bistability-loss-optional---turing_weight)
       - [Deprecated bump mode](#deprecated-bump-mode)
-    - [10.4 Computational Cost](#104-computational-cost)
-    - [10.5 Output](#105-output)
-  - [11. References](#11-references)
+    - [9.4 Computational Cost](#94-computational-cost)
+    - [9.5 Output](#95-output)
+  - [10. References](#10-references)
 
 ---
 
@@ -130,19 +125,25 @@ This models perisomatic GABAergic inhibition that reduces input resistance. At t
 
 ### 2.4 SOM $\to$ PYR Lateral Inhibition
 
-SOM neurons project **laterally** to PYR nodes via a Gaussian kernel with **zero diagonal** (no self-inhibition):
+The SOM→PYR kernel is selected via `RingParams.som_pattern` and is always row-sum normalised to $w_{se}$. Three patterns are available; the default is `gaussian` (annular surround).
 
-1. **Raw profile (zero at $i = j$):**
-$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{d(\theta_i,\theta_j)^2}{2\,\sigma_{\text{som}}^2}\right) & i \neq j \\ 0 & i = j \end{cases}$$
+**(a) `gaussian` (default) — annular Gaussian surround.** SOM inhibition peaks at the *edge* of the PYR excitation zone, mirroring the experimentally observed Mexican-hat motif. The peak distance is $\mu = 3\,\sigma_{\text{pyr}}$ (≈ tail of the PYR Gaussian) and the ring width is $\sigma_{\text{som}}$:
 
-2. **Row-sum normalization to $w_{se}$:**
-$$W_{ij}^{\text{SOM}\to\text{PYR}} = w_{se} \cdot \frac{\tilde{W}_{ij}}{\sum_{k} \tilde{W}_{ik}}$$
+$$\tilde{W}_{ij} = \begin{cases} \exp\!\left(-\dfrac{(d(\theta_i,\theta_j) - \mu)^2}{2\,\sigma_{\text{som}}^2}\right) & i \neq j \\ 0 & i = j \end{cases}$$
 
-The lateral SOM contribution enters as a **subtractive** inhibition:
+**(b) `uniform` — flat surround with hole.** Uniform lateral inhibition everywhere except a Gaussian "hole" of half-width $2\,\sigma_{\text{som}}$ around each source node:
+
+$$\tilde{W}_{ij} = 1 - \exp\!\left(-\dfrac{d(\theta_i,\theta_j)^2}{2\,(2\sigma_{\text{som}})^2}\right) \quad (i \neq j),\qquad \tilde{W}_{ii} = 0$$
+
+**(c) `none` — local only.** Diagonal matrix with $w_{se}$ on every entry; recovers the single-node subtractive SOM term node-by-node, no lateral coupling.
+
+In each case the kernel is normalised so $\sum_j W_{ij}^{\text{SOM}\to\text{PYR}} = w_{se}$ for every row (for `none` this is trivial: the diagonal carries the full $w_{se}$).
+
+The SOM contribution enters as a **subtractive** inhibition:
 
 $$I_{\text{SOM-lat},i} = g_{\text{GABA}} \cdot \sum_{j=0}^{N-1} W_{ij}^{\text{SOM}\to\text{PYR}} \cdot r_j^{\text{SOM}}$$
 
-At the homogeneous fixed point the row-sum is $w_{se}$ and all nodes contribute equally, reproducing the single-node subtractive term $g_{\text{GABA}} \cdot w_{se} \cdot r^{\text{SOM}}$ exactly.
+At the homogeneous fixed point the row-sum is $w_{se}$ and all nodes contribute equally, reproducing the single-node subtractive term $g_{\text{GABA}} \cdot w_{se} \cdot r^{\text{SOM}}$ exactly regardless of the pattern.
 
 ### 2.5 Connectivity Parameters
 
@@ -150,7 +151,8 @@ At the homogeneous fixed point the row-sum is $w_{se}$ and all nodes contribute 
 |-----------|--------|---------|-------------|
 | `n_nodes` | $N$ | 64 | Number of nodes on the ring |
 | `sigma_pyr_deg` | $\sigma_{\text{pyr}}$ | 15.0 deg | Gaussian width of unified PYR→PYR kernel |
-| `sigma_som_deg` | $\sigma_{\text{som}}$ | 15.0 deg | Gaussian width of lateral SOM→PYR kernel |
+| `sigma_som_deg` | $\sigma_{\text{som}}$ | 15.0 deg | Lateral SOM→PYR width (annular ring half-width for `gaussian`; hole half-width for `uniform`) |
+| `som_pattern` | — | `"gaussian"` | SOM→PYR pattern: `gaussian` (annular surround), `uniform` (flat with hole), or `none` (local only) |
 
 Connection strengths (`J_NMDA`, `w_pe`, `w_se`) are taken directly from `CircuitParams` and are **not** free parameters at the ring level.
 
@@ -228,9 +230,9 @@ Weights follow the convention $w_{XY}$ = connection **from** population $Y$ **to
 
 Inhibitory weights are multiplied by a GABA scaling factor:
 
-$$g_{\text{GABA}} = g_{\text{GABA}}^{\text{base}} + \text{act}_{\alpha 7} \cdot g_{\alpha 7}$$
+$$g_{\text{GABA}} = g_{\text{GABA}}^{\text{base}} + g_{\alpha 7}$$
 
-where $\text{act}_{\alpha 7} \in [0, 1]$ is the alpha7 nAChR activation level (0 under knockout).
+The α7 contribution $g_{\alpha 7}$ is itself an optimised parameter; under α7 knockout the CLI sets both $\text{act}_{\alpha 7} = 0$ (zeroing the α7-mediated external currents in §3.5) and $g_{\alpha 7} = 0$ (removing the α7-driven GABA enhancement), so the homogeneous KO condition is consistent at every level.
 
 ### 3.5 External Currents
 
@@ -246,11 +248,11 @@ $$I_{\text{ext}}^{\text{VIP}} = I_0^{\text{VIP}} + \text{act}_{\alpha 5} \cdot I
 
 ### 3.6 Transient Current
 
-An optional nonspecific transient current can be applied to all populations simultaneously during a window $[t_{\text{start}}, t_{\text{start}} + \Delta t_{\text{trans}})$:
+An optional transient current can be applied **to PYR only** during a window $[t_{\text{start}}, t_{\text{start}} + \Delta t_{\text{trans}})$:
 
-$$I_{\text{ext}}^{X}(t) = I_{\text{ext}}^{X} + \begin{cases} f_{\text{trans}} \cdot I_0^X & \text{if } t_{\text{start}} \leq t < t_{\text{start}} + \Delta t_{\text{trans}} \\ 0 & \text{otherwise} \end{cases}$$
+$$I_{\text{ext}}^{\text{PYR}}(t) = I_{\text{ext}}^{\text{PYR}} + \begin{cases} f_{\text{trans}} \cdot I_0^{\text{PYR}} & \text{if } t_{\text{start}} \leq t < t_{\text{start}} + \Delta t_{\text{trans}} \\ 0 & \text{otherwise} \end{cases}$$
 
-where $f_{\text{trans}}$ is the transient factor (fraction of baseline I0).
+where $f_{\text{trans}}$ is the transient factor (fraction of PYR's baseline $I_0$). PV/SOM/VIP external currents are unchanged. A second independent transient (`trans2_*`) can be enabled separately, with the same PYR-only behavior.
 
 ---
 
@@ -265,7 +267,7 @@ SOM adaptation is present in the code (`J_adapt_som`) but **disabled by default 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
 | `tau_adapt_pyr` | $\tau_{\text{adapt}}^{\text{PYR}}$ | 600 ms | PYR adaptation time constant |
-| `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.27 | PYR adaptation strength |
+| `J_adapt_pyr` | $J_{\text{adapt}}^{\text{PYR}}$ | 0.002 nA/Hz | PYR adaptation strength (`CircuitParams` default; fitted values typically larger) |
 | `J_adapt_som` | $J_{\text{adapt}}^{\text{SOM}}$ | 0.0 | SOM adaptation strength (off by default) |
 
 Adaptation prevents runaway excitation and creates temporal dynamics in the bump.
@@ -287,11 +289,11 @@ This asymptotes to $r_{\max}$ as $\Phi \to \infty$, while leaving low-rate behav
 | Population | Transfer function | $r_{\max}$ (Hz) |
 |------------|------------------|----------------|
 | PYR | $\Phi(I)$ (uncapped) | — |
-| PV | $\Phi_{\text{cap}}(I)$ | 53 |
-| SOM | $\Phi_{\text{cap}}(I)$ | 53 |
-| VIP | $\Phi_{\text{cap}}(I)$ | 103 |
+| PV | $\Phi_{\text{cap}}(I)$ | 70.6 |
+| SOM | $\Phi_{\text{cap}}(I)$ | 70.4 |
+| VIP | $\Phi_{\text{cap}}(I)$ | 137.6 |
 
-The ceilings are 1.5× the Rooy (2021) high-state targets for each interneuron type.
+The ceilings are 2× the Rooy (2021) high-state targets for each interneuron type. See [transfer_function_ceiling.md](transfer_function_ceiling.md) for the rationale.
 
 **Parameters per population $X$:**
 
@@ -316,7 +318,7 @@ The stimulus is a current injection to PYR neurons with a Gaussian spatial profi
 
 $$S_{\text{spatial}}(\theta_i) = \exp\!\left(-\frac{d(\theta_i, \theta_{\text{stim}})^2}{2\,\sigma_{\text{stim}}^2}\right)$$
 
-where $\sigma_{\text{stim}}$ is the stimulus spatial width (default: $18\degree$ from Yang et Liu, 2023).
+where $\sigma_{\text{stim}}$ is the stimulus spatial width (`RingStimulus.sigma_deg`, default $20\degree$).
 
 ### 6.2 Temporal Profile
 
@@ -348,10 +350,10 @@ The standard working memory protocol consists of:
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| `center_deg` | $\theta_{\text{stim}}$ | 180 deg | Stimulus angular location |
-| `amplitude` | $A$ | 150.0 | Peak current amplitude |
-| `sigma_deg` | $\sigma_{\text{stim}}$ | 18.0 deg | Spatial width (Gaussian sigma) |
-| `onset_ms` | $t_{\text{on}}$ | 10500 ms | Stimulus onset time |
+| `center_deg` | $\theta_{\text{stim}}$ | — (required) | Stimulus angular location (CLI fixes it to 180° via `STIM_CENTER_DEG`) |
+| `amplitude` | $A$ | — (required) | Peak current amplitude (set per experiment) |
+| `sigma_deg` | $\sigma_{\text{stim}}$ | 20.0 deg | Spatial width (Gaussian sigma) — `RingStimulus` default |
+| `onset_ms` | $t_{\text{on}}$ | 500 ms | Stimulus onset time — `RingStimulus` default (the ring CLI shifts it to `STIM_ONSET_MS = 10500 ms`) |
 | `duration_ms` | $\Delta t_{\text{stim}}$ | 250 ms | Stimulus duration |
 
 ---
@@ -452,55 +454,11 @@ The model can simulate 8 conditions by combining two fitted parameter families (
 
 ---
 
-## 9. Bump Amplitude Oscillations
-
-### 9.1 Mechanism
-
-After the stimulus offset, the bump amplitude does not settle immediately to a steady value. Instead, it undergoes **damped oscillations** driven by the slow negative feedback of spike-frequency adaptation (SFA). The sequence is:
-
-1. Stimulus drives strong activation → bump forms, amplitude rises.
-2. Adaptation builds up during the stimulus → suppresses activity slightly after offset.
-3. When the stimulus turns off, adaptation current is still elevated → amplitude undershoots.
-4. Adaptation decays → amplitude recovers, overshoots.
-5. This bounce repeats with exponentially decaying amplitude until the attractor settles.
-
-In practice (default parameters, 128 nodes), the dominant oscillation frequency is around **~9–10 Hz (period ≈ 100 ms)**. The oscillations are visible in the trial-averaged amplitude and are systematic (not noise-driven): they represent a genuine resonance of the bump attractor.
-
-### 9.2 Effect on MSD
-
-The bump position $\varphi(t)$ is estimated as the phase of the population vector. When the amplitude oscillates, the effective signal-to-noise on the phase estimate also oscillates. Moreover, the position itself may experience small correlated displacements at the oscillation frequency.
-
-The oscillation adds a periodic term to the theoretical MSD:
-
-$$\text{MSD}(\tau) \approx B\,\tau + C\left(1 - \cos\!\left(\frac{2\pi\tau}{T_\text{osc}}\right)\right) + \text{offset}$$
-
-where $B$ is the true diffusion coefficient, $C$ is the oscillation contribution, and $T_\text{osc} = 1/f_\text{osc}$. Fitting a pure line $B\tau$ in the early regime ($\tau < T_\text{osc}$) **overestimates $\hat{B}$** because the oscillation increases apparent displacement at short lags.
-
-### 9.3 Approaches to Correct or Mitigate the Problem
-
-Five strategies are available, from simplest to most principled:
-
-| Strategy | Description | Pros | Cons |
-|----------|-------------|------|------|
-| **A. Exclude early transient** | Start MSD fit range after $N$ oscillation periods (e.g. `fit_range_s[0] = 3 × T_osc`) | Simple, no pre-processing | Wastes early data; requires knowing $T_\text{osc}$ |
-| **B. Low-pass filter position** ✓ | Apply zero-phase Butterworth LP filter to $\varphi(t)$ at $f_\text{cut} < f_\text{osc}$ before MSD | Clean, preserves slow drift, intuitive | Introduces slight edge effects; needs $f_\text{cut}$ choice |
-| **C. Oscillation-corrected fit** ✓ | Fit $\text{MSD} = B\tau + C(1-\cos(2\pi f\tau))$ with $f$ fixed from FFT | Separates diffusion and oscillation rigorously | Requires prior knowledge of $f_\text{osc}$; 3-param fit |
-| **D. Time-windowed averaging** | Replace instantaneous $\varphi$ with running mean over 1 cycle | Simple, no filter needed | Introduces temporal smearing of genuine drift |
-| **E. Fit only long lags** | Restrict fit to $\tau \gg T_\text{osc}$ where cosine term averages out | No preprocessing | Greatly reduces usable lag range; noisier fit |
-
-**Current implementation**: strategies **B** (low-pass filter) and **C** (oscillation-corrected fit) are applied automatically when a dominant oscillation is detected by FFT of the per-trial amplitude. The filter cutoff defaults to $0.4 \times f_\text{osc}$ and can be overridden with `--filter_cutoff_hz` (set to `0` to disable).
-
-### 9.4 Oscillation Detection
-
-The `compute_oscillation_spectrum` function (in `analysis.py`) computes the power spectrum of the bump amplitude for each trial, averages across trials, and identifies the dominant frequency as the peak exceeding **3× the median power** in the band $[1, 50]$ Hz. The result is reported in `diffusion_oscillation.csv` and visualised in `diffusion_oscillation_spectrum.png`.
-
----
-
-## 10. Joint Ring + Circuit Optimization
+## 9. Joint Ring + Circuit Optimization
 
 The `ring-optimize` command jointly fits `CircuitParams` and `RingParams` so the ring network at rest reproduces target firing rates while enforcing bump-supporting bistability constraints.
 
-### 10.1 Motivation
+### 9.1 Motivation
 
 Rate matching alone is necessary but not sufficient for working-memory behavior: a parameter set can match quiet-wakefulness means and still fail to sustain a bump after cue offset. The current optimizer therefore combines:
 
@@ -508,7 +466,7 @@ Rate matching alone is necessary but not sufficient for working-memory behavior:
 2. an optional **trace-based Turing bistability loss** computed from a deterministic cue simulation,
 3. optional additional regularizers (spatial uniformity, ACh ratio).
 
-### 10.2 Parameter Space
+### 9.2 Parameter Space
 
 `ring-optimize` searches over `CircuitParams` together with the ring structural parameters:
 
@@ -519,7 +477,7 @@ Rate matching alone is necessary but not sufficient for working-memory behavior:
 
 Connection strengths ($J_\text{NMDA}$, $w_{pe}$, $w_{se}$) are taken from the fitted `CircuitParams` and are **not** additional free parameters. `n_nodes` is fixed by CLI and not optimized.
 
-### 10.3 Loss Function
+### 9.3 Loss Function
 
 Base objective:
 
@@ -533,7 +491,7 @@ and
 
 $$\bar r^X = \frac{1}{N}\sum_{i=1}^N \langle r_i^X \rangle_{\text{window}}.$$
 
-KO conditions (alpha7, alpha5, beta2) are evaluated on single-node by default, or on ring with `--ko_on_ring`.
+KO conditions (alpha7, alpha5, beta2) are evaluated **on the ring** in `evaluate_ring_params` — there is no single-node KO fast-path, and there is no `--ko_on_ring` CLI flag.
 
 #### Trace-based Turing bistability loss (optional, `--turing_weight`)
 
@@ -560,16 +518,15 @@ $$\mathcal{L} = \mathcal{L}_\text{base} + w_T \cdot \mathcal{L}_\text{Turing,tra
 
 `--bump_mode` is deprecated and ignored. Bump constraints are integrated in the trace-based Turing term.
 
-### 10.4 Computational Cost
+### 9.4 Computational Cost
 
 Ring optimization remains expensive. Practical defaults:
 
 - `n_nodes = 64` during optimization,
 - moderate `n_trials_ring` for stochastic averaging,
-- `ko_on_ring = False` unless strict consistency is required,
 - nonzero `turing_weight` adds one deterministic cue simulation per evaluation.
 
-### 10.5 Output
+### 9.5 Output
 
 ```
 ring_optim_output/
@@ -583,7 +540,7 @@ See [CLI.md — ring-optimize](CLI.md#ring-optimize) for the full, up-to-date ar
 
 ---
 
-## 11. References
+## 10. References
 
 1. Wong, K.-F., & Wang, X.-J. (2006). A recurrent network mechanism of time integration in perceptual decisions. *Journal of Neuroscience*, 26(4), 1314-1328.
 

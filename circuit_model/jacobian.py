@@ -124,8 +124,8 @@ def compute_jacobian(
     params : CircuitParams
         Fitted circuit parameters.
     r_ss : array of shape (4,)
-        Steady-state firing rates [r_pyr, r_som, r_pv, r_vip] (Hz)
-        units cancel in the ratio, so the Jacobian is dimensionless).
+        Steady-state firing rates [r_pyr, r_som, r_pv, r_vip] (Hz).
+        Units cancel in the ratio, so the Jacobian is dimensionless.
 
     Returns
     -------

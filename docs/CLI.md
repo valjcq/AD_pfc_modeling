@@ -3,7 +3,7 @@
 The unified CLI is invoked via `python -m circuit_model <command>`.
 
 ```
-python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ring-study,ring-diffusion,ring-noise-floor,ring-calibrate,ring-asymmetry,ring-burnin-stability,ring-bump-decay-study,ring-optimize} [options]
+python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,random-bistable-search,ring-run,ring-calibrate,ring-bump-decay-study,ring-optimize} [options]
 ```
 
 ---
@@ -16,14 +16,9 @@ python -m circuit_model {plot-transfer,diagnostic,run,optimize,study,ring-run,ri
 4. [optimize](#optimize) -- Nevergrad parameter optimization
 5. [study](#study) -- Batch study across 8 experimental conditions
 6. [ring-run](#ring-run) -- Ring attractor single-condition simulation
-7. [ring-study](#ring-study) -- Ring attractor multi-condition comparison
-8. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-9. [ring-noise-floor](#ring-noise-floor) -- Noise floor estimation from no-stimulus baseline trials
-10. [ring-calibrate](#ring-calibrate) -- 2D parameter calibration (amplitude x w_inter)
-11. [ring-asymmetry](#ring-asymmetry) -- Left/right bump asymmetry analysis across conditions and trials
-12. [ring-burnin-stability](#ring-burnin-stability) -- Burn-in stationarity analysis via window comparison
-13. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
-14. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
+7. [ring-calibrate](#ring-calibrate) -- 3D parameter sweep (w_pv_global × w_pyr_pyr_inter × amplitude)
+8. [ring-bump-decay-study](#ring-bump-decay-study) -- Assess whether a bump is a self-sustained attractor or a decaying transient
+9. [ring-optimize](#ring-optimize) -- Joint optimization of CircuitParams + RingParams against ring-level firing rate targets
 
 ---
 
@@ -235,7 +230,7 @@ python -m circuit_model run --enable_transient --trans_start_ms 1000 --trans_dur
 
 ## `optimize`
 
-Run Nevergrad optimization to find parameters matching target firing rates. The optimizer can be selected via `--optimizer`; the recommended default is `chaining` (global DE search followed by CMA-ES refinement).
+Run Nevergrad optimization to find parameters matching target firing rates. The optimizer can be selected via `--optimizer`; the recommended choice is `chaining` (global DE search followed by Nelder-Mead refinement, matching the reference paper pipeline).
 
 ```bash
 python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 --target_vip 8 [options]
@@ -274,7 +269,7 @@ python -m circuit_model optimize --target_pyr 5 --target_som 10 --target_pv 15 -
 |-------|-----------|-------------|
 | `de` | TwoPointsDE | Robust global search; good default for a first run |
 | `cma` | CMA-ES | Fast local convergence; warm-start from `--resume` after DE has found a good basin |
-| `chaining` | DE → CMA-ES | **Recommended.** DE explores globally for `min(n_samples//5, 10000)` steps, then CMA-ES refines for the rest |
+| `chaining` | DE → Nelder-Mead | **Recommended.** DE explores globally for `min(n_samples//5, 10000)` steps, then Nelder-Mead refines for the rest (matches the reference paper pipeline) |
 | `auto` | NGOpt | Nevergrad auto-selects the best algorithm for the problem size and budget |
 
 With `--optimizer chaining` the DE budget is set automatically to `min(n_samples // 5, 10 000)` — empirically DE converges within ~3 000–5 000 steps on this problem, so this avoids wasting budget on a plateaued DE phase.
@@ -310,7 +305,7 @@ With `--optimizer chaining` the DE budget is set automatically to `min(n_samples
 | `--set` | str | `""` | Override values: `name=val,name=val` (e.g. `--set w_sp=0`) |
 | `--show_params` | flag | `False` | Show which parameters are free vs frozen |
 | `--no_adapt` | flag | `False` | Disable spike-frequency adaptation: sets `J_adapt_pyr=0` and `J_adapt_som=0` and freezes them. |
-| `--turing_weight` | float | `0.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
+| `--turing_weight` | float | `2.0` | Weight of two-sided Turing bistability penalty (0 = disabled). Penalises rest-state gain above `1 − margin` AND cue-state gain below `1 + margin`. |
 | `--turing_margin` | float | `0.05` | Safety margin around the Turing threshold. |
 | `--turing_w_inter_ref` | float | `10.0` | Reference inter-node weight used only in the single-node analytical Turing approximation (diagnostic only; ring simulations derive this from `J_NMDA`). |
 | `--turing_cue_scale` | float | `0.4` | Multiplier on `I0_pyr` used to approximate the cue operating point. |
@@ -378,226 +373,6 @@ The 8 conditions are:
 | `a7_KO` | alpha7 KO | alpha7 = 0, g_alpha7 = 0 |
 | `a7_KO_APP` | alpha7 KO + APP background | WT_APP family + alpha7 = 0, g_alpha7 = 0 |
 | `b2_KO` | beta2 KO | beta2 = 0 |
-8. [ring-diffusion](#ring-diffusion) -- MSD diffusion analysis (Seeholzer et al. 2019)
-
-## `ring-diffusion`
-
-Compute the mean squared displacement (MSD) of the bump center during delay periods across conditions and extract the diffusion strength $\hat{B}$ (slope of MSD vs time, in $\text{rad}^2/\text{s}$).
-
-```bash
-python -m circuit_model ring-diffusion [options]
-```
-
-### Diffusion-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
-| `--n_trials` | int | `50` | Number of trials per condition |
-| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
-| `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Method
-
-For each condition:
-1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
-2. Decode the bump center $\varphi(t)$ via population vector during the delay period
-3. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
-4. Fit a straight line to the selected MSD range to extract $\hat{B}$
-
-### Outputs
-
-Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
-- `diffusion_msd_<band>.png` -- Three-panel figure: MSD vs lag (left), $\hat{B}$ bar chart (centre), amplitude timecourse (right)
-- `diffusion_summary.csv` -- `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
-- `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
-- `diffusion_amplitude.csv` -- `condition_key`, `t_s`, `amp_mean`, `amp_sem`, `survival_frac`, `noise_threshold`
-
-### Examples
-
-```bash
-# All conditions, 50 trials each
-python -m circuit_model ring-diffusion --no_show
-
-# Compare WT vs alpha7 KO with 20 trials
-python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
-
-# Longer delay for better MSD estimation
-python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
-```
-#### Phase Locking Value (PLV)
-New metric computed by `compute_plv_timecourse`:
-1. Bandpass-filter both node signals in [min\_freq\_hz, max\_freq\_hz] (zero-phase Butterworth order 4)
-2. Extract instantaneous phases φ₁(t), φ₂(t) via Hilbert transform
-3. Sliding window: `PLV(t) = |mean(exp(i·(φ₁ − φ₂)))|` over windows matching the STFT bin grid
-
-PLV = 0 means no phase coupling; PLV = 1 means perfect phase locking.
-
-**Time axis**: all timecourses are returned in "seconds since cue offset". Distractor onset = `delay1_ms / 1000.0`. Plots align x-axis to distractor onset (t = 0).
-
-### Output Directory
-
-```
-    --distractor_factors 0.75 1.0 \
-    --n_phase_sweep 16 --n_trials 15 \
-    --n_workers 8 --no_show
-```
-
----
-
-## `ring-diffusion`
-
-Compute the mean squared displacement (MSD) of the bump center during delay periods across conditions, and extract the diffusion strength $\hat{B}$ (slope of MSD vs time, in $\text{rad}^2/\text{s}$). Based on the drift-diffusion framework of Seeholzer, Deger & Gerstner (2019).
-
-```bash
-python -m circuit_model ring-diffusion [options]
-```
-
-### Diffusion-Specific Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--conditions` | str (list) | all 8 | Conditions to simulate (space-separated) |
-| `--n_trials` | int | `50` | Number of trials per condition |
-| `--n_workers` | int | `None` | Number of parallel workers (default: min(4, cpu_count)) |
-| `--error_band` | str | `"sem"` | Error band type for plots: `sem` or `sd` |
-| `--filter_cutoff_hz` | float | auto | Low-pass cutoff (Hz) for bump center trajectory. Auto-detected from the delay signal. Set to `0` to disable. |
-
-Plus all [common ring parameters](#common-ring-parameters) from `ring-run`.
-
-### Method
-
-For each condition:
-1. Run `n_trials` clean delay trials (no distractor), each with a different noise seed
-2. Decode the bump center $\varphi(t)$ via population vector during the delay period
-3. Optionally low-pass filter each $\varphi(t)$ trajectory with `--filter_cutoff_hz`
-4. Compute MSD: $\langle[\varphi(t+\tau) - \varphi(t)]^2\rangle$ averaged over time pairs and trials
-5. Fit a standard linear model to the MSD curve to extract $\hat{B}$
-
-### Outputs
-
-Generates in `figs/diffusion/<n_nodes>/<params_stem>/<conn_label>/`:
-- `diffusion_msd_<band>.png` -- Three-panel figure: MSD vs lag (left, oscillatory-regime shaded), $\hat{B}$ bar chart (centre), amplitude timecourse (right).
-- `diffusion_summary.csv` -- `condition_key`, `B_hat_rad2_per_s`, `r_squared`, `n_trials`, `delay_ms`, `amplitude_factor`
-- `diffusion_msd_curves.csv` -- MSD curve data: `condition_key`, `lag_s`, `msd_mean`, `msd_sem`, `msd_sd`, `fit_line`
-- `diffusion_amplitude.csv` -- `condition_key`, `t_s`, `amp_mean`, `amp_sem`, `survival_frac`, `noise_threshold`
-
-### Examples
-
-```bash
-# All conditions, 50 trials each
-python -m circuit_model ring-diffusion --no_show
-
-# Disable filtering (raw MSD, for comparison)
-python -m circuit_model ring-diffusion --conditions WT a7_KO --n_trials 20
-
-# Longer delay for better MSD estimation
-python -m circuit_model ring-diffusion --conditions WT a7_KO --delay_ms 5000 --n_trials 30
-
----
-
-## 17. References
-### Outputs
-
-Generates in `figs/asymmetry/<n_nodes>/<params_stem>/<conn_label>/amp<N>_<mode>/` where `<mode>` is `corrected` or `uncorrected`:
-
-**Summary figures** (title includes cue mode and asymmetry mode, e.g. `cue@180°`, `cue@random`, `asymmetry corrected`):
-- `asymmetry_distribution.png` -- Violin + jittered strip plots of pre-cue and delay asymmetry per condition
-- `asymmetry_correlation.png` -- Scatter plot of pre-cue vs delay asymmetry per condition with Pearson *r* annotated
-- `asymmetry_summary.png` -- Three-panel bar chart: mean delay asymmetry ± SEM, fraction of rightward trials, mean |asymmetry| ± SEM
-
-**Worst-case per condition** (trial with highest |delay asymmetry|), in `worst_case/<cond>/`:
-- `dashboard.png` -- Full activity heatmap and firing rate traces
-- `bump_metrics.png` -- Bump center, width, amplitude, and asymmetry over time
-- `animation.mp4` -- Ring snapshot animation (if ffmpeg is available)
-
-**Data:**
-- `asymmetry_trials.csv` -- Per-trial raw data: `condition`, `trial_idx`, `seed`, `cue_deg`, `pre_cue_asym`, `delay_asym`, `delay_ms`, `amplitude`, `random_cue` (0/1), `balance_cue` (0/1), `correct_asymmetry` (0/1)
-
-### Examples
-
-```bash
-# Default: WT vs WT_APP vs a7_KO_APP, 100 trials each, balanced cue (on by default)
-python -m circuit_model ring-asymmetry --no_show
-
-# Disable balance correction (raw 180°, reintroduces structural bias for even N)
-python -m circuit_model ring-asymmetry --no_cue_balance --no_show
-
-# Disable amplitude correction (legacy raw asymmetry index)
-python -m circuit_model ring-asymmetry --no_correct_asymmetry --no_show
-
-# Random cue location (inherently balanced, useful for comparison)
-python -m circuit_model ring-asymmetry --random_cue_location --no_show
-
-# Subset of conditions with fewer trials
-python -m circuit_model ring-asymmetry --conditions WT WT_APP --n_trials 50 --no_show
-
-# Longer delay to assess asymmetry stability
-python -m circuit_model ring-asymmetry --delay_ms 8000 --n_trials 100 --n_workers 8 --no_show
-
-# All conditions with custom connectivity
-python -m circuit_model ring-asymmetry \
-    --conditions WT WT_APP a7_KO a7_KO_APP b2_KO b2_KO_APP \
-    --n_trials 100 --n_workers 8 \
-    --sigma_pyr_deg 20 --sigma_som_deg 15 --no_show
-```
-
----
-
-## `ring-burnin-stability`
-
-Test whether a noisy spontaneous burn-in period has reached stationarity. Runs `n_trials` independent simulations from zero initial conditions, divides each into windows of `period_ms`, and compares window distributions with Kruskal-Wallis and pairwise Mann-Whitney U tests. See [§20 of ring_experiments.md](ring_experiments.md#20-burn-in-stationarity-analysis) for full details.
-
-```
-python -m circuit_model ring-burnin-stability [options]
-```
-
-### Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--n_trials` | 100 | Number of independent noisy trials |
-| `--burnin_ms` | 10000.0 | Total burn-in duration in ms |
-| `--period_ms` | 1000.0 | Duration of each comparison window in ms |
-| `--ref_deg` | 0.0 | Fixed reference angle (degrees) for asymmetry |
-| `--conditions` | `WT` | Conditions to test (space-separated) |
-| `--n_workers` | auto | Number of parallel worker processes |
-| `--seed` | 42 | Base random seed |
-| `--no_show` | — | Suppress interactive plot display |
-| `--n_nodes` | from ring params JSON or `64` | Number of ring nodes |
-| `--sigma_pyr_deg` | from ring params JSON or `15.0` | PYR→PYR Gaussian width (degrees) |
-| `--sigma_som_deg` | from ring params JSON or `15.0` | SOM→PYR lateral Gaussian width (degrees) |
-| `--params_json` | — | Load local circuit parameters from JSON |
-
-### Outputs
-
-```
-figs/burnin_stability/{n_nodes}/{connectivity_label}/
-├── burnin_stability_trials.csv      # per-trial, per-window metrics
-├── burnin_stability_summary.csv     # Kruskal-Wallis H and p per condition/metric
-└── burnin_stability_{cond}.png      # box plots + adjacent-window MWU brackets
-```
-
-### Examples
-
-```bash
-# Default: WT, 100 trials, 10 s burn-in split into 10 × 1000 ms windows
-python -m circuit_model ring-burnin-stability --no_show
-
-# Quick smoke test: 10 trials, 3 s burn-in
-python -m circuit_model ring-burnin-stability --n_trials 10 --burnin_ms 3000 --no_show
-
-# Multiple conditions, custom window size
-python -m circuit_model ring-burnin-stability \
-    --conditions WT WT_APP a7_KO_APP \
-    --burnin_ms 10000 --period_ms 500 \
-    --n_trials 100 --n_workers 8 --no_show
-
-# Different asymmetry reference angle
-python -m circuit_model ring-burnin-stability --ref_deg 180 --no_show
-```
 
 ---
 
@@ -678,7 +453,7 @@ python -m circuit_model ring-bump-decay-study \
 
 ## `ring-optimize`
 
-Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`sigma_pyr_deg`, `sigma_som_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Connection strengths are **not free parameters** — they are derived from the fitted `CircuitParams` (see [ring_attractor.md §2](ring_attractor.md#row-sum-normalisation-principle)). Knockout (KO) conditions are run on single-node by default (cheap) or on the ring (`--ko_on_ring`).
+Joint gradient-free optimization of `CircuitParams` (local circuit, ~60 parameters) and `RingParams` (`sigma_pyr_deg`, `sigma_som_deg`) in a single run. The ring is simulated at rest (no stimulus) and the node-averaged firing rates are matched to quiet-wakefulness target rates. Connection strengths are **not free parameters** — they are derived from the fitted `CircuitParams` (see [ring_attractor.md §2](ring_attractor.md#row-sum-normalisation-principle)). Knockout (KO) conditions are always run on the ring.
 
 Primary mode:
 - Match ring resting firing rates to `TargetRates` with KO and structural penalties.
@@ -738,7 +513,6 @@ python -m circuit_model ring-optimize [options]
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--n_trials_ring` | int | `5` | Ring simulations per candidate (for stochastic averaging) |
-| `--ko_on_ring` | flag | `False` | Run KO conditions on ring (consistent but slower). Default: single-node. |
 | `--T_ms` | float | `2500.0` | Ring simulation duration (ms) |
 | `--burn_in_ms` | float | `1200.0` | Burn-in period to discard transients (ms) |
 | `--window_ms` | float | `500.0` | Rate averaging window (ms) |

@@ -1,8 +1,8 @@
 # Single-Node to Ring Weight Conversion
 
-**Status:** Design proposal — not yet implemented or tested.
+**Status:** Implemented in `circuit_model/ring/connectivity.py`. See [ring_attractor.md §2](ring_attractor.md#2-inter-node-connectivity) for the live description; this file is kept as design documentation showing how the principle was derived.
 
-The core idea: the single-node optimization produces fitted weights that represent the *total* synaptic drive onto each population. When moving to the ring network, this total drive should be preserved at the homogeneous fixed point by distributing it spatially according to a connectivity kernel. Fixed-point equivalence is guaranteed by construction via row-sum normalization.
+The core idea: the single-node optimization produces fitted weights that represent the *total* synaptic drive onto each population. When moving to the ring network, this total drive is preserved at the homogeneous fixed point by distributing it spatially according to a connectivity kernel. Fixed-point equivalence is guaranteed by construction via row-sum normalization.
 
 ---
 
@@ -43,44 +43,39 @@ At steady state: $S_j^* = \frac{\gamma \tau_{\text{NMDA}} \cdot r_j^{\text{PYR}}
 
 ---
 
-## SOM → PYR (fully lateral)
+## SOM → PYR (configurable lateral pattern)
 
 ### Current model
 - Local: $w_{se} \cdot r_i^{\text{SOM}}$ (self-inhibition, subtractive)
 - Inter-node: none
 
-### Proposed model
-SOM receives input from local PYR only, but projects **laterally** to neighboring nodes (zero self-connection). The local $w_{se}$ term is removed from the PYR equation and replaced by a lateral kernel:
+### Implemented model
+SOM still projects subtractively to PYR, but the kernel is now selectable via `RingParams.som_pattern`. All variants are row-sum normalised to $w_{se}^{\text{fitted}}$:
 
-$$I_{\text{SOM-lat},i}^{\text{PYR}} = \sum_{j \neq i} W_{ij}^{\text{SOM}} \cdot r_j^{\text{SOM}}$$
+- **`gaussian` (default)** — annular Gaussian centred at distance $\mu = 3\,\sigma_{\text{pyr}}$ from each source, width $\sigma_{\text{som}}$, zero diagonal. Lateral surround that recovers the Mexican-hat motif.
+- **`uniform`** — uniform inhibition everywhere except a Gaussian hole of half-width $2\,\sigma_{\text{som}}$ around each source, zero diagonal.
+- **`none`** — diagonal matrix with $w_{se}$ on every entry; reproduces the original single-node SOM term node-by-node, no lateral coupling.
 
-### Conversion
-$$\sum_{j \neq i} W_{ij}^{\text{SOM}} = w_{se}^{\text{fitted}}$$
-
-A uniform kernel (like current `w_pv_global`) is the simplest choice. A Gaussian surround is also possible.
+For the two lateral patterns, $\sum_{j \neq i} W_{ij}^{\text{SOM}} = w_{se}^{\text{fitted}}$. For `none`, the diagonal carries the full $w_{se}^{\text{fitted}}$.
 
 ### What changes away from homogeneity
-At the bump center, the local model self-suppresses the active node; the lateral model suppresses neighbors instead. Bump-center nodes are partially released from SOM inhibition → bump amplitude may increase slightly. `w_pv_global` is the natural compensatory parameter.
+At the bump center, the `none` pattern self-suppresses the active node; the lateral patterns suppress neighbours instead. Bump-center nodes are then partially released from SOM inhibition, which can broaden the bump and modify its amplitude — `sigma_som_deg` is the main shape parameter for tuning this trade-off.
 
 ---
 
-## PV → PYR (fully divisive, local + lateral)
+## PV → PYR (fully divisive, uniform all-to-all)
 
 ### Current model
 - Local: divisive term $\frac{J_{\text{NMDA}} \cdot S}{1 + g_{\text{GABA}} \cdot w_{pe} \cdot r_i^{\text{PV}}}$
 - Inter-node: **subtractive** $g_{\text{GABA}} \cdot w_{\text{PV}}^{\text{global}} \cdot \langle r^{\text{PV}} \rangle$ ← biological inconsistency
 
-### Proposed model
-All PV→PYR inhibition is divisive (perisomatic shunting regardless of whether PV is local or lateral). Local and inter-node PV contributions enter the same denominator:
+### Implemented model
+All PV→PYR inhibition is divisive. The PV kernel is a single uniform matrix with $W^{\text{PV}}_{ij} = w_{pe}/N$ for every pair (including the diagonal), and the full row-sum $w_{pe}$ enters the denominator:
 
-$$I_i^{\text{PYR,NMDA}} = \frac{\sum_j W_{ij}^{\text{PYR}} \cdot S_j^{\text{NMDA}}}{1 + g_{\text{GABA}} \cdot \left( w_{pe}^{\text{local}} \cdot r_i^{\text{PV}} + \sum_{j \neq i} W_{ij}^{\text{PV}} \cdot r_j^{\text{PV}} \right)}$$
+$$I_i^{\text{PYR,NMDA}} = \frac{\sum_j W_{ij}^{\text{PYR}} \cdot S_j^{\text{NMDA}}}{1 + g_{\text{GABA}} \cdot \sum_j W_{ij}^{\text{PV}} \cdot r_j^{\text{PV}}}$$
 
 ### Conversion
-At the homogeneous fixed point:
-
-$$w_{pe}^{\text{local}} + w_{\text{PV}}^{\text{inter}} = w_{pe}^{\text{fitted}}$$
-
-The simplest maximally consistent choice: set $w_{pe}^{\text{local}} = 0$ (fully lateral PV, symmetric to SOM), so the entire fitted $w_{pe}^{\text{fitted}}$ transfers to the inter-node uniform kernel. This removes the asymmetry between local and lateral PV entirely.
+At the homogeneous fixed point $\sum_j W^{\text{PV}}_{ij} r_j^{\text{PV}} = w_{pe} \cdot r^{\text{PV}}$, recovering the single-node denominator exactly. There is no separate local/lateral split — the uniform kernel handles both contributions in one matrix.
 
 ---
 
@@ -89,8 +84,8 @@ The simplest maximally consistent choice: set $w_{pe}^{\text{local}} = 0$ (fully
 | Connection | Single-node | Ring | Kernel | Conversion constraint |
 |---|---|---|---|---|
 | PYR→PYR | $J_{\text{NMDA}}^{\text{fitted}}$ (local NMDA) | Gaussian incl. diagonal, NMDA-gated | Gaussian ($\sigma_{\text{pyr}}$) | Row-sum = $J_{\text{NMDA}}^{\text{fitted}}$ |
-| SOM→PYR | $w_{se}^{\text{fitted}}$ (local, subtractive) | Lateral only, zero self | Uniform or Gaussian surround | Row-sum excl. self = $w_{se}^{\text{fitted}}$ |
-| PV→PYR | $w_{pe}^{\text{fitted}}$ (local, divisive) | Fully divisive, local + lateral | Uniform (lateral) | $w_{pe}^{\text{local}} + w_{\text{PV}}^{\text{inter}} = w_{pe}^{\text{fitted}}$ |
+| SOM→PYR | $w_{se}^{\text{fitted}}$ (local, subtractive) | Configurable (`gaussian` / `uniform` / `none`) | Annular Gaussian, flat-with-hole, or diagonal | Row-sum = $w_{se}^{\text{fitted}}$ |
+| PV→PYR | $w_{pe}^{\text{fitted}}$ (local, divisive) | Fully divisive, uniform all-to-all | Uniform incl. diagonal | Row-sum = $w_{pe}^{\text{fitted}}$ |
 
 **In all cases:** homogeneous fixed point firing rates are preserved exactly. No new free parameters are introduced by the conversion — the spatial distribution is determined by the kernel shape ($\sigma_{\text{pyr}}$, uniform) which is a structural choice, not a fitted quantity.
 
@@ -98,33 +93,33 @@ The simplest maximally consistent choice: set $w_{pe}^{\text{local}} = 0$ (fully
 
 ## New free parameters introduced
 
-None from the conversion itself. The only structural choices are:
-- $\sigma_{\text{pyr}}$: Gaussian width for PYR→PYR (already exists)
-- Whether SOM lateral kernel is uniform or Gaussian (recommend uniform to start)
-- Whether PV split is fully lateral ($w_{pe}^{\text{local}} = 0$) or partially local
+None from the conversion itself. The structural choices currently exposed are:
+- $\sigma_{\text{pyr}}$: Gaussian width for PYR→PYR
+- $\sigma_{\text{som}}$ and `som_pattern`: SOM→PYR shape (annular Gaussian, flat-with-hole, or local-only)
+
+PV→PYR is fixed to uniform all-to-all and exposes no shape parameter.
 
 ---
 
-## Implementation notes
+## Implementation reference
 
 ```python
 # PYR→PYR: Gaussian kernel with non-zero diagonal
 W_pyr[i, j] = exp(-d(i,j)^2 / (2 * sigma_pyr^2))   # includes i==j (distance=0, weight=1)
 W_pyr[i, :] *= J_NMDA_fitted / W_pyr[i, :].sum()    # row-sum normalize to J_NMDA_fitted
 
-# Inter-node NMDA input (matrix-vector product, S is length-N vector)
-I_nmda[i] = sum_j W_pyr[i,j] * S[j]                 # replaces both local J_NMDA*S_i and old inter-node term
+# NMDA input (matrix-vector product, S is length-N vector)
+I_nmda[i] = sum_j W_pyr[i,j] * S[j]
 
-# SOM lateral kernel (uniform, no self)
-W_som[i, j] = w_se_fitted / (N - 1)   for j != i
+# SOM "gaussian" pattern: annular surround, zero diagonal
+mu = 3.0 * sigma_pyr_rad
+W_som[i, j] = exp(-(d(i,j) - mu)^2 / (2 * sigma_som^2))   for j != i
 W_som[i, i] = 0
+W_som[i, :] *= w_se_fitted / W_som[i, :].sum()
 
-# PV fully lateral (uniform, no self), fully divisive
-W_pv[i, j] = w_pe_fitted / (N - 1)    for j != i
-W_pv[i, i] = 0
+# PV: uniform all-to-all including diagonal, fully divisive
+W_pv[i, j] = w_pe_fitted / N                          # for all i, j (incl. diagonal)
 # Denominator: 1 + g_GABA * (W_pv @ r_pv)[i]
 ```
 
----
-
-*Written: 2026-04-28 — not yet implemented or tested.*
+See `circuit_model/ring/connectivity.py` for the live implementation, including the `uniform` and `none` SOM variants.

@@ -195,6 +195,8 @@ def _evaluate_sample(
             "L_rate": float(comp.get("L_rate", 0.0)),
             "L_rate_high": float(comp.get("L_rate_high", 0.0)),
             "L_margin": float(comp.get("L_margin", 0.0)),
+            "L_jac": float(comp.get("L_jac", 0.0)),
+            "L_peak": float(comp.get("L_peak", 0.0)),
             "n_stable": int(comp.get("n_stable", 0)),
             "n_unstable": int(comp.get("n_unstable", 0)),
             "n_spurious": int(comp.get("n_spurious", 0)),

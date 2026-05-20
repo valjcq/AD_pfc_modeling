@@ -17,7 +17,7 @@ from scipy.optimize import fsolve, brentq
 from .params import CircuitParams
 from .transfer import phi_wong_wang, phi_capped
 from .jacobian import compute_jacobian
-from .constants import R_MAX_PHYS, R_HIGH_MAX, GAMMA_NMDA, TAU_NMDA_MS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
+from .constants import R_MAX_PHYS, GAMMA_NMDA, TAU_NMDA_MS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
 
 
 @dataclass
@@ -189,8 +189,8 @@ def bistable_loss(
     - L_rate: Rate matching at the low fixed point
     - L_rate_high: Rate matching at the high fixed point (Rooy 2021 active-state targets)
     - L_margin: Separation between fixed points
-    - L_ceiling: High FP ceiling (decoupled from w_bistab)
     - L_jac: Jacobian regularizer to avoid degenerate solutions
+    - L_peak: Penalty for nullcline peak above cfg.nullcline_peak_max
 
     Fixed points are refined using Brentq root-finding for numerical accuracy.
 

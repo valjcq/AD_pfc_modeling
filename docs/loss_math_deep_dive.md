@@ -270,9 +270,9 @@ $$L_\text{valley} = \text{relu}\!\left(\min_{r > r_\text{low,actual}} F(r)\right
 
 ### 8.3 High Basin (windowed)
 
-$F$ must be *positively above* a margin $f_\text{margin} = 1$ Hz within the window $[0.7 \times r_\text{PYR}^\text{H}, 1.2 \times r_\text{PYR}^\text{H}]$ = $[42, 72]$ Hz:
+$F$ must be *positively above* a margin $f_\text{margin} = 1$ Hz within the window $[0.7 \times r_\text{PYR}^\text{H}, 1.0 \times r_\text{PYR}^\text{H}]$ = $[42, 60]$ Hz (defaults `r_high_basin_lo_frac = 0.7`, `r_high_basin_hi_frac = 1.0`):
 
-$$L_\text{high basin} = \text{relu}\!\left(f_\text{margin} - \max_{r \in [42, 72]} F(r)\right)$$
+$$L_\text{high basin} = \text{relu}\!\left(f_\text{margin} - \max_{r \in [42, 60]} F(r)\right)$$
 
 The margin $f_\text{margin} > 0$ prevents the optimizer from satisfying this condition by making $F$ barely non-negative (effectively at zero), which would place a very weak or numerically spurious crossing. The window constraint prevents a spurious bump at low rates (e.g., 17 Hz) from being counted as the high basin.
 
@@ -300,10 +300,10 @@ The loss is the **Mean Squared Proportional Error** (MSPE) across all four popul
 
 $$L_\text{rate} = \left(\frac{r_\text{PYR}^\text{low} - r_\text{PYR}^\text{L,target}}{r_\text{PYR}^\text{L,target}}\right)^2 + \left(\frac{r_\text{SOM}^\text{low} - r_\text{SOM}^\text{L,target}}{r_\text{SOM}^\text{L,target}}\right)^2 + \left(\frac{r_\text{PV}^\text{low} - r_\text{PV}^\text{L,target}}{r_\text{PV}^\text{L,target}}\right)^2 + \left(\frac{r_\text{VIP}^\text{low} - r_\text{VIP}^\text{L,target}}{r_\text{VIP}^\text{L,target}}\right)^2$$
 
-Default targets (Rooy 2021 resting state): PYR = 1.75, SOM = 1.12, PV = 1.04, VIP = 1.33 Hz.
+Default targets (project quiet-wakefulness fit, `BistableConfig`): PYR = 8.0, SOM = 5.0, PV = 3.0, VIP = 2.0 Hz.
 
 **Why proportional (relative) errors?**  
-The populations span two orders of magnitude in the low state (PYR $\approx$ 1.75 Hz, PV $\approx$ 1.04 Hz). Absolute squared errors would make a 1 Hz miss at PYR (57% error) equivalent to a 1 Hz miss at a hypothetical 50 Hz target (2% error), which is wrong biologically. Dividing by the target normalises each term so all populations contribute equally regardless of their absolute rate.
+The populations span an order of magnitude in the low state (PYR $\approx$ 8 Hz, VIP $\approx$ 2 Hz). Absolute squared errors would make a 1 Hz miss at VIP (50% error) equivalent to a 1 Hz miss at a hypothetical 50 Hz target (2% error), which is wrong biologically. Dividing by the target normalises each term so all populations contribute equally regardless of their absolute rate.
 
 **Fallback when monostable:** If no stable crossing is found, the code falls back to the position of minimum $|F|$ in the $[0, 15]$ Hz window. This gives a sensible gradient even when the network has not yet found bistability.
 
@@ -332,7 +332,7 @@ $$L_\text{margin} = \text{relu}(\Delta r_\text{min} - (r_\text{high}^\text{stabl
 
 **When monostable** (fewer than two stable FPs): a fixed penalty of $2 \times \Delta r_\text{min} = 30$ is applied. This is strictly larger than any achievable `relu` value when bistable (since the max `relu` value in the bistable case approaches 0 as separation grows), ensuring a clear gradient discontinuity that motivates finding the second FP.
 
-**Why 15 Hz?** With $r_\text{low} \approx 1.75$ Hz and $r_\text{high} \approx 60$ Hz in the target solution, the actual separation is ~58 Hz — far above the 15 Hz threshold. The threshold is loose: it only penalises degenerate near-monostable solutions where two crossings exist but are so close together they would merge under any perturbation. It is not meant to constrain the actual separation tightly.
+**Why 15 Hz?** With $r_\text{low} \approx 8$ Hz and $r_\text{high} \approx 60$ Hz in the target solution, the actual separation is ~52 Hz — far above the 15 Hz threshold. The threshold is loose: it only penalises degenerate near-monostable solutions where two crossings exist but are so close together they would merge under any perturbation. It is not meant to constrain the actual separation tightly.
 
 ---
 
@@ -382,9 +382,9 @@ $$\Phi_\text{PYR}(I_\text{net}(r)) = F(r) + r$$
 
 The peak of this curve:
 
-$$L_\text{peak} = \text{relu}\!\left(\max_r \left[F(r) + r\right] - r_\text{peak,max}\right)^2, \qquad r_\text{peak,max} = 200 \text{ Hz (default)}$$
+$$L_\text{peak} = \text{relu}\!\left(\max_r \left[F(r) + r\right] - r_\text{peak,max}\right)^2, \qquad r_\text{peak,max} = 80 \text{ Hz (default)}$$
 
-At the default threshold of 200 Hz, this term is always zero (firing rates never approach 200 Hz). It is included for experimental use: setting `--w_peak 1.0 --nullcline_peak_max 95` constrains the nullcline peak to $\leq 95$ Hz, which prevents the network from transiently overshooting far past the high FP during the L → H transition triggered by a cue stimulus.
+The default weight is $w_\text{peak} = 0$, so the term is inactive in the standard fit (the raw value is computed but not added to the total loss). It is included for experimental use: setting `--w_peak 1.0 --nullcline_peak_max 95` constrains the nullcline peak to $\leq 95$ Hz, which prevents the network from transiently overshooting far past the high FP during the L → H transition triggered by a cue stimulus.
 
 ---
 
@@ -401,7 +401,7 @@ Default weights:
 | $L_\text{rate,high}$ | 1.5 | Slightly higher than low: high-state targets are harder to satisfy |
 | $L_\text{margin}$ | 2.0 | Increased from 0.5: monostable solutions need a strong enough penalty to lose to valid bistable ones |
 | $L_\text{jac}$ | 0.1 | Regulariser: active only when pathological gains develop |
-| $L_\text{peak}$ | 0.0 | Off by default |
+| $L_\text{peak}$ | 0.0 | Off by default (threshold 80 Hz, but zero-weighted) |
 
 **How the optimizer sees this:**
 

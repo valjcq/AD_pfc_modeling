@@ -51,10 +51,9 @@ class CircuitParams:
     # =========================================================================
     # NOISE
     # =========================================================================
-    sigma_s: float = 0.0   # Noise amplitude (Hz); 0 for deterministic init/testing
-    # Relative noise amplitude: std of noise current injected into PYR = sigma_noise * I_ext_pyr.
-    # The noise enters the transfer function (current-space), so it is naturally scaled by the
-    # drive strength and filtered through the transfer function slope.
+    # Relative noise amplitude: std of noise current injected into each population
+    # is sigma_noise * I_ext_pop. Noise enters in current-space, so it is naturally
+    # scaled by the drive strength and filtered through the transfer function slope.
     sigma_noise: float = 0.3
 
     # =========================================================================

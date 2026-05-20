@@ -2,8 +2,9 @@
 Nevergrad-based parameter optimization.
 
 This module contains:
-- KOMeans: Container for knockout condition results
+- KOMeans: Container for knockout condition mean firing rates
 - Candidate: Optimization result candidate
+- LossBreakdown: Per-component loss breakdown returned by the loss helpers
 - run_trials: Run multiple simulation trials
 - run_condition: Run a single condition (for parallel execution)
 - evaluate_params: Evaluate parameters under all conditions
@@ -392,7 +393,6 @@ def nevergrad_optimize(
         de_budget = max(500, min(n_samples // 5, 10000))
         print(f"Optimizer: chaining (DE for {de_budget} steps → Nelder-Mead for {n_samples - de_budget} steps)")
     else:
-        de_budget = 0
         print(f"Optimizer: {optimizer}")
 
     best: list[Candidate] = []

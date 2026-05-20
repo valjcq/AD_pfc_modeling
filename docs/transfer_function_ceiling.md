@@ -10,7 +10,7 @@ $$\Phi(I) = \frac{\alpha(I - \theta)}{1 - e^{-g \cdot \alpha(I - \theta)}}$$
 
 This function is monotonically increasing and **does not saturate**. For large inputs, it grows approximately linearly without bound. In practice this creates two classes of pathological behavior during optimization and simulation:
 
-- **Runaway excitation**: PYR nodes saturate at the 200 Hz numerical clamp, contaminating adaptation state and preventing clean bump formation.
+- **Runaway excitation**: in ring simulations, PYR rates can saturate at the 200 Hz hard clip used as a numerical safety net, contaminating adaptation state and preventing clean bump formation. (The single-node integrator does not hard-clip PYR.)
 - **Interneuron over-activation**: SOM neurons were observed firing at 85–159 Hz at rest in bistable parameter regimes — far above any physiological range and inconsistent with the biological role of these cells.
 
 Both problems require introducing a saturation mechanism into the transfer function. However, the **biological justification and implementation differ** between PYR and the three interneuron populations (PV, SOM, VIP).
@@ -78,33 +78,35 @@ The ceiling is a single-parameter modification that does not add dynamical varia
 
 ---
 
-## 4. Setting the Ceiling: 1.5 × High-State Target Rate
+## 4. Setting the Ceiling: 2 × High-State Target Rate
 
 ### Rationale
 
-The ceiling values are set to **1.5 times the high-state firing rate target** for each interneuron population, as defined by the Rooy (2021) active-state values used in `L_rate_high`:
+The ceiling values are set to **twice the high-state firing rate target** for each interneuron population, as defined by the Rooy (2021) active-state values used in `L_rate_high`:
 
-$$r_{\text{max}}^X = 1.5 \times r_{\text{high}}^X$$
+$$r_{\text{max}}^X = 2 \times r_{\text{high}}^X$$
 
 | Population | High-state target (Rooy 2021, Hz) | Ceiling $r_{\text{max}}$ (Hz) |
 |---|---|---|
-| **PV** | 35.3 | **53 Hz** |
-| **SOM** | 35.2 | **53 Hz** |
-| **VIP** | 68.8 | **103 Hz** |
+| **PV** | 35.3 | **70.6 Hz** |
+| **SOM** | 35.2 | **70.4 Hz** |
+| **VIP** | 68.8 | **137.6 Hz** |
+
+These are the `R_MAX_PV`, `R_MAX_SOM`, `R_MAX_VIP` constants in `circuit_model/constants.py`.
 
 ### Justification
 
-This approach is **internally consistent**: the same dataset that defines the target operating points also defines the ceiling, without requiring additional literature sources for interneurons specifically. The 1.5× multiplier guarantees that:
+This approach is **internally consistent**: the same dataset that defines the target operating points also defines the ceiling, without requiring additional literature sources for interneurons specifically. The 2× multiplier guarantees that:
 
 1. The optimizer is unconstrained across the full physiologically observed range (from resting ~1–8 Hz to high-state ~35–70 Hz).
-2. The ceiling activates only above the highest observed operating point, preventing pathological runaway without interfering with target-matching.
-3. The gain compression at the high-state operating point is bounded: at $r = r_{\text{high}}$, $\Phi'_{\text{capped}} / \Phi' = (1.5)^2 / (1.5 + 1)^2 = 0.36$ — a known, fixed, and uniform compression factor across all interneuron populations.
+2. The ceiling activates only well above the highest observed operating point, preventing pathological runaway without interfering with target-matching.
+3. The gain compression at the high-state operating point is bounded: at $\Phi = r_{\text{high}} = r_{\max}/2$, $\Phi'_{\text{capped}} / \Phi' = r_{\max}^2 / (r_{\max} + \Phi)^2 = 4/9 \approx 0.44$ — a known, fixed, and uniform compression factor across all interneuron populations.
 
 ### Independent corroboration
 
-The SOM ceiling of ~53 Hz is independently supported by Huang et al. (2016, *Scientific Reports*), who report that the maximal firing rate of SOM interneurons in the anterior cingulate cortex of mice stabilizes at approximately 50 Hz after postnatal day 12–14 — the same cortical area targeted by this model. The 53 Hz ceiling is therefore consistent with the directly measured physiological maximum for SOM in this region.
+For SOM, Huang et al. (2016, *Scientific Reports*) report that the maximal firing rate of SOM interneurons in the anterior cingulate cortex of mice stabilizes at approximately 50 Hz after postnatal day 12–14 — the same cortical area targeted by this model. The 70.4 Hz ceiling sits above this measured maximum, providing headroom while keeping the asymptote in a biologically plausible range.
 
-For PV and VIP, no single paper reports a clean numerical maximum firing rate specifically from mouse prefrontal or anterior cingulate cortex under the same conditions. The 1.5× derivation from Rooy 2021 is therefore the most internally consistent and tractable approach for these populations.
+For PV and VIP, no single paper reports a clean numerical maximum firing rate specifically from mouse prefrontal or anterior cingulate cortex under the same conditions. The 2× derivation from Rooy 2021 is therefore the most internally consistent and tractable approach for these populations.
 
 ---
 
@@ -113,9 +115,9 @@ For PV and VIP, no single paper reports a clean numerical maximum firing rate sp
 | Population | Saturation mechanism | Biological basis | Parameters |
 |---|---|---|---|
 | **PYR** | NMDA gating variable $S^{\text{NMDA}} \in [0,1]$ | NMDA receptor kinetics (Wong & Wang 2006); required for nullcline fold and bistability | $\tau_{\text{NMDA}} = 100$ ms, $\gamma = 0.641$ (fixed); $J_{\text{NMDA}}$ (free) |
-| **PV** | Hyperbolic soft ceiling | Phenomenological; 1.5 × Rooy 2021 high-state target | $r_{\text{max}} = 53$ Hz |
-| **SOM** | Hyperbolic soft ceiling | Phenomenological; 1.5 × Rooy 2021; corroborated by Huang et al. 2016 (50 Hz max in ACC) | $r_{\text{max}} = 53$ Hz |
-| **VIP** | Hyperbolic soft ceiling | Phenomenological; 1.5 × Rooy 2021 high-state target | $r_{\text{max}} = 103$ Hz |
+| **PV** | Hyperbolic soft ceiling | Phenomenological; 2 × Rooy 2021 high-state target | $r_{\text{max}} = 70.6$ Hz |
+| **SOM** | Hyperbolic soft ceiling | Phenomenological; 2 × Rooy 2021; compatible with Huang et al. 2016 (50 Hz max in ACC) | $r_{\text{max}} = 70.4$ Hz |
+| **VIP** | Hyperbolic soft ceiling | Phenomenological; 2 × Rooy 2021 high-state target | $r_{\text{max}} = 137.6$ Hz |
 
 The asymmetry between PYR and interneurons reflects a fundamental difference in the model architecture: NMDA saturation in PYR is a **mechanistic requirement** for attractor dynamics, whereas the soft ceiling on interneurons is a **physiological constraint** that prevents numerical pathologies without altering the computational function of the inhibitory populations.
 

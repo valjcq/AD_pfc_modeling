@@ -28,10 +28,12 @@ The model has four neural populations: **PYR** (excitatory pyramidal), **PV**, *
 
 **Goal:** Find circuit parameters such that the network is **bistable** — it has two stable resting states:
 
-| State | Biological meaning | Target rates (Rooy 2021) |
+| State | Biological meaning | Default targets (`BistableConfig`) |
 |---|---|---|
-| **Low (L)** | Spontaneous / resting activity | PYR≈1.75, SOM≈1.12, PV≈1.04, VIP≈1.33 Hz |
-| **High (H)** | Persistent / memory-active state | PYR≈60.2, SOM≈35.2, PV≈35.3, VIP≈68.8 Hz |
+| **Low (L)** | Spontaneous / resting activity | PYR=8.0, SOM=5.0, PV=3.0, VIP=2.0 Hz |
+| **High (H)** | Persistent / memory-active state (Rooy 2021) | PYR=60.2, SOM=35.2, PV=35.3, VIP=68.8 Hz |
+
+The low-state defaults are the project's quiet-wakefulness fit targets (not Rooy 2021); the high-state targets are the Rooy 2021 active-state values. Both sets are overridable via the CLI (`--target_*`, `--r_*_high_target`).
 
 A transient cue flips the network from L → H. The network then *self-sustains* in H without external input. That self-sustaining property — a persistent attractor — is the neural correlate of working memory.
 
@@ -183,11 +185,13 @@ L_valley = relu(min(F_after))
 
 # 2b: F must be ≥ f_high_margin above zero inside the target high-state window.
 #     Window = [r_pyr_high_target × lo_frac, r_pyr_high_target × hi_frac]
-#              = [60.2 × 0.7, 60.2 × 1.2] = [42, 72] Hz by default.
-#     Using a windowed max (not global) prevents satisfying this condition with
-#     a spurious low-rate bump (e.g., a crossing at 17 Hz scores full penalty).
-r_hb_lo = r_pyr_high_target × r_high_basin_lo_frac   # default 42 Hz
-r_hb_hi = r_pyr_high_target × r_high_basin_hi_frac   # default 72 Hz
+#              = [60.2 × 0.7, 60.2 × 1.0] = [42.1, 60.2] Hz by default.
+#     The window stops at the high FP itself: above the FP, F is negative
+#     (tail region, handled separately by L_tail). Using a windowed max
+#     (not global) prevents satisfying this condition with a spurious
+#     low-rate bump (e.g., a crossing at 17 Hz scores full penalty).
+r_hb_lo = r_pyr_high_target × r_high_basin_lo_frac   # default 42.1 Hz
+r_hb_hi = r_pyr_high_target × r_high_basin_hi_frac   # default 60.2 Hz
 F_max_hb = max(F[r_hb_lo < r ≤ r_hb_hi])
 L_high_basin = relu(f_high_margin − F_max_hb)        # default f_high_margin = 1.0 Hz
 
@@ -199,7 +203,7 @@ L_tail = relu(max(F_tail))
 ```
  F(r)
   ▲   Part 1                   Part 2
-  │  ←low basin→ ←─ valley ─→ ←── window [42,72] ──→ ← tail →
+  │  ←low basin→ ←─ valley ─→ ←─ window [42, 60] ─→ ← tail →
   │
   │ ++++++.                          .+++++++
   │       `.                      .+'         `.
@@ -211,7 +215,7 @@ L_tail = relu(max(F_tail))
 ```
 
 - `L_valley = 0` once F dips negative anywhere after the low FP
-- `L_high_basin = 0` once F is at least `f_high_margin` (1 Hz) above zero inside [42, 72] Hz — a 17 Hz spurious crossing scores ≈ 52 penalty
+- `L_high_basin = 0` once F is at least `f_high_margin` (1 Hz) above zero inside [42, 60] Hz — a 17 Hz spurious crossing scores ≈ 52 penalty
 - `L_tail = 0` once F is negative in the final 15% of the sweep (r > 68 Hz)
 - **`L_valley + L_high_basin + L_tail = 0`** iff the full $+, -, +, -$ pattern holds with the crossing near target
 
@@ -231,9 +235,9 @@ $$L_\text{bistab} = L_\text{low basin} + L_\text{valley} + L_\text{high basin} +
 
 $$L_\text{rate} = \left(\frac{r_\text{PYR}^\text{low} - r_\text{PYR}^\text{target}}{r_\text{PYR}^\text{target}}\right)^2 + \left(\frac{r_\text{SOM}^\text{low} - r_\text{SOM}^\text{target}}{r_\text{SOM}^\text{target}}\right)^2 + \left(\frac{r_\text{PV}^\text{low} - r_\text{PV}^\text{target}}{r_\text{PV}^\text{target}}\right)^2 + \left(\frac{r_\text{VIP}^\text{low} - r_\text{VIP}^\text{target}}{r_\text{VIP}^\text{target}}\right)^2$$
 
-Default targets: **PYR=1.75, SOM=1.12, PV=1.04, VIP=1.33 Hz** (CLI: `--target_pyr`, `--target_som`, `--target_pv`, `--target_vip`).
+Default targets: **PYR=8.0, SOM=5.0, PV=3.0, VIP=2.0 Hz** (CLI: `--target_pyr`, `--target_som`, `--target_pv`, `--target_vip`).
 
-This is **MSPE**: a 1 Hz miss at 1.75 Hz target costs far more than 1 Hz at 60 Hz, which makes sense — relative deviations matter biologically.
+This is **MSPE**: a 1 Hz miss at an 8 Hz target costs far more than 1 Hz at 60 Hz, which makes sense — relative deviations matter biologically.
 
 **What goes wrong without it:** Bistability achieved with biologically absurd resting states (PYR=0, all interneurons hyperactive).
 
@@ -286,7 +290,7 @@ The 4×4 Jacobian is evaluated at the low fixed point. The threshold of 5 means:
 
 **Unchanged.**
 
-$$L_\text{peak} = \text{relu}\!\left(\max_r \Phi(I_\text{net}(r)) - r_\text{peak,max}\right)^2 \qquad \text{default: } r_\text{peak,max} = 200 \text{ Hz (effectively off)}$$
+$$L_\text{peak} = \text{relu}\!\left(\max_r \Phi(I_\text{net}(r)) - r_\text{peak,max}\right)^2 \qquad \text{default: } r_\text{peak,max} = 80 \text{ Hz},\ w_\text{peak} = 0 \text{ (effectively off)}$$
 
 Prevents the nullcline from peaking far above the high FP, which causes the network to overshoot badly during the L→H transition (cue-period saturation).
 
@@ -337,7 +341,7 @@ Step 6:  (Optional) control overshoot at transition    ←  L_peak
 | Loss term | Before | After | Change |
 |---|---|---|---|
 | `L_bistab` | 7 sub-terms (3 probes + 4 zone penalties), `w=1.0` | 4 sub-terms (adaptive low + valley + windowed high + tail), `w=5.0` | **Redesigned** — probe-free, windowed |
-| Bistability check params | `r_low_probe`, `r_mid_probe`, `r_high_probe` (placement-sensitive) | `f_high_margin=1.0`, `r_high_basin_lo_frac=0.7`, `r_high_basin_hi_frac=1.2` (optional shape tuning) | 3 placement params → 3 shape params |
+| Bistability check params | `r_low_probe`, `r_mid_probe`, `r_high_probe` (placement-sensitive) | `f_high_margin=1.0`, `r_high_basin_lo_frac=0.7`, `r_high_basin_hi_frac=1.0` (optional shape tuning) | 3 placement params → 3 shape params |
 | `L_ceiling` | ✅ bundled with L_bistab | **❌ removed** | Superseded by L_rate_high |
 | `L_physiol` (sweep ceiling) | ✅ `w=1.0` | **❌ removed** | Replaced by L_rate_high |
 | `L_rate` (low FP) | ✅ `w=1.0` | ✅ `w=1.0` | Unchanged |

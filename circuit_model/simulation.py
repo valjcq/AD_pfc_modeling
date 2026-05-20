@@ -51,10 +51,12 @@ def simulate_circuit(
     Simulate the 4-population circuit using Euler integration.
 
     Implements the rate equation:
-        tau_s * dr/dt = -r + Phi(I_det) + sigma_s * xi(t)
+        tau_s * dr/dt = -r + Phi(I_pop)
 
-    where each population (PYR, SOM, PV, VIP) has its own input current
-    computed from synaptic connectivity and external inputs.
+    where each population (PYR, SOM, PV, VIP) has its own input current I_pop
+    computed from synaptic connectivity and external inputs. Stochastic noise
+    is injected in current-space: when noise_type != "none", a sample
+    sigma_noise * I_ext_pop * xi(t) is added to each I_pop.
 
     Parameters:
         params: CircuitParams containing all model parameters
@@ -65,9 +67,11 @@ def simulate_circuit(
         seed: Random seed for reproducibility
         noise_type: "none", "white" (Gaussian), or "ou" (Ornstein-Uhlenbeck)
         tau_noise_ms: Time constant for OU noise (if used)
-        use_transient: If True and params.trans_enabled=True, apply time-dependent
-                       transient current to ALL populations (trans_factor * I0_pop
-                       is added during the transient window)
+        use_transient: If True and params.trans_enabled=True (and/or
+                       params.trans2_enabled=True), apply a time-dependent
+                       transient current to PYR only (trans_factor * I0_pyr is
+                       added during the transient window; PV/SOM/VIP currents
+                       are unaffected).
 
     Returns:
         SimulationResult with time points, firing rates, and adaptation currents

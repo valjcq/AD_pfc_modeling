@@ -57,7 +57,6 @@ DEFAULT_FIT_INIT_KWARGS = {
     "g_gaba_base": 1.0,
     "g_inh": 0.087,
     "sigma_noise": 0.3,
-    "sigma_s": 0.0,
     "tau_adapt_pyr": 600.0,
     "tau_adapt_som": 150.0,
     "tau_s": 20.0,
@@ -492,7 +491,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.save_plot:
         save_path = args.save_plot
     else:
-        out_dir = _output_dir("figs/single_node/runs", args.params_json)
+        out_dir = _output_dir("figs/single_node/runs")
         if condition_key:
             fname = f"circuit_simulation_{noise_tag}_{condition_key}.png"
         elif args.params_json:
@@ -646,7 +645,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     if args.save_plot:
         save_path = args.save_plot
     else:
-        out_dir = _output_dir("figs/single_node/boxplot", args.params_json)
+        out_dir = _output_dir("figs/single_node/boxplot")
         save_path = os.path.join(out_dir, f"study_boxplots_{cfg.noise_type}.png")
 
     # Generate box plot
@@ -1169,11 +1168,11 @@ Examples:
     # Ring attractor: single condition
     python -m circuit_model ring-run --condition WT --amplitude 3
 
-    # Ring attractor: compare conditions
-    python -m circuit_model ring-study --conditions WT WT_APP --n_trials 10
+    # Ring attractor: bump-decay study across conditions
+    python -m circuit_model ring-bump-decay-study --conditions WT WT_APP --amplitudes 10 20 30
 
-    # Ring attractor: multi-amplitude study
-    python -m circuit_model ring-study --amplitudes 8 10 15 20 --conditions WT WT_APP
+    # Ring attractor: joint circuit + ring optimization
+    python -m circuit_model ring-optimize --target_pyr 8 --target_som 5 --target_pv 3 --target_vip 2
 """
     )
 
@@ -1622,87 +1621,6 @@ Examples:
     )
 
     # =========================================================================
-    # RING-STUDY subcommand
-    # =========================================================================
-    ring_study_parser = subparsers.add_parser(
-        "ring-study",
-        help="Run ring attractor study across conditions",
-        description="Run ring attractor simulation across multiple experimental "
-                    "conditions and generate comparison plots.",
-    )
-    _add_ring_common(ring_study_parser)
-    ring_study_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: all 8). "
-             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
-    )
-    ring_study_parser.add_argument(
-        "--amplitudes", type=float, nargs="+", default=None,
-        help="Stimulus amplitude factors (multiples of I_ext_pyr). "
-             "E.g. --amplitudes 8 10 15 20 means 8×, 10×, 15×, 20× baseline.",
-    )
-    ring_study_parser.add_argument(
-        "--n_trials", type=int, default=100,
-        help="Number of trials per condition x amplitude (default: 100)",
-    )
-    ring_study_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: min(4, cpu_count))",
-    )
-    ring_study_parser.add_argument(
-        "--delay_step_ms", type=float, default=None,
-        help="Delay evaluation step size in ms (default: use [1s,2s,3s])",
-    )
-    ring_study_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore existing CSV cache and recompute all conditions",
-    )
-    ring_study_parser.add_argument(
-        "--amp_eval_step_ms", type=float, default=500.0,
-        help="Step for timed metrics-vs-amplitude plots (ms). "
-             "0 = disabled. (default: 500)",
-    )
-    ring_study_parser.add_argument(
-        "--error_band", type=str, default="sem", choices=["sem", "sd"],
-        help="Error band type for plots: 'sem' (default) or 'sd'.",
-    )
-
-    # =========================================================================
-    # RING-DIFFUSION subcommand
-    # =========================================================================
-    ring_diff_parser = subparsers.add_parser(
-        "ring-diffusion",
-        help="Run MSD diffusion analysis on the ring attractor",
-        description="Compute mean squared displacement (MSD) of bump center "
-                    "during delay periods across conditions, and extract the "
-                    "diffusion strength B_hat (Seeholzer et al. 2019).",
-    )
-    _add_ring_common(ring_diff_parser)
-    ring_diff_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to simulate (default: all 8).",
-    )
-    ring_diff_parser.add_argument(
-        "--n_trials", type=int, default=50,
-        help="Number of trials per condition (default: 50)",
-    )
-    ring_diff_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: min(4, cpu_count))",
-    )
-    ring_diff_parser.add_argument(
-        "--error_band", type=str, default="sem", choices=["sem", "sd"],
-        help="Error band type for plots: 'sem' (default) or 'sd'.",
-    )
-    ring_diff_parser.add_argument(
-        "--filter_cutoff_hz", type=float, default=None,
-           help="Low-pass filter cutoff (Hz) applied to bump center trajectory before MSD "
-               "computation. If not set, the cutoff is chosen automatically from the delay "
-               "signal. Set to 0 to disable filtering entirely.",
-    )
-
-
-    # =========================================================================
     # RING-CALIBRATE subcommand
     # =========================================================================
     ring_cal_parser = subparsers.add_parser(
@@ -1772,117 +1690,6 @@ Examples:
     )
 
     # =========================================================================
-    # RING-NOISE-FLOOR subcommand
-    # =========================================================================
-    ring_nf_parser = subparsers.add_parser(
-        "ring-noise-floor",
-        help="Estimate noise floor from no-stimulus baseline trials",
-        description="Run no-stimulus baseline trials and compute a noise floor threshold "
-                    "as the Nth percentile of bump amplitude under spontaneous noise. "
-                    "Saves baseline_A_hat.csv consumed automatically by ring-calibrate. "
-                    "Run this first for custom baseline parameters (n_baseline, percentile).",
-    )
-    _add_ring_common(ring_nf_parser)
-    # w_pyr_pyr_inter is swept via --w_inter_values; make the base value optional
-    for _action in ring_nf_parser._actions:
-        if _action.dest == "w_pyr_pyr_inter":
-            _action.required = False
-            _action.default = [0.0]
-            break
-    ring_nf_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to run (default: WT only).",
-    )
-    ring_nf_parser.add_argument(
-        "--w_inter_values", type=float, nargs="+",
-        default=[2.0, 3.0, 4.0, 5.0, 6.0],
-        help="w_pyr_pyr_inter values for baseline sweep (default: 2.0 3.0 4.0 5.0 6.0)",
-    )
-    ring_nf_parser.add_argument(
-        "--n_baseline", type=int, default=100,
-        help="Number of no-stimulus trials per w_inter (default: 100)",
-    )
-    ring_nf_parser.add_argument(
-        "--noise_percentile", type=float, default=95.0,
-        help="Percentile of baseline A_hat used as threshold (default: 95)",
-    )
-    ring_nf_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: min(4, cpu_count))",
-    )
-    ring_nf_parser.add_argument(
-        "--batch_chunk_size", type=int, default=50,
-        help="Max trials per simulation batch chunk (default: 50)",
-    )
-    ring_nf_parser.add_argument(
-        "--no_cache", action="store_true",
-        help="Ignore existing baseline cache and recompute from scratch.",
-    )
-    ring_nf_parser.add_argument(
-        "--replot_only", action="store_true",
-        help="Rebuild noise-floor plots from cached baseline_A_hat.csv; "
-             "skips simulations.",
-    )
-
-
-    # =========================================================================
-    # RING-ASYMMETRY subcommand
-    # =========================================================================
-    ring_asym_parser = subparsers.add_parser(
-        "ring-asymmetry",
-        help="L/R asymmetry analysis across conditions and trials",
-        description=(
-            "Run N trials per condition, each with a unique noisy settling "
-            "period before the cue, so the pre-cue spontaneous state varies. "
-            "Measures left/right asymmetry before the cue and during the delay "
-            "period, then tests: (1) is the average asymmetry balanced at zero? "
-            "(2) does pre-cue asymmetry predict delay asymmetry? "
-            "Also generates full visualisations for the worst-case trial per "
-            "condition (highest |delay asymmetry|)."
-        ),
-    )
-    _add_ring_common(ring_asym_parser)
-    ring_asym_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to analyse (default: WT WT_APP a7_KO_APP). "
-             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
-    )
-
-    ring_asym_parser.add_argument(
-        "--n_trials", type=int, default=100,
-        help="Number of trials per condition (default: 100)",
-    )
-    ring_asym_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: auto)",
-    )
-    ring_asym_parser.add_argument(
-        "--random_cue_location", action="store_true", default=False,
-        help="Randomise the cue location uniformly in [0°, 360°) for each trial, "
-             "independently of the simulation seed. When disabled (default), all trials "
-             "use STIM_CENTER_DEG (180°). With a continuous random angle, left and right "
-             "node counts are balanced (no structural pre-cue bias).",
-    )
-    ring_asym_parser.add_argument(
-        "--no_cue_balance", action="store_true", default=False,
-        help="Disable the automatic cue-placement balance correction (on by default). "
-             "When enabled (default), for even N the cue is placed at a half-step between "
-             "two nodes so that left and right node counts are exactly equal (N/2 each); "
-             "for odd N the cue is snapped to the nearest node (already balanced). "
-             "Use --no_cue_balance to place the cue at the raw STIM_CENTER_DEG (180°), "
-             "which for even N lands exactly on a node and creates a one-node structural "
-             "pre-cue bias of -1/(N-1).",
-    )
-    ring_asym_parser.add_argument(
-        "--correct_asymmetry", dest="correct_asymmetry", action="store_true", default=True,
-        help="Enable asymmetry correction by bump amplitude at each time step (default: on).",
-    )
-    ring_asym_parser.add_argument(
-        "--no_correct_asymmetry", dest="correct_asymmetry", action="store_false",
-        help="Disable asymmetry correction by bump amplitude.",
-    )
-
-    # =========================================================================
     # RING-BUMP-DECAY-STUDY subcommand
     # =========================================================================
     ring_bump_decay_parser = subparsers.add_parser(
@@ -1941,52 +1748,6 @@ Examples:
     )
 
     # =========================================================================
-    # RING-PRE-CUE-POWER subcommand
-    # =========================================================================
-    # =========================================================================
-    # RING-BURNIN-STABILITY subcommand
-    # =========================================================================
-    ring_burnin_parser = subparsers.add_parser(
-        "ring-burnin-stability",
-        help="Assess burn-in stationarity by comparing 1000ms windows across noisy trials",
-        description=(
-            "Runs n_trials independent noisy simulations from zero initial conditions "
-            "for burnin_ms.  Divides each run into windows of period_ms and computes "
-            "per-window mean amplitude and mean |A(t)| (asymmetry relative to a fixed "
-            "reference angle).  A Kruskal-Wallis test across windows checks whether "
-            "the network has reached stationarity — p not significant means the metric "
-            "is stationary across the burn-in."
-        ),
-    )
-    _add_ring_common(ring_burnin_parser)
-    ring_burnin_parser.add_argument(
-        "--conditions", type=str, nargs="+", default=None,
-        help="Conditions to analyse (default: WT). "
-             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
-    )
-    ring_burnin_parser.add_argument(
-        "--n_trials", type=int, default=100,
-        help="Number of independent noisy trials (default: 100)",
-    )
-    ring_burnin_parser.add_argument(
-        "--burnin_ms", type=float, default=10000.0,
-        help="Total burn-in duration in ms (default: 10000)",
-    )
-    ring_burnin_parser.add_argument(
-        "--period_ms", type=float, default=1000.0,
-        help="Duration of each comparison window in ms (default: 1000)",
-    )
-    ring_burnin_parser.add_argument(
-        "--ref_deg", type=float, default=0.0,
-        help="Fixed reference angle in degrees for asymmetry computation (default: 0.0)",
-    )
-    ring_burnin_parser.add_argument(
-        "--n_workers", type=int, default=None,
-        help="Number of parallel workers (default: auto)",
-    )
-
-
-    # =========================================================================
     # RING-OPTIMIZE subcommand
     # =========================================================================
     ring_opt_parser = subparsers.add_parser(
@@ -2010,10 +1771,7 @@ Examples:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', 'diagnostic', "
               "'plot-transfer', 'random-bistable-search', "
-              "'ring-run', 'ring-study', "
-              "'ring-diffusion', 'ring-noise-floor', "
-              "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
-              "'ring-optimize'.")
+              "'ring-run', 'ring-calibrate', 'ring-bump-decay-study', 'ring-optimize'.")
         sys.exit(1)
     elif args.command == "diagnostic":
         cmd_diagnostic(args)
@@ -2030,26 +1788,11 @@ Examples:
     elif args.command == "ring-run":
         from .ring.cli import cmd_run as cmd_ring_run
         cmd_ring_run(args)
-    elif args.command == "ring-study":
-        from .ring.cli import cmd_study as cmd_ring_study
-        cmd_ring_study(args)
-    elif args.command == "ring-diffusion":
-        from .ring.cli import cmd_diffusion as cmd_ring_diffusion
-        cmd_ring_diffusion(args)
     elif args.command == "ring-calibrate":
         from .ring.cli import cmd_calibrate as cmd_ring_calibrate
         cmd_ring_calibrate(args)
-    elif args.command == "ring-noise-floor":
-        from .ring.cli import cmd_noise_floor as _cmd
-        _cmd(args)
-    elif args.command == "ring-asymmetry":
-        from .ring.cli import cmd_asymmetry as _cmd
-        _cmd(args)
     elif args.command == "ring-bump-decay-study":
         from .ring.cli import cmd_bump_decay_study as _cmd
-        _cmd(args)
-    elif args.command == "ring-burnin-stability":
-        from .ring.cli import cmd_burnin_stability as _cmd
         _cmd(args)
     elif args.command == "ring-optimize":
         from .ring.cli import cmd_ring_optimize as _cmd

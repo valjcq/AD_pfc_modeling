@@ -6,6 +6,7 @@ This module contains:
 - FitConfig: Configuration for fitting/optimization
 - loss_from_means: Loss for base condition
 - loss_from_ko_pyr: Loss for knockout conditions
+- transfer_function_slope: Wong-Wang Φ'(I*) at the operating point of a population
 - jacobian_connectivity_penalty: Penalty for degenerate (near-zero effective gain) connections
 - ach_ratio_penalty: Penalty for β2/α7 cholinergic current ratio deviating from ~35
 """
@@ -75,12 +76,12 @@ def loss_from_means(
     """
     Compute loss between simulated mean firing rates and targets.
 
-    Uses MAPE (default) or MSPE (squared=True) plus a penalty for rates
-    that are too close to zero (to avoid silent solutions).
+    Uses MSPE (default, squared=True) or MAPE (squared=False) plus a penalty
+    for rates that are too close to zero (to avoid silent solutions).
 
-    Loss = mean(|actual - target| / target)        [squared=False, default]
-         = mean((actual - target)^2 / target^2)    [squared=True]
-    + penalty_weight * sum(near_zero_penalties)
+    Loss = mean((actual - target)^2 / target^2)    [squared=True, default]
+         = mean(|actual - target| / target)        [squared=False]
+    + near_zero_weight * sum(near_zero_penalties)
     """
     tgt = target.as_array()
     denom = np.maximum(np.abs(tgt), 1e-3)
@@ -177,6 +178,9 @@ def transfer_function_slope(
 
 # Core connections that must have non-negligible effective gain.
 # (row=target_pop, col=source_pop) in the Jacobian, population order: PYR=0 SOM=1 PV=2 VIP=3
+# This is a subset of jacobian._CONNECTIONS: the latter lists every connection we
+# *expect* to be present (for sanity-check reporting); this list narrows to the
+# ones whose absence would make the circuit degenerate and is used by the loss.
 _REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
     (0, 0),  # PYR → PYR
     (1, 0),  # PYR → SOM
@@ -232,23 +236,16 @@ def jacobian_connectivity_penalty(
     *,
     threshold: float = 0.05,
     weight: float = 20.0,
-    max_gain: float = 5.0,
-    max_gain_weight: float = 20.0,
 ) -> float:
-    """Penalize solutions where core connections have negligible or excessive effective gain.
+    """Penalize solutions where core connections have negligible effective gain.
 
-    Lower bound: for each required connection (i, j), if |J[i,j]| < threshold the penalty
-    grows quadratically: weight * sum( ((threshold - |J|) / threshold)^2 ).
-
-    Upper bound: applied to ALL entries of J. If |J[i,j]| > max_gain the penalty
-    grows quadratically: max_gain_weight * sum( ((|J| - max_gain) / max_gain)^2 ).
-    This prevents biologically implausible solutions where a single connection
-    dominates the network dynamics.
+    For each required connection (i, j) in _REQUIRED_CONNECTIONS, if |J[i,j]| <
+    threshold the penalty grows quadratically:
+        weight * sum( ((threshold - |J|) / threshold)^2 ).
     """
     J = compute_jacobian(params, r_ss)
     penalty = 0.0
 
-    # Lower-bound penalty on required connections
     for (i, j) in _REQUIRED_CONNECTIONS:
         gain = abs(J[i, j])
         if gain < threshold:

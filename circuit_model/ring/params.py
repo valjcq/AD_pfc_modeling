@@ -21,7 +21,7 @@ class RingParams:
     Parameters for the ring attractor network.
 
     The ring consists of N nodes arranged on a circle. Each node is a full
-    4-population local circuit (PYR, PV, SOM, VIP) with dynamics defined
+    4-population local circuit (PYR, SOM, PV, VIP) with dynamics defined
     by CircuitParams.
 
     Inter-node connectivity (all row-sum normalised to fitted single-node scalars):
@@ -45,7 +45,7 @@ class RingParams:
 
     # === Gaussian kernel widths (degrees) — only free structural parameters ===
     sigma_pyr_deg: float = 15.0  # PYR→PYR Gaussian width
-    sigma_som_deg: float = 15.0  # SOM→PYR annular ring half-width (peak at 2*sigma_pyr)
+    sigma_som_deg: float = 15.0  # SOM→PYR annular ring half-width (peak at 3*sigma_pyr)
 
     # === SOM connectivity pattern ===
     som_pattern: str = "gaussian"  # "gaussian" (annular surround), "uniform" (all-to-all, zero diagonal), or "none" (local only)

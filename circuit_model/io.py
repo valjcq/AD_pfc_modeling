@@ -23,14 +23,13 @@ if TYPE_CHECKING:
     from .params import CircuitParams
     from .loss import TargetRates
     from .optimization import KOMeans
+    from .ring.params import RingParams
 
 
-def output_dir(base_dir: str, params_json: str) -> str:
-    """Return a flat output directory path (no params-based subfolders)."""
-    _ = params_json  # Kept for backward-compatible call sites.
-    out = base_dir
-    os.makedirs(out, exist_ok=True)
-    return out
+def output_dir(base_dir: str) -> str:
+    """Ensure ``base_dir`` exists and return it (flat output layout)."""
+    os.makedirs(base_dir, exist_ok=True)
+    return base_dir
 
 
 def load_params_json(path: str) -> "CircuitParams":
@@ -44,7 +43,10 @@ def load_params_json(path: str) -> "CircuitParams":
     if "params" in d and isinstance(d["params"], dict):
         d = d["params"]
 
-    # Migrate old w_ee → J_NMDA (pre-NMDA gating JSON files)
+    # Migrate old w_ee → J_NMDA (pre-NMDA gating JSON files).
+    # The ×10 factor compensates for the NMDA gating variable S* ≈ 0.1 at the
+    # operating rates of the legacy fit (S* saturates the recurrent NMDA term),
+    # so J_NMDA * S* ≈ old w_ee * r_pyr at steady state.
     if "w_ee" in d and "J_NMDA" not in d:
         warnings.warn("JSON uses deprecated 'w_ee'; migrating to J_NMDA = w_ee * 10", stacklevel=2)
         d["J_NMDA"] = d.pop("w_ee") * 10
