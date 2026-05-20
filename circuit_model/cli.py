@@ -212,11 +212,19 @@ def print_parameter_status(
 
     # Group parameters by category
     categories = {
+<<<<<<< HEAD
         "Time constants": ["tau_s", "tau_adapt_pyr"],
         "Adaptation": ["J_adapt_pyr"],
         "Noise & GABA": ["sigma_noise", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["J_NMDA", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs"],
+=======
+        "Time constants": ["tau_s", "tau_adapt_pyr", "tau_adapt_som"],
+        "Adaptation": ["J_adapt_pyr", "J_adapt_som"],
+        "Noise & GABA": ["sigma_s", "g_gaba_base", "g_alpha7"],
+        "Weights (excitatory)": ["w_ee", "w_ep", "w_es", "w_ev"],
+        "Weights (inhibitory)": ["w_pe", "w_pp", "w_ps", "w_se", "w_sp", "w_vp", "w_vs"],
+>>>>>>> origin/main
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som", "I0_vip", "I_alpha5_vip"],
         "Transient": ["trans_factor"],
         "Transfer function": ["Theta_pyr", "alpha_pyr", "Theta_pv", "alpha_pv", "Theta_som", "alpha_som", "Theta_vip", "alpha_vip", "g"],
@@ -659,6 +667,7 @@ def cmd_study(args: argparse.Namespace) -> None:
     )
 
 
+<<<<<<< HEAD
 def cmd_random_bistable_search(args: argparse.Namespace) -> None:
     """Run random parameter sampling and log only bistable hits."""
     from dataclasses import replace
@@ -818,6 +827,75 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             context="optimize",
         )
         print(load_msg)
+=======
+def cmd_optimize(args: argparse.Namespace) -> None:
+    """Run parameter optimization."""
+    if not getattr(args, "resume", False):
+        missing = [f"--target_{k}" for k, v in [
+            ("pyr", args.target_pyr), ("som", args.target_som),
+            ("pv", args.target_pv), ("vip", args.target_vip),
+        ] if v is None]
+        if missing:
+            raise SystemExit(f"error: the following arguments are required: {', '.join(missing)}\n"
+                             "(or use --resume to load targets from a previous log)")
+
+    # Handle --resume: load best params and targets from log, continue from last logged step
+    step_offset = 0
+    append_log = False
+    if getattr(args, "resume", False):
+        resume_json = args.save_best_json or "best_params.json"
+        log_path = args.log_file or "results_log.jsonl"
+        if not os.path.exists(resume_json):
+            raise FileNotFoundError(f"--resume: could not find '{resume_json}'")
+        base = load_params_json(resume_json)
+        print(f"Resuming from: {resume_json}")
+        if not os.path.exists(log_path):
+            raise FileNotFoundError(f"--resume: could not find log file '{log_path}'")
+        import json as _json
+        last_step = 0
+        last_entry = None
+        with open(log_path, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    last_entry = _json.loads(_line)
+                    last_step = last_entry.get("step", last_step)
+        step_offset = last_step
+        append_log = True
+        print(f"Appending to log '{log_path}' from step {last_step}")
+        t = last_entry["target"]
+        target = TargetRates(
+            mean_r_pyr=t["mean_r_pyr"],
+            mean_r_som=t["mean_r_som"],
+            mean_r_pv=t["mean_r_pv"],
+            mean_r_vip=t["mean_r_vip"],
+            alpha7_ko_pyr=t.get("alpha7_ko_pyr"),
+            alpha5_ko_pyr=t.get("alpha5_ko_pyr"),
+            beta2_ko_pyr=t.get("beta2_ko_pyr"),
+        )
+        print(f"Targets loaded from log: pyr={target.mean_r_pyr}, som={target.mean_r_som}, "
+              f"pv={target.mean_r_pv}, vip={target.mean_r_vip}")
+    else:
+        # Build target rates from CLI args
+        target = TargetRates(
+            mean_r_pyr=args.target_pyr,
+            mean_r_som=args.target_som,
+            mean_r_pv=args.target_pv,
+            mean_r_vip=args.target_vip,
+            alpha7_ko_pyr=args.target_alpha7_ko_pyr,
+            alpha5_ko_pyr=args.target_alpha5_ko_pyr,
+            beta2_ko_pyr=args.target_beta2_ko_pyr,
+        )
+
+    # Load or create base parameters (only if not already loaded via --resume)
+    if not getattr(args, "resume", False):
+        if args.params_json:
+            base = load_params_json(args.params_json)
+            print(f"Loaded base parameters from: {args.params_json}")
+        else:
+            base = CircuitParams()
+            print("Using default base parameters")
+>>>>>>> origin/main
 
     # Apply --set overrides (e.g. --set w_sp=0)
     if args.set_params:
@@ -985,6 +1063,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         seed=args.seed if args.seed is not None else 0,
         optimizer=args.optimizer,
         freeze=freeze,
+<<<<<<< HEAD
         log_file=log_file_to_use,
         log_interval=log_interval_to_use,
         save_best_json=save_best_json_to_use or None,
@@ -998,6 +1077,15 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         turing_cue_scale=args.turing_cue_scale,
         ach_ratio_weight=args.ach_ratio_weight,
         bistable_cfg=bistable_cfg,
+=======
+        early_stop_loss=args.early_stop_loss,
+        log_file=args.log_file or None,
+        log_interval=args.log_interval,
+        n_workers=args.n_workers,
+        save_best_json=args.save_best_json or None,
+        step_offset=step_offset,
+        append_log=append_log,
+>>>>>>> origin/main
     )
 
     if not best:
@@ -1373,12 +1461,18 @@ Examples:
     # I/O settings
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
                             help="Save best parameters to JSON file")
+<<<<<<< HEAD
     opt_parser.add_argument("--log_file", type=str, default=None,
                             help="Log results to JSONL file (default: auto-generated in figs/optim/)")
+=======
+    opt_parser.add_argument("--log_file", type=str, default="results_log.jsonl",
+                            help="Log results to JSONL file")
+>>>>>>> origin/main
     opt_parser.add_argument("--log_interval", type=int, default=500,
                             help="Log every N steps")
     opt_parser.add_argument("--resume", action="store_true",
                             help="Resume from best_params.json, appending to existing log")
+<<<<<<< HEAD
 
     # =========================================================================
     # PLOT-TRANSFER subcommand
@@ -1441,6 +1535,10 @@ Examples:
                             help="Output directory for figures (default: figs/diagnostic)")
     diag_parser.add_argument("--no_show", action="store_true",
                             help="Don't display the plots")
+=======
+    opt_parser.add_argument("--n_workers", type=int, default=None,
+                            help="Parallel workers (auto if None)")
+>>>>>>> origin/main
 
     # =========================================================================
     # STUDY subcommand
@@ -1605,6 +1703,24 @@ Examples:
         "--distractor_duration_ms", type=float, default=250.0,
         help="Distractor stimulus duration in ms (default: 250). "
              "Only used when --distractor_factor and --distractor_offset_deg are set.",
+<<<<<<< HEAD
+=======
+    )
+    ring_run_parser.add_argument(
+        "--delay2_ms", type=float, default=5000.0,
+        help="Delay after distractor offset in ms (default: 5000). "
+             "Only used when the distractor is enabled.",
+    )
+
+    # =========================================================================
+    # RING-STUDY subcommand
+    # =========================================================================
+    ring_study_parser = subparsers.add_parser(
+        "ring-study",
+        help="Run ring attractor study across conditions",
+        description="Run ring attractor simulation across multiple experimental "
+                    "conditions and generate comparison plots.",
+>>>>>>> origin/main
     )
     ring_run_parser.add_argument(
         "--delay2_ms", type=float, default=5000.0,
@@ -1619,6 +1735,284 @@ Examples:
         "--output_dir", type=str, default="",
         help="Explicit output directory for results (default: auto-generated path based on params)",
     )
+<<<<<<< HEAD
+=======
+    ring_study_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_study_parser.add_argument(
+        "--delay_step_ms", type=float, default=None,
+        help="Delay evaluation step size in ms (default: use [1s,2s,3s])",
+    )
+    ring_study_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing CSV cache and recompute all conditions",
+    )
+    ring_study_parser.add_argument(
+        "--amp_eval_step_ms", type=float, default=500.0,
+        help="Step for timed metrics-vs-amplitude plots (ms). "
+             "0 = disabled. (default: 500)",
+    )
+    ring_study_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
+
+    # =========================================================================
+    # RING-OSCILLATION-STUDY subcommand
+    # =========================================================================
+    ring_osc_parser = subparsers.add_parser(
+        "ring-oscillation-study",
+        help="Cue-only oscillation analysis (dominant 2-12 Hz dynamics)",
+        description=(
+            "Run cue-only ring simulations across conditions and amplitudes, "
+            "extract dominant oscillation frequency/power trajectories in a "
+            "frequency band (default 2-12 Hz), compare distributions across "
+            "conditions, and generate high-quality frequency-band heatmaps."
+        ),
+    )
+    _add_ring_common(ring_osc_parser)
+    ring_osc_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT WT_APP).",
+    )
+    ring_osc_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (x I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Trials per condition x amplitude (default: 50)",
+    )
+    ring_osc_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_parser.add_argument(
+        "--osc_skip_ms", type=float, default=200.0,
+        help="Initial delay segment to skip before oscillation analysis (default: 200 ms)",
+    )
+    ring_osc_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for dominant-frequency search (default: 2)",
+    )
+    ring_osc_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for dominant-frequency search (default: 12)",
+    )
+    ring_osc_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0,1) (default: 0.8)",
+    )
+    ring_osc_parser.add_argument(
+        "--sample_time_frac", type=float, default=0.75,
+        help="Timepoint for single-bin comparison as fraction of analyzed delay (default: 0.75)",
+    )
+    ring_osc_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run all trials from scratch.",
+    )
+    # =========================================================================
+    # RING-OSC-DISTRACTOR-STUDY subcommand
+    # =========================================================================
+    ring_osc_dist_parser = subparsers.add_parser(
+        "ring-osc-distractor-study",
+        help="Oscillation + distractor study (STFT at cue/distractor nodes + PLV)",
+        description=(
+            "Run cue + distractor ring simulations, sweeping cue amplitude, "
+            "distractor angular offset, and distractor amplitude factor. "
+            "Extracts STFT-based oscillatory power at the cue and distractor nodes, "
+            "and Phase Locking Value (PLV) between them."
+        ),
+    )
+    _add_ring_common(ring_osc_dist_parser)
+    ring_osc_dist_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--distractor_factors", type=float, nargs="+", default=[0.75, 1.0],
+        help="Distractor amplitude as fraction of cue amplitude (default: 0.75 1.0)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--offsets_deg", type=float, nargs="+", default=[30.0, 70.0, 90.0, 120.0, 170.0],
+        help="Distractor angular offsets from cue in degrees (default: 30 70 90 120 170)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--delay1_ms", type=float, default=1500.0,
+        help="Delay between cue offset and distractor onset (default: 1500 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=200.0,
+        help="Duration of distractor stimulus (default: 200 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--delay2_ms", type=float, default=3000.0,
+        help="Delay after distractor offset until end of trial (default: 3000 ms)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--n_trials", type=int, default=10,
+        help="Trials per condition x amplitude x factor x offset (default: 10)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+    ring_osc_dist_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run from scratch.",
+    )
+
+    # =========================================================================
+    # RING-OSC-PHASE-DISTRACTOR subcommand
+    # =========================================================================
+    ring_osc_phase_parser = subparsers.add_parser(
+        "ring-osc-phase-distractor",
+        help="Phase-dependent distractor study: vary distractor timing relative to oscillation",
+        description=(
+            "Runs burn-in + cue simulation with a FIXED seed, then applies a distractor "
+            "at different points in the ongoing oscillation cycle (in units of π). "
+            "Measures how PLV and oscillatory power over the post-distractor delay "
+            "depend on the oscillation phase at distractor onset."
+        ),
+    )
+    _add_ring_common(ring_osc_phase_parser)
+    ring_osc_phase_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--amplitudes", type=float, nargs="+", default=None,
+        help="Cue amplitude factors (× I_ext_pyr). If omitted, uses --amplitude.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--distractor_factors", type=float, nargs="+", default=[1.0],
+        help="Distractor amplitude as fraction of cue amplitude (default: 1.0)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--offsets_deg", type=float, nargs="+", default=[90.0],
+        help="Distractor angular offsets from cue in degrees (default: 90)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--delay1_base_ms", type=float, default=500.0,
+        help="Base delay between cue offset and distractor onset (default: 500 ms). "
+             "The actual delay1 is delay1_base + phase_pi * T_osc / 2.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--distractor_duration_ms", type=float, default=200.0,
+        help="Duration of distractor stimulus (default: 200 ms)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--delay2_ms", type=float, default=2000.0,
+        help="Post-distractor delay duration (default: 2000 ms)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_phase_sweep", type=int, default=16,
+        help="Number of equally-spaced phase values in [0, 2π) for the sweep (default: 16)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--osc_freq_hz", type=float, default=5.0,
+        help="Fallback oscillation frequency used if auto-detection fails (default: 5 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_trials", type=int, default=10,
+        help="Distractor trials per (condition, amplitude, factor, offset, phase) (default: 10)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT / PLV bandpass (default: 2 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT / PLV bandpass (default: 12 Hz)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--tf_window_s", type=float, default=1.0,
+        help="STFT window length in seconds (default: 1.0)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore cached simulation results and re-run from scratch.",
+    )
+    ring_osc_phase_parser.add_argument(
+        "--plot_conditions", type=str, nargs="+", default=None,
+        metavar="COND",
+        help=(
+            "Subset of --conditions to include in plots (default: all simulated conditions). "
+            "Does NOT affect the cache key, so you can re-plot a subset without re-simulating. "
+            "Example: --conditions WT WT_APP a7_KO --plot_conditions WT WT_APP"
+        ),
+    )
+
+    # =========================================================================
+    # RING-DIFFUSION subcommand
+    # =========================================================================
+    ring_diff_parser = subparsers.add_parser(
+        "ring-diffusion",
+        help="Run MSD diffusion analysis on the ring attractor",
+        description="Compute mean squared displacement (MSD) of bump center "
+                    "during delay periods across conditions, and extract the "
+                    "diffusion strength B_hat (Seeholzer et al. 2019).",
+    )
+    _add_ring_common(ring_diff_parser)
+    ring_diff_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: all 8).",
+    )
+    ring_diff_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Number of trials per condition (default: 50)",
+    )
+    ring_diff_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: min(4, cpu_count))",
+    )
+    ring_diff_parser.add_argument(
+        "--error_band", type=str, default="sem", choices=["sem", "sd"],
+        help="Error band type for plots: 'sem' (default) or 'sd'.",
+    )
+    ring_diff_parser.add_argument(
+        "--filter_cutoff_hz", type=float, default=None,
+        help="Low-pass filter cutoff (Hz) applied to bump center trajectory before MSD "
+             "computation. If not set, the cutoff is auto-detected from the bump amplitude "
+             "oscillation spectrum (0.4 × dominant oscillation frequency). "
+             "Set to 0 to disable filtering entirely.",
+    )
+
+>>>>>>> origin/main
 
     # =========================================================================
     # RING-CALIBRATE subcommand
@@ -1761,17 +2155,218 @@ Examples:
             "Legacy --bump_mode is deprecated and ignored."
         ),
     )
+<<<<<<< HEAD
     from .ring.cli import add_ring_optimize_args as _add_ring_optimize_args
     _add_ring_optimize_args(ring_opt_parser)
+=======
+    _add_ring_common(ring_asym_parser)
+    ring_asym_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to analyse (default: WT WT_APP a7_KO_APP). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+
+    ring_asym_parser.add_argument(
+        "--n_trials", type=int, default=100,
+        help="Number of trials per condition (default: 100)",
+    )
+    ring_asym_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto)",
+    )
+    ring_asym_parser.add_argument(
+        "--random_cue_location", action="store_true", default=False,
+        help="Randomise the cue location uniformly in [0°, 360°) for each trial, "
+             "independently of the simulation seed. When disabled (default), all trials "
+             "use STIM_CENTER_DEG (180°). With a continuous random angle, left and right "
+             "node counts are balanced (no structural pre-cue bias).",
+    )
+    ring_asym_parser.add_argument(
+        "--no_cue_balance", action="store_true", default=False,
+        help="Disable the automatic cue-placement balance correction (on by default). "
+             "When enabled (default), for even N the cue is placed at a half-step between "
+             "two nodes so that left and right node counts are exactly equal (N/2 each); "
+             "for odd N the cue is snapped to the nearest node (already balanced). "
+             "Use --no_cue_balance to place the cue at the raw STIM_CENTER_DEG (180°), "
+             "which for even N lands exactly on a node and creates a one-node structural "
+             "pre-cue bias of -1/(N-1).",
+    )
+    ring_asym_parser.add_argument(
+        "--correct_asymmetry", dest="correct_asymmetry", action="store_true", default=True,
+        help="Enable asymmetry correction by bump amplitude at each time step (default: on).",
+    )
+    ring_asym_parser.add_argument(
+        "--no_correct_asymmetry", dest="correct_asymmetry", action="store_false",
+        help="Disable asymmetry correction by bump amplitude.",
+    )
+
+    # =========================================================================
+    # RING-BUMP-DECAY-STUDY subcommand
+    # =========================================================================
+    ring_bump_decay_parser = subparsers.add_parser(
+        "ring-bump-decay-study",
+        help="Assess bump decay vs. self-sustained attractor across conditions",
+        description=(
+            "Run cue-only ring simulations across conditions, amplitude factors, "
+            "and optionally excitatory coupling values (--w_inter_values). "
+            "Normalises each trial's bump amplitude timecourse by its mean value "
+            "at a reference time (default: 400 ms after cue offset). "
+            "Produces (1) normalised timecourse plots (mean ± SEM per condition) "
+            "and (2) 2D heatmaps of mean normalised amplitude in the last 200 ms "
+            "of delay, sweeping amplitude × w_inter."
+        ),
+    )
+    _add_ring_common(ring_bump_decay_parser)
+    ring_bump_decay_parser.set_defaults(delay_ms=10000.0)
+    ring_bump_decay_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT WT_APP). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--amplitudes", type=float, nargs="+",
+        default=[5.0, 10.0, 15.0, 20.0, 25.0],
+        help="Cue amplitude factors (× I_ext_pyr, default: 5 10 15 20 25).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--n_trials", type=int, default=50,
+        help="Trials per condition × amplitude × w_inter (default: 50)",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--w_inter_values", type=float, nargs="+", default=None,
+        help="w_pyr_pyr_inter values to sweep for the 2D heatmap. "
+             "If omitted, only the base --w_pyr_pyr_inter value is used "
+             "(no heatmap produced).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--ref_offset_ms", type=float, default=400.0,
+        help="Time after cue offset (ms) used as the normalization reference "
+             "(default: 400 ms).",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--window_ms", type=float, default=500.0,
+        help="Width (ms) of time windows for averaging out oscillations "
+             "(default: 500 ms). Used both for the normalization reference "
+             "and for all timecourse bins.",
+    )
+    ring_bump_decay_parser.add_argument(
+        "--no_cache", action="store_true",
+        help="Ignore existing pickle cache and recompute all simulations.",
+    )
+
+    # =========================================================================
+    # RING-PRE-CUE-POWER subcommand
+    # =========================================================================
+    ring_pre_cue_parser = subparsers.add_parser(
+        "ring-pre-cue-power-study",
+        help="Pre-cue (noise-only) power spectrum and spectral peakedness analysis",
+        description=(
+            "Run noise-only simulations from the burn-in state to characterise "
+            "spontaneous oscillatory power in the pre-cue baseline period. "
+            "Computes the mean PSD across a frequency band, plots the spectrum "
+            "distribution per condition, and compares a spectral peakedness metric "
+            "(1 − normalised entropy) across conditions with a Mann-Whitney U test."
+        ),
+    )
+    _add_ring_common(ring_pre_cue_parser)
+    ring_pre_cue_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to simulate (default: WT).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--duration_ms", type=float, default=2000.0,
+        help="Duration of each noise-only trial in ms (default: 2000).",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_trials", type=int, default=20,
+        help="Trials per condition (default: 20)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Parallel workers (default: auto)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--min_freq_hz", type=float, default=2.0,
+        help="Lower frequency bound for STFT (default: 2 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--max_freq_hz", type=float, default=12.0,
+        help="Upper frequency bound for STFT (default: 12 Hz)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_window_s", type=float, default=0.5,
+        help="STFT window length in seconds (default: 0.5)",
+    )
+    ring_pre_cue_parser.add_argument(
+        "--tf_overlap", type=float, default=0.8,
+        help="STFT overlap fraction in [0, 1) (default: 0.8)",
+    )
+
+    # =========================================================================
+    # RING-BURNIN-STABILITY subcommand
+    # =========================================================================
+    ring_burnin_parser = subparsers.add_parser(
+        "ring-burnin-stability",
+        help="Assess burn-in stationarity by comparing 1000ms windows across noisy trials",
+        description=(
+            "Runs n_trials independent noisy simulations from zero initial conditions "
+            "for burnin_ms.  Divides each run into windows of period_ms and computes "
+            "per-window mean amplitude and mean |A(t)| (asymmetry relative to a fixed "
+            "reference angle).  A Kruskal-Wallis test across windows checks whether "
+            "the network has reached stationarity — p not significant means the metric "
+            "is stationary across the burn-in."
+        ),
+    )
+    _add_ring_common(ring_burnin_parser)
+    ring_burnin_parser.add_argument(
+        "--conditions", type=str, nargs="+", default=None,
+        help="Conditions to analyse (default: WT). "
+             "Valid: WT, WT_APP, a5_KO, a5_KO_APP, a7_KO, a7_KO_APP, b2_KO, b2_KO_APP",
+    )
+    ring_burnin_parser.add_argument(
+        "--n_trials", type=int, default=100,
+        help="Number of independent noisy trials (default: 100)",
+    )
+    ring_burnin_parser.add_argument(
+        "--burnin_ms", type=float, default=10000.0,
+        help="Total burn-in duration in ms (default: 10000)",
+    )
+    ring_burnin_parser.add_argument(
+        "--period_ms", type=float, default=1000.0,
+        help="Duration of each comparison window in ms (default: 1000)",
+    )
+    ring_burnin_parser.add_argument(
+        "--ref_deg", type=float, default=0.0,
+        help="Fixed reference angle in degrees for asymmetry computation (default: 0.0)",
+    )
+    ring_burnin_parser.add_argument(
+        "--n_workers", type=int, default=None,
+        help="Number of parallel workers (default: auto)",
+    )
+
+>>>>>>> origin/main
 
     # Parse arguments
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
+<<<<<<< HEAD
         print("\nNo command specified. Use 'run', 'optimize', 'study', 'diagnostic', "
               "'plot-transfer', 'random-bistable-search', "
               "'ring-run', 'ring-calibrate', 'ring-bump-decay-study', 'ring-optimize'.")
+=======
+        print("\nNo command specified. Use 'run', 'optimize', 'study', "
+              "'ring-run', 'ring-study', 'ring-oscillation-study', 'ring-osc-distractor-study', "
+              "'ring-osc-phase-distractor', "
+              "'ring-diffusion', 'ring-noise-floor', "
+              "'ring-calibrate', 'ring-asymmetry', 'ring-burnin-stability', "
+              "or 'ring-pre-cue-power-study'.")
+>>>>>>> origin/main
         sys.exit(1)
     elif args.command == "diagnostic":
         cmd_diagnostic(args)
@@ -1788,14 +2383,46 @@ Examples:
     elif args.command == "ring-run":
         from .ring.cli import cmd_run as cmd_ring_run
         cmd_ring_run(args)
+<<<<<<< HEAD
+=======
+    elif args.command == "ring-study":
+        from .ring.cli import cmd_study as cmd_ring_study
+        cmd_ring_study(args)
+    elif args.command == "ring-oscillation-study":
+        from .ring.cli import cmd_oscillation_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-osc-distractor-study":
+        from .ring.cli import cmd_osc_distractor_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-osc-phase-distractor":
+        from .ring.cli import cmd_osc_distractor_phase_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-diffusion":
+        from .ring.cli import cmd_diffusion as cmd_ring_diffusion
+        cmd_ring_diffusion(args)
+>>>>>>> origin/main
     elif args.command == "ring-calibrate":
         from .ring.cli import cmd_calibrate as cmd_ring_calibrate
         cmd_ring_calibrate(args)
     elif args.command == "ring-bump-decay-study":
         from .ring.cli import cmd_bump_decay_study as _cmd
         _cmd(args)
+<<<<<<< HEAD
     elif args.command == "ring-optimize":
         from .ring.cli import cmd_ring_optimize as _cmd
+=======
+    elif args.command == "ring-asymmetry":
+        from .ring.cli import cmd_asymmetry as _cmd
+        _cmd(args)
+    elif args.command == "ring-bump-decay-study":
+        from .ring.cli import cmd_bump_decay_study as _cmd
+        _cmd(args)
+    elif args.command == "ring-burnin-stability":
+        from .ring.cli import cmd_burnin_stability as _cmd
+>>>>>>> origin/main
+        _cmd(args)
+    elif args.command == "ring-pre-cue-power-study":
+        from .ring.cli import cmd_pre_cue_power_study as _cmd
         _cmd(args)
     else:
         parser.print_help()
