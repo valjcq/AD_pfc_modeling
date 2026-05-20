@@ -1,0 +1,11 @@
+Best calibration settings
+Network: 128_inhib_4_sigma_30
+Criteria: success_rate = 1.00, peak_pyr_rate ∈ [17.0, 18.5] Hz
+Selection: highest mean_A_hat among candidates
+
+Condition        Amplitude   w_inter  peak_pyr_rate  mean_A_hat  success_rate
+------------------------------------------------------------------------------
+WT                    35.0      5.50         17.121      0.4681          1.00
+WT_APP           — no match found
+a7_KO_APP             35.0      4.00         17.177      0.3082          1.00
+
