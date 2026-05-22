@@ -1,5 +1,0 @@
-{
-    "git.ignoreLimitWarning": true,
-    "latex-workshop.latex.recipe.default": "latexmk (latexmkrc)",
-    "latex-workshop.latex.autoBuild.run": "onSave"
-}
