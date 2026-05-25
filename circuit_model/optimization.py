@@ -35,10 +35,13 @@ class KOMeans:
     """Container for knockout condition mean firing rates (shape (5,) each).
 
     Global KOs zero a receptor everywhere it acts.
+    Selective α7 KOs zero α7 only on the named cell type.
     """
     alpha7_ko: Optional[np.ndarray] = None
     alpha5_ko: Optional[np.ndarray] = None
     beta2_ko: Optional[np.ndarray] = None
+    alpha7_ndnf_ko: Optional[np.ndarray] = None
+    alpha7_pv_ko: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -123,10 +126,13 @@ def _build_conditions(
     alpha7_all_off = dict(act_alpha7_pv=0.0, act_alpha7_som=0.0, act_alpha7_ndnf=0.0)
     conditions: list[tuple[str, CircuitParams, FitConfig, int]] = [
         ("base", params, cfg, int(rng.integers(0, 2**31 - 1))),
-        # Global KO conditions; only enter the loss if the matching target is set.
-        ("alpha7_ko", replace(params, **alpha7_all_off),  cfg, int(rng.integers(0, 2**31 - 1))),
-        ("alpha5_ko", replace(params, act_alpha5=0.0),    cfg, int(rng.integers(0, 2**31 - 1))),
-        ("beta2_ko",  replace(params, act_beta2=0.0),     cfg, int(rng.integers(0, 2**31 - 1))),
+        # Global KOs — measured on PYR
+        ("alpha7_ko", replace(params, **alpha7_all_off),     cfg, int(rng.integers(0, 2**31 - 1))),
+        ("alpha5_ko", replace(params, act_alpha5=0.0),       cfg, int(rng.integers(0, 2**31 - 1))),
+        ("beta2_ko",  replace(params, act_beta2=0.0),        cfg, int(rng.integers(0, 2**31 - 1))),
+        # Cell-type-selective α7 KOs — measured on the deleted cell type itself
+        ("alpha7_ndnf_ko", replace(params, act_alpha7_ndnf=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
+        ("alpha7_pv_ko",   replace(params, act_alpha7_pv=0.0),   cfg, int(rng.integers(0, 2**31 - 1))),
     ]
     return conditions
 
@@ -160,6 +166,10 @@ def _loss_from_results(
             ko_means.alpha5_ko = means
         elif name == "beta2_ko":
             ko_means.beta2_ko = means
+        elif name == "alpha7_ndnf_ko":
+            ko_means.alpha7_ndnf_ko = means
+        elif name == "alpha7_pv_ko":
+            ko_means.alpha7_pv_ko = means
 
     # Firing rate loss
     fr_loss = loss_from_means(base_means, target, squared=squared_loss)
@@ -185,6 +195,23 @@ def _loss_from_results(
     if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
         ko_loss += loss_from_ko_pyr(
             float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
+            min_effect_weight=cfg.ko_min_effect_penalty,
+            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
+        )
+        n_ko += 1
+
+    # Selective α7 KOs are compared against the *deleted cell type's own* baseline rate
+    # (the data are flx/flx baseline measurements in NDNF / PV, not PYR-side).
+    if target.alpha7_ndnf_ko_ndnf is not None and ko_means.alpha7_ndnf_ko is not None:
+        ko_loss += loss_from_ko_pyr(
+            float(ko_means.alpha7_ndnf_ko[4]), target.alpha7_ndnf_ko_ndnf, float(base_means[4]),
+            min_effect_weight=cfg.ko_min_effect_penalty,
+            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
+        )
+        n_ko += 1
+    if target.alpha7_pv_ko_pv is not None and ko_means.alpha7_pv_ko is not None:
+        ko_loss += loss_from_ko_pyr(
+            float(ko_means.alpha7_pv_ko[2]), target.alpha7_pv_ko_pv, float(base_means[2]),
             min_effect_weight=cfg.ko_min_effect_penalty,
             wrong_direction_weight=cfg.ko_wrong_direction_penalty,
         )
@@ -364,6 +391,8 @@ def nevergrad_optimize(
         target.alpha7_ko_pyr is not None,
         target.alpha5_ko_pyr is not None,
         target.beta2_ko_pyr is not None,
+        target.alpha7_ndnf_ko_ndnf is not None,
+        target.alpha7_pv_ko_pv is not None,
     ])
 
     # Parallel batching is not currently wired up to the main loop below.
@@ -496,9 +525,11 @@ def _log_candidate(
         "ndnf": float(cand.means[4]),
     }
     ko_means_dict = {
-        "alpha7_ko": cand.ko_means.alpha7_ko.tolist() if cand.ko_means.alpha7_ko is not None else None,
-        "alpha5_ko": cand.ko_means.alpha5_ko.tolist() if cand.ko_means.alpha5_ko is not None else None,
-        "beta2_ko":  cand.ko_means.beta2_ko.tolist()  if cand.ko_means.beta2_ko  is not None else None,
+        "alpha7_ko":      cand.ko_means.alpha7_ko.tolist()      if cand.ko_means.alpha7_ko      is not None else None,
+        "alpha5_ko":      cand.ko_means.alpha5_ko.tolist()      if cand.ko_means.alpha5_ko      is not None else None,
+        "beta2_ko":       cand.ko_means.beta2_ko.tolist()       if cand.ko_means.beta2_ko       is not None else None,
+        "alpha7_ndnf_ko": cand.ko_means.alpha7_ndnf_ko.tolist() if cand.ko_means.alpha7_ndnf_ko is not None else None,
+        "alpha7_pv_ko":   cand.ko_means.alpha7_pv_ko.tolist()   if cand.ko_means.alpha7_pv_ko   is not None else None,
     }
     breakdown_dict = None
     if breakdown is not None:

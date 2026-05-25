@@ -29,6 +29,10 @@ class TargetRates:
     Global KO targets (all measured on PYR):
       - alpha7_ko_pyr: global α7-KO (all per-cell α7 zeroed)
       - alpha5_ko_pyr, beta2_ko_pyr: global α5 / β2 KO
+
+    Cell-type-selective α7 KO targets (measured on the *deleted* cell type):
+      - alpha7_ndnf_ko_ndnf: NDNF firing rate under NDNF-selective α7 KO
+      - alpha7_pv_ko_pv:     PV firing rate   under PV-selective   α7 KO
     """
     mean_r_pyr: float
     mean_r_som: float
@@ -39,6 +43,8 @@ class TargetRates:
     alpha7_ko_pyr: Optional[float] = None
     alpha5_ko_pyr: Optional[float] = None
     beta2_ko_pyr: Optional[float] = None
+    alpha7_ndnf_ko_ndnf: Optional[float] = None
+    alpha7_pv_ko_pv: Optional[float] = None
 
     def as_array(self) -> np.ndarray:
         """Return base targets as array [pyr, som, pv, vip, ndnf]."""

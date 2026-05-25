@@ -87,13 +87,15 @@ Nevergrad parameter optimization to match baseline firing rates for the 5 popula
 
 ### Optional KO targets
 
-The optimizer always simulates each global KO condition (so they appear in the report), but they only enter the loss if the corresponding target flag is set.
+The optimizer always simulates every KO condition (so they appear in the report), but each only enters the loss if its target flag is set. Global KOs are measured on PYR; cell-type-selective α7 KOs are measured on the deleted cell type itself (matching the flx/flx baseline data).
 
-| Flag | KO condition |
-|------|--------------|
-| `--target_alpha7_ko_pyr FLOAT` | Global α7-KO (all per-cell α7 zeroed) — PYR target |
-| `--target_alpha5_ko_pyr FLOAT` | α5-KO — PYR target |
-| `--target_beta2_ko_pyr FLOAT`  | β2-KO — PYR target |
+| Flag | KO condition | Measured on |
+|------|--------------|-------------|
+| `--target_alpha7_ko_pyr FLOAT`        | Global α7-KO (all per-cell α7 = 0) | PYR  |
+| `--target_alpha5_ko_pyr FLOAT`        | Global α5-KO  | PYR  |
+| `--target_beta2_ko_pyr FLOAT`         | Global β2-KO  | PYR  |
+| `--target_alpha7_ndnf_ko_ndnf FLOAT`  | NDNF-selective α7-KO (only `act_alpha7_ndnf = 0`) | NDNF |
+| `--target_alpha7_pv_ko_pv FLOAT`      | PV-selective α7-KO (only `act_alpha7_pv = 0`)     | PV   |
 
 ### Optimizer settings
 
@@ -158,6 +160,7 @@ python -m circuit_model optimize \
     --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
+    --target_alpha7_ndnf_ko_ndnf 3.0767 --target_alpha7_pv_ko_pv 1.3966 \
     --optimizer twopointde --n_samples 20000 \
     --output_dir fits/WT_NDNF_5pop
 ```

@@ -123,6 +123,16 @@ def build_fit_comparison(
             comparison["beta2_ko"] = {"PYR": _entry(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)}
         else:
             comparison["beta2_ko"] = {"PYR": _entry_info(float(ko_means.beta2_ko[0]), display_ko_targets.beta2_ko_pyr if display_ko_targets else None)}
+    if ko_means.alpha7_ndnf_ko is not None:
+        if target.alpha7_ndnf_ko_ndnf is not None:
+            comparison["alpha7_ndnf_ko"] = {"NDNF": _entry(float(ko_means.alpha7_ndnf_ko[4]), target.alpha7_ndnf_ko_ndnf)}
+        else:
+            comparison["alpha7_ndnf_ko"] = {"NDNF": _entry_info(float(ko_means.alpha7_ndnf_ko[4]), display_ko_targets.alpha7_ndnf_ko_ndnf if display_ko_targets else None)}
+    if ko_means.alpha7_pv_ko is not None:
+        if target.alpha7_pv_ko_pv is not None:
+            comparison["alpha7_pv_ko"] = {"PV": _entry(float(ko_means.alpha7_pv_ko[2]), target.alpha7_pv_ko_pv)}
+        else:
+            comparison["alpha7_pv_ko"] = {"PV": _entry_info(float(ko_means.alpha7_pv_ko[2]), display_ko_targets.alpha7_pv_ko_pv if display_ko_targets else None)}
 
     out: dict = {"loss": round(loss, 6), "comparison": comparison}
 
@@ -221,22 +231,29 @@ def save_fit_summary_txt(
                 f"  {'base':<14}  {pop:<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}%"
             )
 
-        for cond_key in ("alpha7_ko", "alpha5_ko", "beta2_ko"):
+        ko_rows = [
+            ("alpha7_ko",      "PYR"),
+            ("alpha5_ko",      "PYR"),
+            ("beta2_ko",       "PYR"),
+            ("alpha7_ndnf_ko", "NDNF"),
+            ("alpha7_pv_ko",   "PV"),
+        ]
+        for cond_key, pop in ko_rows:
             if cond_key not in cmp:
                 continue
             lines.append(SEP)
-            e = cmp[cond_key]["PYR"]
+            e = cmp[cond_key][pop]
             if e["target"] is None:
                 lines.append(
-                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {'—':>8}  {'(info)':>7}"
+                    f"  {cond_key:<14}  {pop:<4}  {e['actual']:8.3f}  {'—':>8}  {'(info)':>7}"
                 )
             elif e["error_pct"] is not None and not (e.get("in_loss", True)):
                 lines.append(
-                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}% (info)"
+                    f"  {cond_key:<14}  {pop:<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}% (info)"
                 )
             else:
                 lines.append(
-                    f"  {cond_key:<14}  {'PYR':<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}%"
+                    f"  {cond_key:<14}  {pop:<4}  {e['actual']:8.3f}  {e['target']:8.3f}  {e['error_pct']:+6.1f}%"
                 )
 
         lines.append(SEP)

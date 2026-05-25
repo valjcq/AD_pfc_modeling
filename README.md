@@ -442,11 +442,12 @@ python -m circuit_model run --condition a7_KO
 ### Optimize parameters
 
 ```bash
-# Rate-matching fit (5 populations) + global α7 / α5 / β2 KO PYR targets.
+# Rate-matching fit (5 populations) + global KO targets on PYR + selective α7 KOs on NDNF/PV.
 python -m circuit_model optimize \
     --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
+    --target_alpha7_ndnf_ko_ndnf 3.0767 --target_alpha7_pv_ko_pv 1.3966 \
     --optimizer twopointde --n_samples 50000 \
     --output_dir fits/WT_NDNF_5pop
 ```

@@ -174,6 +174,17 @@ def print_comparison_table(
         err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
         print(f"  {'beta2_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
 
+    if target.alpha7_ndnf_ko_ndnf is not None and ko_means.alpha7_ndnf_ko is not None:
+        actual = float(ko_means.alpha7_ndnf_ko[4])
+        tgt = target.alpha7_ndnf_ko_ndnf
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'a7_ndnf_ko':<14}  {'NDNF':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+    if target.alpha7_pv_ko_pv is not None and ko_means.alpha7_pv_ko is not None:
+        actual = float(ko_means.alpha7_pv_ko[2])
+        tgt = target.alpha7_pv_ko_pv
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'a7_pv_ko':<14}  {'PV':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
     print("=" * 62 + "\n")
 
 
@@ -588,6 +599,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             alpha7_ko_pyr=t.get("alpha7_ko_pyr"),
             alpha5_ko_pyr=t.get("alpha5_ko_pyr"),
             beta2_ko_pyr=t.get("beta2_ko_pyr"),
+            alpha7_ndnf_ko_ndnf=t.get("alpha7_ndnf_ko_ndnf"),
+            alpha7_pv_ko_pv=t.get("alpha7_pv_ko_pv"),
         )
         print(f"Targets loaded from log: pyr={target.mean_r_pyr}, som={target.mean_r_som}, "
               f"pv={target.mean_r_pv}, vip={target.mean_r_vip}, ndnf={target.mean_r_ndnf}")
@@ -602,6 +615,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             alpha7_ko_pyr=args.target_alpha7_ko_pyr,
             alpha5_ko_pyr=args.target_alpha5_ko_pyr,
             beta2_ko_pyr=args.target_beta2_ko_pyr,
+            alpha7_ndnf_ko_ndnf=args.target_alpha7_ndnf_ko_ndnf,
+            alpha7_pv_ko_pv=args.target_alpha7_pv_ko_pv,
         )
 
     # Load or create base parameters (only if not already loaded via --resume)
@@ -673,6 +688,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} {unit}")
     if target.beta2_ko_pyr is not None:
         print(f"  beta2 KO PYR:  {target.beta2_ko_pyr} {unit}")
+    if target.alpha7_ndnf_ko_ndnf is not None:
+        print(f"  NDNF-selective a7 KO (NDNF): {target.alpha7_ndnf_ko_ndnf} {unit}")
+    if target.alpha7_pv_ko_pv is not None:
+        print(f"  PV-selective   a7 KO (PV):   {target.alpha7_pv_ko_pv} {unit}")
     print()
 
     jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
@@ -758,6 +777,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             ko_str += f" a5KO_pyr={c.ko_means.alpha5_ko[0]:.4g}"
         if c.ko_means.beta2_ko is not None:
             ko_str += f" b2KO_pyr={c.ko_means.beta2_ko[0]:.4g}"
+        if c.ko_means.alpha7_ndnf_ko is not None:
+            ko_str += f" a7_ndnf_KO_ndnf={c.ko_means.alpha7_ndnf_ko[4]:.4g}"
+        if c.ko_means.alpha7_pv_ko is not None:
+            ko_str += f" a7_pv_KO_pv={c.ko_means.alpha7_pv_ko[2]:.4g}"
         print(
             f"rank {i:02d}: loss={c.loss:.3e} "
             f"means=[pyr={pyr:.4g}, som={som:.4g}, pv={pv:.4g}, vip={vip:.4g}, ndnf={ndnf:.4g}]"
@@ -904,6 +927,12 @@ Examples:
                             help="Target PYR rate under alpha5 knockout")
     opt_parser.add_argument("--target_beta2_ko_pyr", type=float, default=None,
                             help="Target PYR rate under beta2 knockout")
+    opt_parser.add_argument("--target_alpha7_ndnf_ko_ndnf", type=float, default=None,
+                            help="Target NDNF rate under NDNF-selective alpha7 KO "
+                                 "(measured on NDNF itself, e.g. flx/flx baseline)")
+    opt_parser.add_argument("--target_alpha7_pv_ko_pv", type=float, default=None,
+                            help="Target PV rate under PV-selective alpha7 KO "
+                                 "(measured on PV itself, e.g. a7flx/flx baseline)")
 
     # Optimization settings
     opt_parser.add_argument("--squared_loss", action=argparse.BooleanOptionalAction, default=True,
