@@ -1,11 +1,7 @@
 """
-Circuit simulation functions.
+Circuit simulation functions for the 5-population PFC model.
 
-This module contains:
-- SimulationResult: Data class for simulation output
-- simulate_circuit: Main simulation function using Euler integration
-- mean_rates: Compute mean firing rates after burn-in
-- validate_fast_loop: Check that the Numba fast path matches the NumPy reference
+Population order in r: [PYR, SOM, PV, VIP, NDNF]  (indices 0..4)
 """
 
 from __future__ import annotations
@@ -18,7 +14,10 @@ import numpy as np
 from .params import CircuitParams
 from .transfer import phi_wong_wang, phi_capped
 from ._fast_loop import _euler_loop, NUMBA_AVAILABLE
-from .constants import GAMMA_NMDA, TAU_NMDA_MS, R_MAX_PV, R_MAX_SOM, R_MAX_VIP
+from .constants import (
+    GAMMA_NMDA, TAU_NMDA_MS,
+    R_MAX_PV, R_MAX_SOM, R_MAX_VIP, R_MAX_NDNF,
+)
 
 
 NoiseType = Literal["none", "white", "ou"]
@@ -27,12 +26,14 @@ NoiseType = Literal["none", "white", "ou"]
 @dataclass
 class SimulationResult:
     """Container for simulation output."""
-    t_ms: np.ndarray      # Shape: (n_steps,) - Time points in ms
-    r: np.ndarray         # Shape: (n_steps, 4) - Firing rates [pyr, som, pv, vip]
-    I_adapt: np.ndarray   # Shape: (n_steps, 2) - Adaptation currents [pyr, som]
-    # Optional transient window(s) info for plotting
-    transient_window: Optional[tuple[float, float]] = None   # (start_ms, end_ms) first transient
-    transient_window2: Optional[tuple[float, float]] = None  # (start_ms, end_ms) second transient
+    t_ms: np.ndarray      # (n_steps,)
+    r: np.ndarray         # (n_steps, 5) — [PYR, SOM, PV, VIP, NDNF]
+    I_adapt: np.ndarray   # (n_steps, 2) — [PYR, SOM]
+    transient_window: Optional[tuple[float, float]] = None
+    transient_window2: Optional[tuple[float, float]] = None
+
+
+N_POPS = 5
 
 
 def simulate_circuit(
@@ -47,50 +48,22 @@ def simulate_circuit(
     tau_noise_ms: float = 5.0,
     use_transient: bool = False,
 ) -> SimulationResult:
-    """
-    Simulate the 4-population circuit using Euler integration.
-
-    Implements the rate equation:
-        tau_s * dr/dt = -r + Phi(I_pop)
-
-    where each population (PYR, SOM, PV, VIP) has its own input current I_pop
-    computed from synaptic connectivity and external inputs. Stochastic noise
-    is injected in current-space: when noise_type != "none", a sample
-    sigma_noise * I_ext_pop * xi(t) is added to each I_pop.
-
-    Parameters:
-        params: CircuitParams containing all model parameters
-        T_ms: Total simulation time in milliseconds
-        dt_ms: Integration time step (default 0.1ms for stability)
-        r0: Initial firing rates [pyr, som, pv, vip] (default: 0.1 for all)
-        I_adapt0: Initial adaptation currents [pyr, som] (default: 0)
-        seed: Random seed for reproducibility
-        noise_type: "none", "white" (Gaussian), or "ou" (Ornstein-Uhlenbeck)
-        tau_noise_ms: Time constant for OU noise (if used)
-        use_transient: If True and params.trans_enabled=True (and/or
-                       params.trans2_enabled=True), apply a time-dependent
-                       transient current to PYR only (trans_factor * I0_pyr is
-                       added during the transient window; PV/SOM/VIP currents
-                       are unaffected).
-
-    Returns:
-        SimulationResult with time points, firing rates, and adaptation currents
-    """
+    """Simulate the 5-population circuit using Euler integration."""
     if T_ms <= 0 or dt_ms <= 0:
         raise ValueError("T_ms and dt_ms must be > 0")
 
     n_steps = int(np.floor(T_ms / dt_ms)) + 1
     t = np.linspace(0.0, dt_ms * (n_steps - 1), n_steps, dtype=float)
 
-    r = np.zeros((n_steps, 4), dtype=float)
+    r = np.zeros((n_steps, N_POPS), dtype=float)
     I_adapt = np.zeros((n_steps, 2), dtype=float)
 
     if r0 is None:
-        r[0] = np.array([0.1, 0.1, 0.1, 0.1], dtype=float)
+        r[0] = np.full(N_POPS, 0.1, dtype=float)
     else:
         r0 = np.asarray(r0, dtype=float)
-        if r0.shape != (4,):
-            raise ValueError("r0 must have shape (4,)")
+        if r0.shape != (N_POPS,):
+            raise ValueError(f"r0 must have shape ({N_POPS},)")
         r[0] = r0
 
     if I_adapt0 is None:
@@ -101,32 +74,24 @@ def simulate_circuit(
             raise ValueError("I_adapt0 must have shape (2,)")
         I_adapt[0] = I_adapt0
 
-    if seed is not None:
-        rng = np.random.default_rng(seed)
-    else:
-        rng = np.random.default_rng()
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
     ggaba = params.g_gaba()
 
-    # Compute initial NMDA gating variable from initial PYR rate
     r_pyr_init = float(r[0, 0])
     S_pyr_init = (GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS)
 
-    # =========================================================================
-    # FAST PATH — Numba JIT or pure-scalar fallback (both avoid NumPy overhead)
-    #   Conditions: no time-varying transient, no OU noise.
-    #   Speedup: ~50-100x with Numba, ~3-5x without (vs. current NumPy loop).
-    # =========================================================================
     _can_use_fast = not use_transient and noise_type in ("none", "white")
 
     if _can_use_fast:
-        # Pre-generate noise array — one vectorized call, no per-step overhead
-        # Shape (n_steps-1, 4): independent noise for each population
-        noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
-        noise_scale_som = params.sigma_noise * params.I_ext_som()
-        noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
-        noise_scale_vip = params.sigma_noise * params.I_ext_vip()
-        any_noise = any(s != 0.0 for s in (noise_scale_pyr, noise_scale_som, noise_scale_pv, noise_scale_vip))
+        noise_scale_pyr  = params.sigma_noise * params.I_ext_pyr()
+        noise_scale_som  = params.sigma_noise * params.I_ext_som()
+        noise_scale_pv   = params.sigma_noise * params.I_ext_pv()
+        noise_scale_vip  = params.sigma_noise * params.I_ext_vip()
+        noise_scale_ndnf = params.sigma_noise * params.I_ext_ndnf()
+        any_noise = any(s != 0.0 for s in (
+            noise_scale_pyr, noise_scale_som, noise_scale_pv, noise_scale_vip, noise_scale_ndnf,
+        ))
         if not any_noise or noise_type == "none":
             noise_arr = np.zeros(n_steps - 1, dtype=np.float64)
         else:
@@ -137,43 +102,56 @@ def simulate_circuit(
             n_steps, dt_ms,
             float(noise_scale_pyr), float(noise_scale_som),
             float(noise_scale_pv),  float(noise_scale_vip),
+            float(noise_scale_ndnf),
             float(params.tau_s),
             float(ggaba),
-            float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
+            # PYR-side / NMDA
+            float(params.J_NMDA), float(S_pyr_init),
+            float(params.w_pe), float(params.w_se), float(params.w_en),
+            # SOM input
             float(params.w_es), float(params.w_vs),
+            # PV input
             float(params.w_ep), float(params.w_pp), float(params.w_sp),
-            float(params.w_vp), float(params.w_ev),
-            float(params.J_adapt_pyr),
-            float(params.tau_adapt_pyr),
-            float(params.J_adapt_som),
-            float(params.tau_adapt_som),
+            float(params.w_vp), float(params.w_pn),
+            # VIP input
+            float(params.w_ev), float(params.w_vn),
+            # NDNF input
+            float(params.w_ne), float(params.w_ns),
+            # Adaptation
+            float(params.J_adapt_pyr), float(params.tau_adapt_pyr),
+            float(params.J_adapt_som), float(params.tau_adapt_som),
+            # External currents
             float(params.I_ext_pyr()), float(params.I_ext_som()),
             float(params.I_ext_pv()),  float(params.I_ext_vip()),
+            float(params.I_ext_ndnf()),
+            # Transfer function params
             float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_exc),
             float(params.g_inh),
-            float(params.Theta_som), float(params.alpha_som),
-            float(params.Theta_pv),  float(params.alpha_pv),
-            float(params.Theta_vip), float(params.alpha_vip),
-            float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP),
+            float(params.Theta_som),  float(params.alpha_som),
+            float(params.Theta_pv),   float(params.alpha_pv),
+            float(params.Theta_vip),  float(params.alpha_vip),
+            float(params.Theta_ndnf), float(params.alpha_ndnf),
+            # Soft ceilings
+            float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP), float(R_MAX_NDNF),
         )
 
     else:
         # =====================================================================
-        # REFERENCE PATH — original NumPy loop (OU noise or transient cases)
+        # REFERENCE PATH — OU noise or transient
         # =====================================================================
-        noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
-        noise_scale_som = params.sigma_noise * params.I_ext_som()
-        noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
-        noise_scale_vip = params.sigma_noise * params.I_ext_vip()
-        xi_state_pyr = 0.0  # OU state (shared across populations)
-        S_pyr = S_pyr_init  # NMDA gating variable (scalar)
+        noise_scale_pyr  = params.sigma_noise * params.I_ext_pyr()
+        noise_scale_som  = params.sigma_noise * params.I_ext_som()
+        noise_scale_pv   = params.sigma_noise * params.I_ext_pv()
+        noise_scale_vip  = params.sigma_noise * params.I_ext_vip()
+        noise_scale_ndnf = params.sigma_noise * params.I_ext_ndnf()
+        xi_state = 0.0
+        S_pyr = S_pyr_init
 
         for k in range(n_steps - 1):
-            r_pyr, r_som, r_pv, r_vip = r[k]
-            Iap = I_adapt[k, 0]  # Adaptation current for PYR
-            Ias = I_adapt[k, 1]  # Adaptation current for SOM
+            r_pyr, r_som, r_pv, r_vip, r_ndnf = r[k]
+            Iap = I_adapt[k, 0]
+            Ias = I_adapt[k, 1]
 
-            # NOISE GENERATION — single shared xi, scaled per population
             if noise_type == "none":
                 xi = 0.0
             elif noise_type == "white":
@@ -181,35 +159,34 @@ def simulate_circuit(
             elif noise_type == "ou":
                 if tau_noise_ms <= 0:
                     raise ValueError("tau_noise_ms must be > 0 for OU noise")
-                xi_state_pyr += (-xi_state_pyr / tau_noise_ms) * dt_ms + np.sqrt(
+                xi_state += (-xi_state / tau_noise_ms) * dt_ms + np.sqrt(
                     2.0 * dt_ms / tau_noise_ms
                 ) * float(rng.standard_normal())
-                xi = xi_state_pyr
+                xi = xi_state
             else:
                 raise ValueError(f"Unknown noise_type: {noise_type!r}")
 
-            # EXTERNAL CURRENTS (time-dependent if transient enabled)
             if use_transient:
-                I_ext_pyr_val = params.I_ext_pyr_at_time(t[k])
-                I_ext_som_val = params.I_ext_som_at_time(t[k])
-                I_ext_pv_val = params.I_ext_pv_at_time(t[k])
-                I_ext_vip_val = params.I_ext_vip_at_time(t[k])
+                I_ext_pyr_val  = params.I_ext_pyr_at_time(t[k])
+                I_ext_som_val  = params.I_ext_som_at_time(t[k])
+                I_ext_pv_val   = params.I_ext_pv_at_time(t[k])
+                I_ext_vip_val  = params.I_ext_vip_at_time(t[k])
+                I_ext_ndnf_val = params.I_ext_ndnf_at_time(t[k])
             else:
-                I_ext_pyr_val = params.I_ext_pyr()
-                I_ext_som_val = params.I_ext_som()
-                I_ext_pv_val = params.I_ext_pv()
-                I_ext_vip_val = params.I_ext_vip()
+                I_ext_pyr_val  = params.I_ext_pyr()
+                I_ext_som_val  = params.I_ext_som()
+                I_ext_pv_val   = params.I_ext_pv()
+                I_ext_vip_val  = params.I_ext_vip()
+                I_ext_ndnf_val = params.I_ext_ndnf()
 
-            # NMDA GATING UPDATE (before computing I_pyr)
             dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
             S_pyr = float(np.clip(S_pyr + dS, 0.0, 1.0))
 
-            # INPUT CURRENTS
-            # PV provides DIVISIVE (shunting) inhibition: models perisomatic GABA
             denom = 1.0 + ggaba * params.w_pe * r_pv
             I_pyr = (
                 (params.J_NMDA * S_pyr) / denom
                 - ggaba * params.w_se * r_som
+                - ggaba * params.w_en * r_ndnf
                 - Iap
                 + I_ext_pyr_val
                 + noise_scale_pyr * xi
@@ -226,33 +203,42 @@ def simulate_circuit(
                 - ggaba * params.w_pp * r_pv
                 - ggaba * params.w_sp * r_som
                 - params.w_vp * r_vip
+                - ggaba * params.w_pn * r_ndnf
                 + I_ext_pv_val
                 + noise_scale_pv * xi
             )
-            I_vip = params.w_ev * r_pyr + I_ext_vip_val + noise_scale_vip * xi
+            I_vip = (
+                params.w_ev * r_pyr
+                - ggaba * params.w_vn * r_ndnf
+                + I_ext_vip_val
+                + noise_scale_vip * xi
+            )
+            I_ndnf = (
+                params.w_ne * r_pyr
+                - ggaba * params.w_ns * r_som
+                + I_ext_ndnf_val
+                + noise_scale_ndnf * xi
+            )
 
-            # TRANSFER FUNCTION — PYR uncapped; interneurons use hyperbolic soft ceiling
             Phi = np.array(
                 [
                     phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
-                    phi_capped(I_som, R_MAX_SOM, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
-                    phi_capped(I_pv,  R_MAX_PV,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
-                    phi_capped(I_vip, R_MAX_VIP, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
+                    phi_capped(I_som,  R_MAX_SOM,  theta=params.Theta_som,  c=params.alpha_som,  g=params.g_inh).item(),
+                    phi_capped(I_pv,   R_MAX_PV,   theta=params.Theta_pv,   c=params.alpha_pv,   g=params.g_inh).item(),
+                    phi_capped(I_vip,  R_MAX_VIP,  theta=params.Theta_vip,  c=params.alpha_vip,  g=params.g_inh).item(),
+                    phi_capped(I_ndnf, R_MAX_NDNF, theta=params.Theta_ndnf, c=params.alpha_ndnf, g=params.g_inh).item(),
                 ],
                 dtype=float,
             )
 
-            # EULER UPDATE: FIRING RATES
-            dr = (-r[k] + Phi) / params.tau_s  # noise already in I_pyr above
+            dr = (-r[k] + Phi) / params.tau_s
             r[k + 1] = np.maximum(r[k] + dt_ms * dr, 0.0)
 
-            # EULER UPDATE: ADAPTATION CURRENTS
             dIap = (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
             I_adapt[k + 1, 0] = Iap + dt_ms * dIap
             dIas = (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
             I_adapt[k + 1, 1] = Ias + dt_ms * dIas
 
-    # Compute transient window(s) for plotting if enabled
     transient_window = None
     if use_transient and params.trans_enabled:
         transient_window = (params.trans_start_ms, params.trans_start_ms + params.trans_duration_ms)
@@ -260,7 +246,8 @@ def simulate_circuit(
     if use_transient and params.trans2_enabled:
         transient_window2 = (params.trans2_start_ms, params.trans2_start_ms + params.trans2_duration_ms)
 
-    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt, transient_window=transient_window, transient_window2=transient_window2)
+    return SimulationResult(t_ms=t, r=r, I_adapt=I_adapt,
+                            transient_window=transient_window, transient_window2=transient_window2)
 
 
 def validate_fast_loop(
@@ -269,100 +256,105 @@ def validate_fast_loop(
     dt_ms: float = 0.1,
     seed: int = 42,
 ) -> None:
-    """
-    Verify that the fast (Numba/scalar) path is bit-identical to the reference.
-
-    Runs both paths on the same inputs and asserts np.array_equal (exact match,
-    not just close). Any divergence raises AssertionError.
-
-    Usage:
-        from circuit_model.simulation import validate_fast_loop
-        validate_fast_loop()  # prints "OK — bit-identical" on success
-    """
+    """Verify the fast path is bit-identical to the reference NumPy path."""
     if params is None:
         params = CircuitParams()
 
-    r0 = np.array([2.0, 5.0, 15.0, 3.0], dtype=float)
+    r0 = np.array([2.0, 5.0, 15.0, 3.0, 4.0], dtype=float)
     I_adapt0 = np.array([0.1, 0.5], dtype=float)
 
-    # ---- Reference: original NumPy loop (force slow path) ----
+    # Reference (slow) — re-run by calling simulate_circuit with conditions
+    # that force the slow path. The simplest trick: use OU noise with seed,
+    # which avoids the fast path. But we need bit-identical noise sequences.
+    # Easier: directly replicate the slow loop here.
     n_steps = int(np.floor(T_ms / dt_ms)) + 1
-    r_ref = np.zeros((n_steps, 4), dtype=float)
+    r_ref = np.zeros((n_steps, N_POPS), dtype=float)
     I_adapt_ref = np.zeros((n_steps, 2), dtype=float)
     r_ref[0] = r0
     I_adapt_ref[0] = I_adapt0
 
-    noise_scale_pyr = params.sigma_noise * params.I_ext_pyr()
-    noise_scale_som = params.sigma_noise * params.I_ext_som()
-    noise_scale_pv  = params.sigma_noise * params.I_ext_pv()
-    noise_scale_vip = params.sigma_noise * params.I_ext_vip()
+    ns_pyr  = params.sigma_noise * params.I_ext_pyr()
+    ns_som  = params.sigma_noise * params.I_ext_som()
+    ns_pv   = params.sigma_noise * params.I_ext_pv()
+    ns_vip  = params.sigma_noise * params.I_ext_vip()
+    ns_ndnf = params.sigma_noise * params.I_ext_ndnf()
 
     rng_ref = np.random.default_rng(seed)
     noise_ref = rng_ref.standard_normal(n_steps - 1)
 
-    # Compute initial NMDA gating variable
     r_pyr_init = float(r0[0])
     S_pyr_init = (GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr_init * TAU_NMDA_MS)
     S_pyr = S_pyr_init
-
     ggaba = params.g_gaba()
+
     for k in range(n_steps - 1):
-        r_pyr, r_som, r_pv, r_vip = r_ref[k]
+        r_pyr, r_som, r_pv, r_vip, r_ndnf = r_ref[k]
         Iap = I_adapt_ref[k, 0]
         Ias = I_adapt_ref[k, 1]
-        # NMDA gating update
         dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
         S_pyr = float(np.clip(S_pyr + dS, 0.0, 1.0))
         denom = 1.0 + ggaba * params.w_pe * r_pv
         xi = noise_ref[k]
-        I_pyr = (params.J_NMDA * S_pyr) / denom - ggaba * params.w_se * r_som - Iap + params.I_ext_pyr() + noise_scale_pyr * xi
-        I_som = params.w_es * r_pyr - params.w_vs * r_vip - params.J_adapt_som * r_som + params.I_ext_som() + noise_scale_som * xi
-        I_pv  = params.w_ep * r_pyr - ggaba * params.w_pp * r_pv - ggaba * params.w_sp * r_som - params.w_vp * r_vip + params.I_ext_pv() + noise_scale_pv * xi
-        I_vip = params.w_ev * r_pyr + params.I_ext_vip() + noise_scale_vip * xi
+        I_pyr = ((params.J_NMDA * S_pyr) / denom
+                 - ggaba * params.w_se * r_som
+                 - ggaba * params.w_en * r_ndnf
+                 - Iap + params.I_ext_pyr() + ns_pyr * xi)
+        I_som = (params.w_es * r_pyr - params.w_vs * r_vip
+                 - params.J_adapt_som * r_som + params.I_ext_som() + ns_som * xi)
+        I_pv  = (params.w_ep * r_pyr - ggaba * params.w_pp * r_pv
+                 - ggaba * params.w_sp * r_som - params.w_vp * r_vip
+                 - ggaba * params.w_pn * r_ndnf
+                 + params.I_ext_pv() + ns_pv * xi)
+        I_vip = (params.w_ev * r_pyr - ggaba * params.w_vn * r_ndnf
+                 + params.I_ext_vip() + ns_vip * xi)
+        I_ndnf = (params.w_ne * r_pyr - ggaba * params.w_ns * r_som
+                  + params.I_ext_ndnf() + ns_ndnf * xi)
         Phi = np.array([
             phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
-            phi_capped(I_som, R_MAX_SOM, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh).item(),
-            phi_capped(I_pv,  R_MAX_PV,  theta=params.Theta_pv,  c=params.alpha_pv,  g=params.g_inh).item(),
-            phi_capped(I_vip, R_MAX_VIP, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh).item(),
+            phi_capped(I_som,  R_MAX_SOM,  theta=params.Theta_som,  c=params.alpha_som,  g=params.g_inh).item(),
+            phi_capped(I_pv,   R_MAX_PV,   theta=params.Theta_pv,   c=params.alpha_pv,   g=params.g_inh).item(),
+            phi_capped(I_vip,  R_MAX_VIP,  theta=params.Theta_vip,  c=params.alpha_vip,  g=params.g_inh).item(),
+            phi_capped(I_ndnf, R_MAX_NDNF, theta=params.Theta_ndnf, c=params.alpha_ndnf, g=params.g_inh).item(),
         ])
         dr = (-r_ref[k] + Phi) / params.tau_s
         r_ref[k + 1] = np.maximum(r_ref[k] + dt_ms * dr, 0.0)
         I_adapt_ref[k + 1, 0] = Iap + dt_ms * (-Iap + params.J_adapt_pyr * r_pyr) / params.tau_adapt_pyr
         I_adapt_ref[k + 1, 1] = Ias + dt_ms * (-Ias + params.J_adapt_som * r_som) / params.tau_adapt_som
 
-    # ---- Fast path ----
-    r_fast = np.zeros((n_steps, 4), dtype=float)
+    # Fast path
+    r_fast = np.zeros((n_steps, N_POPS), dtype=float)
     I_adapt_fast = np.zeros((n_steps, 2), dtype=float)
     r_fast[0] = r0
     I_adapt_fast[0] = I_adapt0
 
-    # Re-generate noise with same seed so the sequences are identical
     rng_fast = np.random.default_rng(seed)
     noise_fast = rng_fast.standard_normal(n_steps - 1)
 
     _euler_loop(
         r_fast, I_adapt_fast, noise_fast,
         n_steps, dt_ms,
-        float(noise_scale_pyr), float(noise_scale_som),
-        float(noise_scale_pv),  float(noise_scale_vip),
+        float(ns_pyr), float(ns_som), float(ns_pv), float(ns_vip), float(ns_ndnf),
         float(params.tau_s),
         float(ggaba),
-        float(params.J_NMDA), float(S_pyr_init), float(params.w_pe), float(params.w_se),
+        float(params.J_NMDA), float(S_pyr_init),
+        float(params.w_pe), float(params.w_se), float(params.w_en),
         float(params.w_es), float(params.w_vs),
         float(params.w_ep), float(params.w_pp), float(params.w_sp),
-        float(params.w_vp), float(params.w_ev),
-        float(params.J_adapt_pyr),
-        float(params.tau_adapt_pyr),
-        float(params.J_adapt_som),
-        float(params.tau_adapt_som),
+        float(params.w_vp), float(params.w_pn),
+        float(params.w_ev), float(params.w_vn),
+        float(params.w_ne), float(params.w_ns),
+        float(params.J_adapt_pyr), float(params.tau_adapt_pyr),
+        float(params.J_adapt_som), float(params.tau_adapt_som),
         float(params.I_ext_pyr()), float(params.I_ext_som()),
         float(params.I_ext_pv()),  float(params.I_ext_vip()),
+        float(params.I_ext_ndnf()),
         float(params.Theta_pyr), float(params.alpha_pyr), float(params.g_exc),
         float(params.g_inh),
-        float(params.Theta_som), float(params.alpha_som),
-        float(params.Theta_pv),  float(params.alpha_pv),
-        float(params.Theta_vip), float(params.alpha_vip),
-        float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP),
+        float(params.Theta_som),  float(params.alpha_som),
+        float(params.Theta_pv),   float(params.alpha_pv),
+        float(params.Theta_vip),  float(params.alpha_vip),
+        float(params.Theta_ndnf), float(params.alpha_ndnf),
+        float(R_MAX_PV), float(R_MAX_SOM), float(R_MAX_VIP), float(R_MAX_NDNF),
     )
 
     if not np.array_equal(r_fast, r_ref):
@@ -381,17 +373,7 @@ def validate_fast_loop(
 
 
 def mean_rates(result: SimulationResult, burn_in_ms: float, window_ms: float) -> np.ndarray:
-    """
-    Compute mean firing rates after burn-in period.
-
-    Parameters:
-        result: SimulationResult from simulate_circuit
-        burn_in_ms: Time to skip at start (for transients to settle)
-        window_ms: Averaging window at end (0 = use all after burn-in)
-
-    Returns:
-        Array of shape (4,) with mean rates [pyr, som, pv, vip]
-    """
+    """Compute mean firing rates after burn-in. Returns shape (5,)."""
     dt = float(result.t_ms[1] - result.t_ms[0])
     start = int(np.floor(burn_in_ms / dt))
 

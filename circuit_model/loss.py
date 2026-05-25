@@ -6,7 +6,6 @@ This module contains:
 - FitConfig: Configuration for fitting/optimization
 - loss_from_means: Loss for base condition
 - loss_from_ko_pyr: Loss for knockout conditions
-- transfer_function_slope: Wong-Wang Φ'(I*) at the operating point of a population
 - jacobian_connectivity_penalty: Penalty for degenerate (near-zero effective gain) connections
 - ach_ratio_penalty: Penalty for β2/α7 cholinergic current ratio deviating from ~35
 """
@@ -19,27 +18,33 @@ from typing import Optional
 import numpy as np
 
 from .simulation import NoiseType
-from .jacobian import compute_jacobian, _total_inputs, _phi_derivative
+from .jacobian import compute_jacobian
 from .params import CircuitParams
 
 
 @dataclass(frozen=True)
 class TargetRates:
-    """Target mean firing rates for optimization."""
+    """Target mean firing rates for optimization (5 populations).
+
+    Global KO targets (all measured on PYR):
+      - alpha7_ko_pyr: global α7-KO (all per-cell α7 zeroed)
+      - alpha5_ko_pyr, beta2_ko_pyr: global α5 / β2 KO
+    """
     mean_r_pyr: float
     mean_r_som: float
     mean_r_pv: float
     mean_r_vip: float
+    mean_r_ndnf: float = 0.0
 
-    # Optional knockout targets
     alpha7_ko_pyr: Optional[float] = None
     alpha5_ko_pyr: Optional[float] = None
     beta2_ko_pyr: Optional[float] = None
 
     def as_array(self) -> np.ndarray:
-        """Return base targets as array [pyr, som, pv, vip]."""
+        """Return base targets as array [pyr, som, pv, vip, ndnf]."""
         return np.array(
-            [self.mean_r_pyr, self.mean_r_som, self.mean_r_pv, self.mean_r_vip],
+            [self.mean_r_pyr, self.mean_r_som, self.mean_r_pv,
+             self.mean_r_vip, self.mean_r_ndnf],
             dtype=float,
         )
 
@@ -148,47 +153,18 @@ def loss_from_ko_pyr(
     return mse + near_zero_weight * near_zero + min_effect_weight * min_effect + wrong_direction_weight * wrong_dir
 
 
-def transfer_function_slope(
-    params: CircuitParams,
-    r_ss: np.ndarray,
-    population: str = "PYR",
-) -> float:
-    """Return Φ'(I*) — the full transfer-function derivative at the operating point.
-
-    Uses ``_total_inputs`` to recover the steady-state input current I* from the
-    steady-state rates ``r_ss``, then evaluates the Wong-Wang derivative.
-
-    Parameters
-    ----------
-    params : CircuitParams
-    r_ss   : steady-state firing rates [pyr, som, pv, vip] (Hz)
-    population : one of "PYR", "SOM", "PV", "VIP"
-    """
-    I_pyr, I_som, I_pv, I_vip = _total_inputs(params, r_ss)
-    if population == "PYR":
-        return _phi_derivative(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc)
-    if population == "SOM":
-        return _phi_derivative(I_som, theta=params.Theta_som, c=params.alpha_som, g=params.g_inh)
-    if population == "PV":
-        return _phi_derivative(I_pv, theta=params.Theta_pv, c=params.alpha_pv, g=params.g_inh)
-    if population == "VIP":
-        return _phi_derivative(I_vip, theta=params.Theta_vip, c=params.alpha_vip, g=params.g_inh)
-    raise ValueError(f"Unknown population: {population!r}")
-
-
 # Core connections that must have non-negligible effective gain.
-# (row=target_pop, col=source_pop) in the Jacobian, population order: PYR=0 SOM=1 PV=2 VIP=3
-# This is a subset of jacobian._CONNECTIONS: the latter lists every connection we
-# *expect* to be present (for sanity-check reporting); this list narrows to the
-# ones whose absence would make the circuit degenerate and is used by the loss.
+# Population order in the Jacobian: PYR=0 SOM=1 PV=2 VIP=3 NDNF=4.
 _REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
-    (0, 0),  # PYR → PYR
-    (1, 0),  # PYR → SOM
-    (2, 0),  # PYR → PV
-    (0, 1),  # SOM → PYR
-    (0, 2),  # PV  → PYR
-    (2, 2),  # PV  → PV  (self-inhibition)
-    (1, 3),  # VIP → SOM
+    (0, 0),  # PYR  → PYR
+    (1, 0),  # PYR  → SOM
+    (2, 0),  # PYR  → PV
+    (4, 0),  # PYR  → NDNF
+    (0, 1),  # SOM  → PYR
+    (0, 2),  # PV   → PYR
+    (2, 2),  # PV   → PV
+    (1, 3),  # VIP  → SOM
+    (0, 4),  # NDNF → PYR
 ]
 
 

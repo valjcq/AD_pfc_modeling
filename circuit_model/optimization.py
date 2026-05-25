@@ -26,13 +26,16 @@ from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty, transfer_function_slope
+from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty
 from .io import log_best_result, save_params_json
 
 
 @dataclass
 class KOMeans:
-    """Container for knockout condition mean firing rates."""
+    """Container for knockout condition mean firing rates (shape (5,) each).
+
+    Global KOs zero a receptor everywhere it acts.
+    """
     alpha7_ko: Optional[np.ndarray] = None
     alpha5_ko: Optional[np.ndarray] = None
     beta2_ko: Optional[np.ndarray] = None
@@ -59,13 +62,12 @@ class LossBreakdown:
     firing_rate: float
     ko_firing_rate: float
     jacobian: float
-    turing: float
     ach_ratio: float
     total: float
 
     def __str__(self) -> str:
         return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_firing_rate:.3g}, "
-                f"jac={self.jacobian:.3g}, turing={self.turing:.3g}, "
+                f"jac={self.jacobian:.3g}, "
                 f"ach={self.ach_ratio:.3g}, total={self.total:.3g}]")
 
 
@@ -81,7 +83,7 @@ def run_trials(params: CircuitParams, cfg: FitConfig, base_seed: int) -> tuple[b
     means_trials: list[np.ndarray] = []
 
     for _ in range(cfg.n_trials):
-        r0 = cfg.init_rate_scale * rng.lognormal(mean=0.0, sigma=0.6, size=4)
+        r0 = cfg.init_rate_scale * rng.lognormal(mean=0.0, sigma=0.6, size=5)
         seed = int(rng.integers(0, 2**31 - 1))
 
         res = simulate_circuit(
@@ -118,12 +120,13 @@ def _build_conditions(
     rng: np.random.Generator,
 ) -> list[tuple[str, CircuitParams, FitConfig, int]]:
     """Build list of (name, params, cfg, seed) conditions to simulate."""
+    alpha7_all_off = dict(act_alpha7_pv=0.0, act_alpha7_som=0.0, act_alpha7_ndnf=0.0)
     conditions: list[tuple[str, CircuitParams, FitConfig, int]] = [
         ("base", params, cfg, int(rng.integers(0, 2**31 - 1))),
-        # KO conditions always simulated for display; only enter the loss if target has KO fields set
-        ("alpha7_ko", replace(params, act_alpha7=0.0, g_alpha7=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
-        ("alpha5_ko", replace(params, act_alpha5=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
-        ("beta2_ko",  replace(params, act_beta2=0.0),  cfg, int(rng.integers(0, 2**31 - 1))),
+        # Global KO conditions; only enter the loss if the matching target is set.
+        ("alpha7_ko", replace(params, **alpha7_all_off),  cfg, int(rng.integers(0, 2**31 - 1))),
+        ("alpha5_ko", replace(params, act_alpha5=0.0),    cfg, int(rng.integers(0, 2**31 - 1))),
+        ("beta2_ko",  replace(params, act_beta2=0.0),     cfg, int(rng.integers(0, 2**31 - 1))),
     ]
     return conditions
 
@@ -136,23 +139,19 @@ def _loss_from_results(
     *,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 2.0,
-    turing_margin: float = 0.05,
-    turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Compute total loss from a list of condition simulation results.
-    
+
     Returns:
         Tuple of (total_loss, base_means, ko_means, breakdown).
     """
     ko_means = KOMeans()
-    base_means = np.zeros(4, dtype=float)
+    base_means = np.zeros(5, dtype=float)
 
     for name, ok, means in results:
         if not ok:
-            return 1e9, base_means, ko_means, LossBreakdown(1e9, 0., 0., 0., 0., 1e9)
+            return 1e9, base_means, ko_means, LossBreakdown(1e9, 0., 0., 0., 1e9)
         if name == "base":
             base_means = means
         elif name == "alpha7_ko":
@@ -197,24 +196,12 @@ def _loss_from_results(
     # Jacobian connectivity penalty
     jac_loss = jacobian_connectivity_penalty(params, base_means) * jacobian_weight
 
-    # Turing instability penalty
-    turing_loss = 0.0
-    if turing_weight > 0.0:
-        from dataclasses import replace as _replace
-        w = turing_w_inter_ref
-        slope_rest = transfer_function_slope(params, base_means, population="PYR")
-        params_cue = _replace(params, I0_pyr=turing_cue_scale * params.I0_pyr)
-        slope_cue  = transfer_function_slope(params_cue, base_means, population="PYR")
-        t_loss = (max(0.0, slope_rest * w - (1.0 - turing_margin)) ** 2
-                + max(0.0, 1.0 + turing_margin - slope_cue * w) ** 2)
-        turing_loss = turing_weight * t_loss
-
     # ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 should be ~35× α7 on SOM)
     ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
 
-    total = fr_loss + ko_firing_rate + jac_loss + turing_loss + ach_loss
+    total = fr_loss + ko_firing_rate + jac_loss + ach_loss
     breakdown = LossBreakdown(firing_rate=fr_loss, ko_firing_rate=ko_firing_rate,
-                               jacobian=jac_loss, turing=turing_loss, ach_ratio=ach_loss, total=total)
+                               jacobian=jac_loss, ach_ratio=ach_loss, total=total)
 
     return total, base_means, ko_means, breakdown
 
@@ -228,14 +215,10 @@ def evaluate_params(
     executor: Optional[ProcessPoolExecutor] = None,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 2.0,
-    turing_margin: float = 0.05,
-    turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Evaluate a parameter set under baseline and knockout conditions.
-    
+
     Returns:
         Tuple of (total_loss, means, ko_means, breakdown).
     """
@@ -244,24 +227,12 @@ def evaluate_params(
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg, params, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
-
-
-def evaluate_params(
-    params: CircuitParams,
-    target: TargetRates,
-    cfg: FitConfig,
-    *,
-    rng: np.random.Generator,
-    executor: Optional[ProcessPoolExecutor] = None,
-) -> tuple[float, np.ndarray, KOMeans]:
-    """Evaluate a parameter set under baseline and knockout conditions."""
-    conditions = _build_conditions(params, target, cfg, rng)
-    if executor is not None and len(conditions) > 1:
-        results = list(executor.map(run_condition, conditions))
-    else:
-        results = [run_condition(c) for c in conditions]
-    return _loss_from_results(results, target, cfg)
+    return _loss_from_results(
+        results, target, cfg, params,
+        squared_loss=squared_loss,
+        jacobian_weight=jacobian_weight,
+        ach_ratio_weight=ach_ratio_weight,
+    )
 
 
 def build_nevergrad_parametrization(
@@ -321,7 +292,7 @@ def _build_optimizer(
     - ``auto``     — NGOpt: Nevergrad's meta-optimizer that selects the algorithm
                      based on problem dimension and budget automatically.
     """
-    if name == "de":
+    if name in ("de", "twopointde", "TwoPointsDE"):
         return ng.optimizers.TwoPointsDE(
             parametrization=parametrization, budget=budget, num_workers=num_workers,
         )
@@ -344,7 +315,9 @@ def _build_optimizer(
             parametrization=parametrization, budget=budget, num_workers=num_workers,
         )
     else:
-        raise ValueError(f"Unknown optimizer '{name}'. Choose: de, cma, chaining, auto.")
+        raise ValueError(
+            f"Unknown optimizer '{name}'. Choose: de (alias: twopointde), cma, chaining, auto."
+        )
 
 
 def nevergrad_optimize(
@@ -365,12 +338,7 @@ def nevergrad_optimize(
     append_log: bool = False,
     squared_loss: bool = True,
     jacobian_weight: float = 1.0,
-    turing_weight: float = 2.0,
-    turing_margin: float = 0.05,
-    turing_w_inter_ref: float = 10.0,
-    turing_cue_scale: float = 0.4,
     ach_ratio_weight: float = 2.0,
-    bistable_cfg: Optional[Any] = None,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -398,19 +366,11 @@ def nevergrad_optimize(
         target.beta2_ko_pyr is not None,
     ])
 
-    # Compute how many candidates to evaluate in parallel (batch mode).
-    # total_workers = total concurrent simulation slots;
-    # batch_size = candidates per step = total_workers // n_conditions.
-    if n_workers in (None, 0):
-        total_workers = os.cpu_count() or 4
-    elif n_workers == 1:
-        total_workers = 1
-    else:
-        total_workers = n_workers
-
-    use_parallel = total_workers > 1
-    batch_size = max(1, total_workers // n_conditions)
-    max_workers = batch_size * n_conditions
+    # Parallel batching is not currently wired up to the main loop below.
+    # Run sequentially.
+    use_parallel = False
+    max_workers = 1
+    batch_size = 1
 
     parametrization = build_nevergrad_parametrization(base, bounds, freeze)
     ng_optimizer = _build_optimizer(optimizer, parametrization, n_samples, num_workers=1)
@@ -446,29 +406,20 @@ def nevergrad_optimize(
 
             x = ng_optimizer.ask()
             p = params_from_ng_dict(x.value, base)
-            sim_ran = False  # Track if simulation ran at this step
 
-            if bistable_cfg is not None:
-                # Bistable mode: use bistable loss directly with component breakdown.
-                # We no longer run periodic simulation inside the main loop.
-                from .bistable_loss import bistable_loss as _bistable_loss
-                L, bistable_components = _bistable_loss(p, bistable_cfg, return_components=True)
-                L = float(L)
-                means = np.full(4, np.nan)
-                ko_means = KOMeans()
-
-                # For bistable mode, pass the detailed component breakdown dict
-                breakdown = bistable_components
-            else:
-                # Standard mode: simulate and compute loss
-                cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
-                L, means, ko_means, breakdown = _loss_from_results(cond_results, target, fit_cfg, p, squared_loss=squared_loss, jacobian_weight=jacobian_weight, turing_weight=turing_weight, turing_margin=turing_margin, turing_w_inter_ref=turing_w_inter_ref, turing_cue_scale=turing_cue_scale, ach_ratio_weight=ach_ratio_weight)
-                sim_ran = True  # Standard mode always simulates
+            cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
+            L, means, ko_means, breakdown = _loss_from_results(
+                cond_results, target, fit_cfg, p,
+                squared_loss=squared_loss,
+                jacobian_weight=jacobian_weight,
+                ach_ratio_weight=ach_ratio_weight,
+            )
 
             ng_optimizer.tell(x, L)
 
             prev_best_loss = best[0].loss if best else float("inf")
-            cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p, breakdown=breakdown, simulated=sim_ran)
+            cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p,
+                             breakdown=breakdown, simulated=True)
             if len(best) < top_k:
                 best.append(cand)
                 best.sort(key=lambda c: c.loss)
@@ -476,30 +427,16 @@ def nevergrad_optimize(
                 best[-1] = cand
                 best.sort(key=lambda c: c.loss)
 
-            if best[0].loss < prev_best_loss:
-                # In bistable mode, log immediately when we find a new best.
-                if bistable_cfg is not None and log_file:
-                    # Ensure best[0] has firing rates before logging
-                    best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-                    _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
-
-            # Update progress bar: show best loss only
             pbar.set_postfix({"loss": f"{best[0].loss:.4g}" if best else "N/A"})
 
             if save_best_json and best and best[0].loss < prev_best_loss:
                 save_params_json(save_best_json, best[0].params)
 
             if log_file and step % log_interval == 0 and best:
-                # In bistable mode, ensure firing rates are available before logging
-                best_to_log = best[0]
-                if bistable_cfg is not None:
-                    best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-                _log_candidate(log_file, step + step_offset, best_to_log, target, best_to_log.breakdown)
-                # Generate loss evolution plots every log_interval steps
+                _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
                 try:
                     _generate_loss_plots(log_file)
                 except Exception:
-                    # Don't break optimization if plotting fails
                     pass
     except KeyboardInterrupt:
         interrupted = True
@@ -508,19 +445,11 @@ def nevergrad_optimize(
         pbar.close()
 
     if log_file and best and last_step % log_interval != 0:
-        # In bistable mode, ensure firing rates are available before logging
-        best_to_log = best[0]
-        if bistable_cfg is not None:
-            best_to_log = _ensure_means_from_simulation(best[0], target, fit_cfg, rng)
-        _log_candidate(log_file, last_step + step_offset, best_to_log, target, best_to_log.breakdown)
+        _log_candidate(log_file, last_step + step_offset, best[0], target, best[0].breakdown)
         try:
             _generate_loss_plots(log_file)
         except Exception:
             pass
-
-    # Fill in firing rates for any top candidates that were found on non-simulation steps
-    if bistable_cfg is not None:
-        best = [_ensure_means_from_simulation(c, target, fit_cfg, rng) for c in best]
 
     if interrupted and best:
         print(f"Best-so-far loss after interruption: {best[0].loss:.4g}")
@@ -551,34 +480,6 @@ def _generate_loss_plots(log_file: str) -> None:
         pass
 
 
-def _ensure_means_from_simulation(
-    cand: Candidate,
-    target: TargetRates,
-    fit_cfg: FitConfig,
-    rng: np.random.Generator,
-) -> Candidate:
-    """If candidate hasn't been simulated yet, run simulation to get firing rates.
-
-    Returns:
-        New candidate with firing rates, or original if already simulated.
-    """
-    if cand.simulated:
-        # Already has firing rates from simulation
-        return cand
-
-    # Run simulation to get firing rates
-    try:
-        cond_results = [run_condition(c) for c in _build_conditions(cand.params, target, fit_cfg, rng)]
-        _, means_sim, ko_means, _ = _loss_from_results(
-            cond_results, target, fit_cfg, cand.params,
-            squared_loss=True,
-        )
-        return Candidate(loss=cand.loss, means=means_sim, ko_means=ko_means, params=cand.params, breakdown=cand.breakdown, simulated=True)
-    except Exception:
-        # If simulation fails, return original with NaN
-        return cand
-
-
 def _log_candidate(
     path: str,
     step: int,
@@ -588,36 +489,26 @@ def _log_candidate(
 ) -> None:
     """Helper to log a candidate result."""
     means_dict = {
-        "pyr": float(cand.means[0]),
-        "som": float(cand.means[1]),
-        "pv": float(cand.means[2]),
-        "vip": float(cand.means[3]),
+        "pyr":  float(cand.means[0]),
+        "som":  float(cand.means[1]),
+        "pv":   float(cand.means[2]),
+        "vip":  float(cand.means[3]),
+        "ndnf": float(cand.means[4]),
     }
     ko_means_dict = {
         "alpha7_ko": cand.ko_means.alpha7_ko.tolist() if cand.ko_means.alpha7_ko is not None else None,
         "alpha5_ko": cand.ko_means.alpha5_ko.tolist() if cand.ko_means.alpha5_ko is not None else None,
-        "beta2_ko": cand.ko_means.beta2_ko.tolist() if cand.ko_means.beta2_ko is not None else None,
+        "beta2_ko":  cand.ko_means.beta2_ko.tolist()  if cand.ko_means.beta2_ko  is not None else None,
     }
     breakdown_dict = None
     if breakdown is not None:
-        # Handle both LossBreakdown objects (standard mode) and dicts (bistable mode)
-        if isinstance(breakdown, LossBreakdown):
-            # Only include components that have non-zero values (non-zero weight)
-            breakdown_dict = {
-                "total": float(breakdown.total),
-            }
-            # Add loss components only if they're non-zero (indicating active weight)
-            if breakdown.firing_rate > 0:
-                breakdown_dict["firing_rate"] = float(breakdown.firing_rate)
-            if breakdown.ko_firing_rate > 0:
-                breakdown_dict["ko_firing_rate"] = float(breakdown.ko_firing_rate)
-            if breakdown.jacobian > 0:
-                breakdown_dict["jacobian"] = float(breakdown.jacobian)
-            if breakdown.turing > 0:
-                breakdown_dict["turing"] = float(breakdown.turing)
-            if breakdown.ach_ratio > 0:
-                breakdown_dict["ach_ratio"] = float(breakdown.ach_ratio)
-        elif isinstance(breakdown, dict):
-            # Bistable mode: use the dict directly (already has L_bistab, L_rate, etc.)
-            breakdown_dict = breakdown
+        breakdown_dict = {"total": float(breakdown.total)}
+        if breakdown.firing_rate > 0:
+            breakdown_dict["firing_rate"] = float(breakdown.firing_rate)
+        if breakdown.ko_firing_rate > 0:
+            breakdown_dict["ko_firing_rate"] = float(breakdown.ko_firing_rate)
+        if breakdown.jacobian > 0:
+            breakdown_dict["jacobian"] = float(breakdown.jacobian)
+        if breakdown.ach_ratio > 0:
+            breakdown_dict["ach_ratio"] = float(breakdown.ach_ratio)
     log_best_result(path, step, cand.loss, means_dict, ko_means_dict, cand.params, target, breakdown_dict)

@@ -16,6 +16,7 @@ GAMMA_NMDA = 0.641    # dimensionless
 
 # Hyperbolic soft ceiling for interneuron transfer functions (Hz)
 # Set to 2 × Rooy 2021 high-state targets (see docs/transfer_function_ceiling.md)
-R_MAX_PV  = 70.6   # Hz  (2 × 35.3)
-R_MAX_SOM = 70.4   # Hz  (2 × 35.2)
-R_MAX_VIP = 137.6  # Hz  (2 × 68.8)
+R_MAX_PV   = 70.6   # Hz  (2 × 35.3)
+R_MAX_SOM  = 70.4   # Hz  (2 × 35.2)
+R_MAX_VIP  = 137.6  # Hz  (2 × 68.8)
+R_MAX_NDNF = 70.0   # Hz  (placeholder, TODO: refine from literature)

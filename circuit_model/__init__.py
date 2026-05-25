@@ -1,34 +1,30 @@
 """
-PFC Circuit Model: 4-Population Rate Model with Parameter Optimization.
+PFC Circuit Model: 5-Population Rate Model with Parameter Optimization.
 
 This package implements a computational model of the prefrontal cortex (PFC)
-microcircuit with 4 neural populations (stored in arrays as [PYR, SOM, PV, VIP]):
-- PYR: Pyramidal cells (excitatory)
-- SOM: Somatostatin interneurons (inhibitory, dendritic targeting)
-- PV: Parvalbumin interneurons (fast-spiking inhibitory)
-- VIP: VIP interneurons (inhibitory, disinhibitory)
+microcircuit with 5 neural populations (stored in arrays as [PYR, SOM, PV, VIP, NDNF]):
+- PYR:  Pyramidal cells (excitatory)
+- SOM:  Somatostatin interneurons (subtractive dendritic inhibition)
+- PV:   Parvalbumin interneurons (fast-spiking, divisive/shunting inhibition)
+- VIP:  VIP interneurons (disinhibitory)
+- NDNF: NDNF interneurons (subtractive dendritic inhibition; α7+β2 receptors)
 
 The model uses the Wong-Wang transfer function and supports:
-- Nevergrad-based parameter optimization
-- Nicotinic receptor knockout simulations (alpha7, alpha5, beta2)
+- Nevergrad-based parameter optimization with TwoPointsDE
+- Nicotinic receptor knockout simulations (global α7, α5, β2)
 - Multiple noise types (white, Ornstein-Uhlenbeck)
-- Ring attractor network for working memory (see circuit_model.ring)
 
 Usage:
-    # Single-node circuit
     from circuit_model import CircuitParams, simulate_circuit, mean_rates
 
     params = CircuitParams()
     result = simulate_circuit(params, T_ms=1000)
     rates = mean_rates(result, burn_in_ms=500, window_ms=500)
 
-    # Ring attractor network
-    from circuit_model.ring import RingParams, simulate_ring, RingStimulus
-
     # From command line
-    python -m circuit_model run                    # single-node simulation
-    python -m circuit_model ring-run               # ring attractor simulation
-    python -m circuit_model ring-optimize          # joint circuit + ring fit
+    python -m circuit_model run
+    python -m circuit_model optimize --target_pyr 4 --target_som 3 --target_pv 2 \\
+        --target_vip 2 --target_ndnf 3 --optimizer twopointde
 """
 
 from .params import CircuitParams, ParamBound, default_bounds

@@ -166,8 +166,8 @@ class StudyConfig:
 class StudyResults:
     """Container for batch study results."""
     conditions: list[str]  # Condition keys in order
-    population_names: list[str]  # ["PYR", "SOM", "PV", "VIP"]
-    data: dict[str, np.ndarray]  # condition_key -> (n_runs, 4) array
+    population_names: list[str]  # ["PYR", "SOM", "PV", "VIP", "NDNF"]
+    data: dict[str, np.ndarray]  # condition_key -> (n_runs, 5) array
     config: StudyConfig
 
 
@@ -208,7 +208,10 @@ def apply_condition(
         chosen = app_params if condition.is_app else base_params
         kwargs: dict = {}
         if condition.ko_alpha7:
-            kwargs['act_alpha7'] = 0.0
+            # Global α7-KO: zero α7 on all cell types
+            kwargs['act_alpha7_pv'] = 0.0
+            kwargs['act_alpha7_som'] = 0.0
+            kwargs['act_alpha7_ndnf'] = 0.0
             if condition.g_alpha7 is not None:
                 kwargs['g_alpha7'] = condition.g_alpha7
         if condition.ko_alpha5:
@@ -238,10 +241,15 @@ def apply_condition(
         act_a5 = act_alpha5_dist.sample(rng)
         act_b2 = act_beta2_dist.sample(rng)
 
+    # Single-params mode: the ExperimentalCondition still carries a single
+    # act_alpha7 value (no per-cell selectivity at the study level); broadcast
+    # it to the per-cell fields.
     kwargs = {
-        'act_alpha7': act_a7,
+        'act_alpha7_pv':   act_a7,
+        'act_alpha7_som':  act_a7,
+        'act_alpha7_ndnf': act_a7,
         'act_alpha5': act_a5,
-        'act_beta2': act_b2,
+        'act_beta2':  act_b2,
     }
     if condition.g_alpha7 is not None:
         kwargs['g_alpha7'] = condition.g_alpha7
@@ -422,7 +430,7 @@ def run_study(
         if verbose:
             means = data[cond_key].mean(axis=0)
             print(f"  Mean rates: PYR={means[0]:.2f}, SOM={means[1]:.2f}, "
-                  f"PV={means[2]:.2f}, VIP={means[3]:.2f}")
+                  f"PV={means[2]:.2f}, VIP={means[3]:.2f}, NDNF={means[4]:.2f}")
 
     return StudyResults(
         conditions=CONDITION_ORDER,
@@ -463,8 +471,14 @@ def plot_study_boxplots(
 
     n_conditions = len(results.conditions)
 
-    fig, axes = plt.subplots(2, 2, figsize=figsize, constrained_layout=True)
+    n_pops = len(POPULATION_NAMES)
+    n_cols = 3
+    n_rows = (n_pops + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, constrained_layout=True)
     axes = axes.flatten()
+    # Hide unused subplot(s)
+    for i in range(n_pops, len(axes)):
+        axes[i].set_visible(False)
 
     # Condition labels
     condition_labels = [STUDY_CONDITIONS[k].name for k in results.conditions]

@@ -53,6 +53,12 @@ def load_params_json(path: str) -> "CircuitParams":
     elif "w_ee" in d:
         d.pop("w_ee")  # discard stale key if J_NMDA already present
 
+    # Migrate scalar act_alpha7 (legacy 4-population model) → per-cell α7 fields.
+    if "act_alpha7" in d:
+        a7 = d.pop("act_alpha7")
+        for k in ("act_alpha7_pv", "act_alpha7_som", "act_alpha7_ndnf"):
+            d.setdefault(k, a7)
+
     base = CircuitParams()
     allowed = {fld.name for fld in fields(CircuitParams)}
     clean = {k: d[k] for k in d if k in allowed}
@@ -87,7 +93,7 @@ def build_fit_comparison(
     - ``comparison``: nested dict {condition: {pop: {actual, target, error_pct}}}
     - ``jacobian`` (if provided): {pop: {pop: gain}} where J[i,j] = dr_i/dr_j
     """
-    pops = ["PYR", "SOM", "PV", "VIP"]
+    pops = ["PYR", "SOM", "PV", "VIP", "NDNF"]
     tgt_arr = target.as_array()
 
     def _entry(actual: float, tgt: float) -> dict:
@@ -122,11 +128,12 @@ def build_fit_comparison(
 
     if jacobian is not None:
         # J[i,j] = dr_i/dr_j  (row=target population, col=source population)
+        n = jacobian.shape[0]
         out["jacobian"] = {
             "_note": "J[row,col] = dr_row/dr_col: effect of col population on row population",
             **{
-                pops[i]: {pops[j]: round(float(jacobian[i, j]), 6) for j in range(4)}
-                for i in range(4)
+                pops[i]: {pops[j]: round(float(jacobian[i, j]), 6) for j in range(n)}
+                for i in range(n)
             },
         }
 
@@ -173,7 +180,7 @@ def save_fit_summary_txt(
 
     txt_path = str(Path(json_path).with_suffix(".txt"))
     name = Path(json_path).name
-    pops = ["PYR", "SOM", "PV", "VIP"]
+    pops = ["PYR", "SOM", "PV", "VIP", "NDNF"]
     W = 80       # wide enough for connection-details lines
     SEP = "  " + "─" * (W - 2)
 
@@ -238,12 +245,12 @@ def save_fit_summary_txt(
     # ── Transfer function parameters ────────────────────────────────────────
     if params is not None:
         lines.append("  TRANSFER FUNCTION  Phi(I) = c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))")
-        lines.append(f"  Curvature: g_exc (PYR) = {params.g_exc:.4f}   g_inh (SOM/PV/VIP) = {params.g_inh:.4f}")
+        lines.append(f"  Curvature: g_exc (PYR) = {params.g_exc:.4f}   g_inh (SOM/PV/VIP/NDNF) = {params.g_inh:.4f}")
         lines.append(SEP)
-        lines.append(f"  {'':8}{'PYR':>10}{'SOM':>10}{'PV':>10}{'VIP':>10}")
+        lines.append(f"  {'':8}{'PYR':>10}{'SOM':>10}{'PV':>10}{'VIP':>10}{'NDNF':>10}")
         lines.append(SEP)
-        lines.append(f"  {'Theta':8}{params.Theta_pyr:>10.3f}{params.Theta_som:>10.3f}{params.Theta_pv:>10.3f}{params.Theta_vip:>10.3f}")
-        lines.append(f"  {'alpha':8}{params.alpha_pyr:>10.4f}{params.alpha_som:>10.4f}{params.alpha_pv:>10.4f}{params.alpha_vip:>10.4f}")
+        lines.append(f"  {'Theta':8}{params.Theta_pyr:>10.3f}{params.Theta_som:>10.3f}{params.Theta_pv:>10.3f}{params.Theta_vip:>10.3f}{params.Theta_ndnf:>10.3f}")
+        lines.append(f"  {'alpha':8}{params.alpha_pyr:>10.4f}{params.alpha_som:>10.4f}{params.alpha_pv:>10.4f}{params.alpha_vip:>10.4f}{params.alpha_ndnf:>10.4f}")
         lines.append(SEP)
         lines.append("")
 
@@ -251,7 +258,8 @@ def save_fit_summary_txt(
     jac = fit_meta.get("jacobian")
     if jac:
         # Reconstruct J matrix from stored dict
-        J = np.zeros((4, 4))
+        n = len(pops)
+        J = np.zeros((n, n))
         for i, rp in enumerate(pops):
             for j, cp in enumerate(pops):
                 J[i, j] = jac.get(rp, {}).get(cp, 0.0)
@@ -264,7 +272,7 @@ def save_fit_summary_txt(
         lines.append("  " + " " * 6 + "".join(f"{p:>{col_w}}" for p in pops))
         lines.append(SEP)
         for i, row_pop in enumerate(pops):
-            vals = "".join(f"{J[i, j]:+{col_w}.4f}" for j in range(4))
+            vals = "".join(f"{J[i, j]:+{col_w}.4f}" for j in range(n))
             lines.append(f"  {row_pop:<6}{vals}")
         lines.append(SEP)
         lines.append("")

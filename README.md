@@ -1,16 +1,11 @@
-# PFC Circuit Model: 4-Population Rate Model with Ring Attractor
+# PFC Circuit Model: 5-Population Rate Model (NDNF branch)
 
-A computational model of the prefrontal cortex (PFC) microcircuit implementing a 4-population rate model with Nevergrad-based parameter optimization and a ring attractor network for spatial working memory.
+A single-node rate model of the prefrontal cortex (PFC) microcircuit with five populations (PYR, SOM, PV, VIP, NDNF) and Nevergrad-based parameter optimization.
 
 **Documentation:**
 - [CLI Reference](docs/CLI.md) — all commands and parameters
-- [Ring Attractor Model](docs/ring_attractor.md) — mathematical formulation of the ring network
-- [Ring Experiments](docs/ring_experiments.md) — analysis protocols and metrics
-- [Bistable Loss Guide](docs/bistable_loss_guide.md) — single-node bistable optimizer
 - [Loss Math Deep Dive](docs/loss_math_deep_dive.md) — step-by-step derivation of every loss term
 - [Transfer Function Ceiling](docs/transfer_function_ceiling.md) — NMDA gating and interneuron soft caps
-- [Self-Consistent Interneuron Solve](docs/interneuron_selfconsistent_solve.md) — how the nullcline solver works
-- [Single-Node → Ring Conversion](docs/sing_node_fit_to_ring.md) — row-sum derivation of ring kernels
 
 ---
 
@@ -41,6 +36,7 @@ The prefrontal cortex (PFC) is critical for executive functions including workin
 | **PV** | Parvalbumin interneurons | Parvalbumin | 4, 2/3 | Fast-spiking; provide perisomatic inhibition; regulate spike timing and gamma oscillations |
 | **SOM** | Somatostatin interneurons | Somatostatin | 1, 2/3 | Target dendrites; provide dendritic inhibition; gate synaptic inputs |
 | **VIP** | VIP interneurons | Vasoactive intestinal peptide | 1, 2/3 | Preferentially inhibit SOM cells; mediate disinhibition of PYR |
+| **NDNF** | NDNF interneurons | Neuron-derived neurotrophic factor | 1 | Subtractive dendritic inhibition (like SOM); expresses α7 + β2 nAChRs; receives PYR + SOM; projects to PYR dendrites, PV, VIP |
 
 ### Key Circuit Motifs
 
@@ -73,23 +69,24 @@ SOM interneurons provide dendritic inhibition that:
 The model implements the following synaptic weight matrix (`w_XY` = weight from population Y to population X). PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`:
 
 ```
-                       FROM
-              PYR        PV      SOM     VIP
-          ┌──────────────────────────────────┐
-   T  PYR │ J_NMDA·S*   w_pe    w_se    —    │  (NMDA recurrence ÷ PV shunting − SOM dendritic)
-   O  PV  │ w_ep        w_pp    w_sp    w_vp │  (excitation from PYR, mutual inhibition)
-      SOM │ w_es        —       —       w_vs │  (excitation from PYR, inhibition from VIP)
-      VIP │ w_ev        —       —       —    │  (weak excitation from PYR, no local inhibition)
-          └──────────────────────────────────┘
+                              FROM
+              PYR        PV      SOM     VIP    NDNF
+          ┌────────────────────────────────────────────┐
+   T  PYR │ J_NMDA·S*   w_pe    w_se    —      w_en    │  (NMDA ÷ PV shunting − SOM/NDNF dendritic)
+   O  PV  │ w_ep        w_pp    w_sp    w_vp   w_pn    │  (PYR drive, mutual + NDNF inhibition)
+      SOM │ w_es        —       —       w_vs   —       │  (PYR drive, VIP inhibition)
+      VIP │ w_ev        —       —       —      w_vn    │  (PYR drive, NDNF inhibition)
+      NDNF│ w_ne        —       w_ns    —      —       │  (PYR drive, SOM inhibition)
+          └────────────────────────────────────────────┘
 ```
 
-PV→PYR enters the PYR input *divisively* (shunting) rather than as a subtraction; see the input-current equations below.
+PV→PYR enters the PYR input *divisively* (shunting) rather than as a subtraction. All other inhibitory connections are subtractive and scaled by `g_gaba`.
 
 ### Notation Convention
-- **First letter**: target population (e = excitatory/PYR, p = PV, s = SOM, v = VIP)
+- **First letter**: target population (e = excitatory/PYR, p = PV, s = SOM, v = VIP, n = NDNF)
 - **Second letter**: source population
 
-Example: `w_es` = weight from PYR (e) to SOM (s). `J_NMDA` replaces the legacy `w_ee` (a one-shot JSON migration in `io.load_params_json` rescales any old `w_ee` field by ×10; see [io.py](circuit_model/io.py)).
+Example: `w_es` = weight from PYR (e) to SOM (s); `w_en` = weight from NDNF (n) to PYR (e). `J_NMDA` replaces the legacy `w_ee` (a one-shot JSON migration in `io.load_params_json` rescales any old `w_ee` field by ×10; see [io.py](circuit_model/io.py)).
 
 ---
 
@@ -118,17 +115,17 @@ Parameters:
 - `c` (alpha): gain/slope parameter
 - `g`: curvature parameter (`g_exc` for PYR, `g_inh` for interneurons)
 
-All six constants are **fixed from W&W 2006** and not optimised: `alpha_pyr = 310 Hz/nA`, `Theta_pyr = 125/310 ≈ 0.403 nA`, `g_exc = 0.16 s`, `alpha_{pv,som,vip} = 615 Hz/nA`, `Theta_{pv,som,vip} = 177/615 ≈ 0.288 nA`, `g_inh = 0.087 s`.
+All six constants are **fixed from W&W 2006** and not optimised: `alpha_pyr = 310 Hz/nA`, `Theta_pyr = 125/310 ≈ 0.403 nA`, `g_exc = 0.16 s`, `alpha_{pv,som,vip,ndnf} = 615 Hz/nA`, `Theta_{pv,som,vip,ndnf} = 177/615 ≈ 0.288 nA`, `g_inh = 0.087 s`.
 
-### Hyperbolic Soft Ceiling (PV, SOM, VIP)
+### Hyperbolic Soft Ceiling (PV, SOM, VIP, NDNF)
 
-To prevent pathological interneuron over-activation in extreme parameter regimes, PV, SOM, and VIP apply a soft ceiling to the Wong-Wang output:
+To prevent pathological interneuron over-activation in extreme parameter regimes, all four interneurons apply a soft ceiling to the Wong-Wang output:
 
 ```
 Φ_cap(I) = r_max · Φ(I) / (r_max + Φ(I))
 ```
 
-With `Φ ≪ r_max` the curve is unchanged; as `Φ → ∞` the rate asymptotes to `r_max`. The ceilings are 2 × the Rooy (2021) active-state targets: `r_max_PV = 70.6`, `r_max_SOM = 70.4`, `r_max_VIP = 137.6` Hz. PYR is **uncapped** — its saturation comes from NMDA gating below. See [docs/transfer_function_ceiling.md](docs/transfer_function_ceiling.md).
+With `Φ ≪ r_max` the curve is unchanged; as `Φ → ∞` the rate asymptotes to `r_max`. The ceilings are 2 × the Rooy (2021) active-state targets: `r_max_PV = 70.6`, `r_max_SOM = 70.4`, `r_max_VIP = 137.6`, `r_max_NDNF = 70.0` Hz (NDNF is a placeholder, TODO: refine). PYR is **uncapped** — its saturation comes from NMDA gating below. See [docs/transfer_function_ceiling.md](docs/transfer_function_ceiling.md).
 
 ### NMDA Gating Variable (PYR self-excitation)
 
@@ -152,12 +149,13 @@ S* = γ · τ_NMDA · r_PYR / (1 + γ · τ_NMDA · r_PYR)
 ```
 I_PYR = (J_NMDA · S*) / (1 + g_GABA · w_pe · r_PV)
         - g_GABA · w_se · r_SOM
+        - g_GABA · w_en · r_NDNF
         - I_adapt_PYR
         + I_ext_PYR
         + sigma_noise · I_ext_PYR · ξ(t)
 ```
 
-The divisive denominator implements **PV shunting inhibition** (perisomatic GABAergic synapses act on input resistance).
+The divisive denominator implements **PV shunting inhibition** (perisomatic GABAergic synapses act on input resistance). Both SOM and NDNF deliver subtractive dendritic inhibition.
 
 #### PV (Parvalbumin):
 ```
@@ -165,6 +163,7 @@ I_PV = w_ep · r_PYR
        - g_GABA · w_pp · r_PV
        - g_GABA · w_sp · r_SOM
        - w_vp · r_VIP
+       - g_GABA · w_pn · r_NDNF
        + I_ext_PV
        + sigma_noise · I_ext_PV · ξ(t)
 ```
@@ -181,8 +180,17 @@ I_SOM = w_es · r_PYR
 #### VIP:
 ```
 I_VIP = w_ev · r_PYR
+        - g_GABA · w_vn · r_NDNF
         + I_ext_VIP
         + sigma_noise · I_ext_VIP · ξ(t)
+```
+
+#### NDNF:
+```
+I_NDNF = w_ne · r_PYR
+         - g_GABA · w_ns · r_SOM
+         + I_ext_NDNF
+         + sigma_noise · I_ext_NDNF · ξ(t)
 ```
 
 ### Spike-Frequency Adaptation
@@ -201,34 +209,35 @@ Adaptation provides slow negative feedback that prevents runaway excitation and 
 
 The model includes modulation by three nicotinic acetylcholine receptor (nAChR) subtypes:
 
-### α7 nAChR (act_alpha7)
+### α7 nAChR — per-cell activation
 
-**Location:** Interneurons (PV, SOM)
+**Location:** PV, SOM, and NDNF interneurons. Each has its own activation multiplier so cell-type-selective α7 knockouts are possible.
 
-**Effects:**
-1. Increases external current to PV: `I_alpha7_pv`
-2. Increases external current to SOM: `I_alpha7_som`
-3. Enhances GABAergic transmission: `g_alpha7` (adds to `g_gaba_base`)
+| Parameter | Effect |
+|-----------|--------|
+| `act_alpha7_pv`   | Gates `I_alpha7_pv` on PV |
+| `act_alpha7_som`  | Gates `I_alpha7_som` on SOM |
+| `act_alpha7_ndnf` | Gates `I_alpha7_ndnf` on NDNF |
 
-**Mechanism:** α7 receptors are high-affinity, fast-desensitizing homomeric receptors. They enhance interneuron excitability and GABA release.
+GABA scaling: `g_gaba = g_gaba_base + g_alpha7 · mean(act_alpha7_pv, act_alpha7_som, act_alpha7_ndnf)`. Global α7-KO ⇒ all three at 0 ⇒ g_alpha7 term vanishes; a single-cell-type α7-KO reduces it by ~1/3.
 
-**Knockout (act_alpha7 = 0):**
-- Removes receptor-mediated currents to PV/SOM
-- Reduces GABA scaling (g_alpha7 → 0)
-- Typically increases PYR firing due to reduced inhibition
+**Knockouts simulated by the optimizer:**
+- Global α7-KO  (all three per-cell α7 = 0)
+- NDNF-selective α7-KO (`act_alpha7_ndnf = 0` only)
+- PV-selective   α7-KO (`act_alpha7_pv   = 0` only)
 
 ### β2 nAChR (act_beta2)
 
-**Location:** SOM interneurons
+**Location:** SOM and NDNF interneurons.
 
 **Effects:**
 1. Increases external current to SOM: `I_beta2_som`
+2. Increases external current to NDNF: `I_beta2_ndnf`
 
-**Mechanism:** β2-containing receptors (typically α4β2) are high-affinity, slowly desensitizing heteromeric receptors on SOM cells.
+**Mechanism:** β2-containing receptors (typically α4β2) are high-affinity, slowly desensitizing heteromeric receptors.
 
 **Knockout (act_beta2 = 0):**
-- Removes current to SOM
-- Reduces SOM activity
+- Removes β2 currents to SOM and NDNF
 - May increase PYR firing via reduced dendritic inhibition
 
 ### α5 nAChR (act_alpha5)
@@ -256,56 +265,32 @@ The code is organized as a unified Python package:
 circuit_model/
 ├── __init__.py             # Public API exports
 ├── __main__.py             # Entry point: python -m circuit_model
-├── constants.py            # R_MAX_PHYS, NMDA kinetics, interneuron ceilings
+├── constants.py            # R_MAX_PHYS, NMDA kinetics, interneuron ceilings (R_MAX_*)
 ├── defaults.py             # Default WT / WT_APP parameter JSON paths
-├── params.py               # CircuitParams, ParamBound, default_bounds()
+├── params.py               # CircuitParams (5-pop), ParamBound, default_bounds()
 ├── transfer.py             # phi_wong_wang(), phi_capped()
 ├── simulation.py           # simulate_circuit(), mean_rates(), validate_fast_loop()
-├── _fast_loop.py           # Numba-compiled Euler integrator for the single node
+├── _fast_loop.py           # Numba-compiled 5-pop Euler integrator
 ├── loss.py                 # TargetRates, FitConfig, loss functions
-├── jacobian.py             # Effective-gain Jacobian + sanity-check report
+├── jacobian.py             # 5×5 effective-gain Jacobian + sanity-check report
 ├── optimization.py         # nevergrad_optimize(), evaluate_params(), LossBreakdown
-├── bistable_loss.py        # Nullcline-based bistable loss (single-node mode)
-├── random_search.py        # Parallel random search for bistable parameter sets
-├── study.py                # Batch study across 8 experimental conditions
-├── diagnostic.py           # Analytical Turing gain + transfer-function plots
-├── plotting.py             # Visualization (dashboard, box plots)
+├── study.py                # Batch study across experimental conditions
+├── plotting.py             # Visualization (dashboard, box plots, transfer functions)
 ├── loss_evolution_plot.py  # Live loss-curve plots during optimization
 ├── io.py                   # JSON I/O, fit-summary writers, output_dir()
-├── cli.py                  # Unified single-node + study CLI
-│
-└── ring/                   # Ring attractor subpackage
-    ├── __init__.py
-    ├── constants.py        # Ring-only constants (e.g. TRANSIENT_SKIP_TIME_MS)
-    ├── params.py           # RingParams (n_nodes, sigma_pyr_deg, sigma_som_deg, som_pattern)
-    ├── connectivity.py     # PYR→PYR, PV→PYR, SOM→PYR kernels (row-sum normalised)
-    ├── stimulus.py         # RingStimulus, WorkingMemoryProtocol
-    ├── simulation.py       # simulate_ring(), simulate_ring_batch()
-    ├── _fast_ring_loop.py  # Numba-compiled ring Euler integrator
-    ├── analysis.py         # Bump decoding, drift, diffusion, asymmetry metrics
-    ├── optimization.py     # Joint ring + circuit optimization (RingFitConfig, BumpTarget)
-    ├── plotting.py         # Ring-specific visualization
-    └── cli.py              # Ring CLI logic for all ring-* commands
+└── cli.py                  # CLI: run / optimize / study / plot-transfer
 
 docs/                       # See the "Documentation" links at the top of this README
-tests/
-└── test_ring.py            # Ring attractor tests (28 tests)
 ```
 
 ### CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `python -m circuit_model plot-transfer` | Plot Φ(I) for all 4 populations |
-| `python -m circuit_model diagnostic` | Analytical Turing gain + transfer-function dashboard |
-| `python -m circuit_model run` | Single 4-population simulation with plotting |
-| `python -m circuit_model optimize` | Nevergrad parameter optimization (rate / KO / bistable modes) |
-| `python -m circuit_model study` | Batch study across 8 experimental conditions |
-| `python -m circuit_model random-bistable-search` | Parallel random search for bistable parameter sets |
-| `python -m circuit_model ring-run` | Ring attractor single-condition simulation |
-| `python -m circuit_model ring-calibrate` | 3D parameter sweep (w_pv_global × w_pyr_pyr_inter × amplitude) |
-| `python -m circuit_model ring-bump-decay-study` | Is a post-cue bump a sustained attractor or a transient? |
-| `python -m circuit_model ring-optimize` | Joint optimization of CircuitParams + RingParams |
+| `python -m circuit_model plot-transfer` | Plot Φ(I) for all 5 populations |
+| `python -m circuit_model run` | Single 5-population simulation with plotting |
+| `python -m circuit_model optimize` | Nevergrad parameter optimization (baseline rates + KOs) |
+| `python -m circuit_model study` | Batch study across experimental conditions |
 
 See [docs/CLI.md](docs/CLI.md) for the full parameter documentation.
 
@@ -345,7 +330,7 @@ NMDA gating kinetics (fixed from W&W 2006, in `constants.py`): `τ_NMDA = 100 ms
 | `g_gaba_base` | 1.0 | Baseline GABA scaling factor (dimensionless) |
 | `g_alpha7` | 0.0 | α7-receptor-dependent GABA enhancement (fitted) |
 
-Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7`.
+Total GABA scaling: `g_gaba = g_gaba_base + g_alpha7 · mean(act_alpha7_pv, act_alpha7_som, act_alpha7_ndnf)`.
 
 ### Synaptic Weights
 
@@ -359,6 +344,7 @@ All weights are in nA/Hz (weight × rate → nA of input current). Dataclass def
 | `w_ep` | 0.002 | PYR → PV | Drives feedback inhibition |
 | `w_es` | 0.002 | PYR → SOM | Recruits dendritic inhibition |
 | `w_ev` | 0.002 | PYR → VIP | Disinhibitory drive |
+| `w_ne` | 0.002 | PYR → NDNF | Excitatory drive to NDNF |
 
 #### Inhibitory Connections
 
@@ -370,6 +356,10 @@ All weights are in nA/Hz (weight × rate → nA of input current). Dataclass def
 | `w_sp` | 0.002 | SOM → PV | Cross-inhibition |
 | `w_vp` | 0.002 | VIP → PV | Weak disinhibition of PV |
 | `w_vs` | 0.002 | VIP → SOM | Core disinhibition pathway (VIP→SOM→PYR) |
+| `w_ns` | 0.002 | SOM → NDNF | SOM gates NDNF activity |
+| `w_en` | 0.002 | NDNF → PYR | Dendritic inhibition (subtractive, parallel to SOM) |
+| `w_pn` | 0.002 | NDNF → PV | NDNF inhibition of PV |
+| `w_vn` | 0.002 | NDNF → VIP | NDNF inhibition of VIP |
 
 ### External Currents (nA)
 
@@ -377,46 +367,51 @@ All weights are in nA/Hz (weight × rate → nA of input current). Dataclass def
 
 | Parameter | Default | Target | Description |
 |-----------|---------|--------|-------------|
-| `I0_pyr` | 0.44 | PYR | Baseline tonic drive |
-| `I0_pv` | 0.35 | PV | Baseline tonic drive |
-| `I0_som` | 0.35 | SOM | Baseline tonic drive |
-| `I0_vip` | 0.35 | VIP | Baseline tonic drive |
+| `I0_pyr`  | 0.44 | PYR  | Baseline tonic drive |
+| `I0_pv`   | 0.35 | PV   | Baseline tonic drive |
+| `I0_som`  | 0.35 | SOM  | Baseline tonic drive |
+| `I0_vip`  | 0.35 | VIP  | Baseline tonic drive |
+| `I0_ndnf` | 0.35 | NDNF | Baseline tonic drive (**placeholder**, TODO: refine from literature) |
 
 #### Receptor-Mediated Currents
 
 | Parameter | Default | Target | Receptor | Description |
 |-----------|---------|--------|----------|-------------|
-| `I_alpha7_pv` | 0.20 | PV | α7 nAChR | Cholinergic enhancement of PV |
-| `I_alpha7_som` | 0.20 | SOM | α7 nAChR | Cholinergic enhancement of SOM |
-| `I_beta2_som` | 0.20 | SOM | β2 nAChR | β2-mediated SOM activation |
-| `I_alpha5_vip` | 0.20 | VIP | α5 nAChR | Cholinergic modulation of VIP |
+| `I_alpha7_pv`   | 0.20 | PV   | α7 nAChR | Cholinergic enhancement of PV |
+| `I_alpha7_som`  | 0.20 | SOM  | α7 nAChR | Cholinergic enhancement of SOM |
+| `I_alpha7_ndnf` | 0.20 | NDNF | α7 nAChR | Cholinergic enhancement of NDNF |
+| `I_beta2_som`   | 0.20 | SOM  | β2 nAChR | β2-mediated SOM activation |
+| `I_beta2_ndnf`  | 0.20 | NDNF | β2 nAChR | β2-mediated NDNF activation |
+| `I_alpha5_vip`  | 0.20 | VIP  | α5 nAChR | Cholinergic modulation of VIP |
 
 #### Transient currents
 
-`trans_*` and `trans2_*` fields define an optional **PYR-only** transient input (a square pulse of magnitude `trans_factor × I0_pyr` over `[trans_start_ms, trans_start_ms + trans_duration_ms)`). PV/SOM/VIP external currents are unaffected. Two independent transients are available; both default to disabled.
+`trans_*` and `trans2_*` fields define an optional **PYR-only** transient input (a square pulse of magnitude `trans_factor × I0_pyr` over `[trans_start_ms, trans_start_ms + trans_duration_ms)`). The other populations' external currents are unaffected. Two independent transients are available; both default to disabled.
 
 ### Receptor Activation Multipliers
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `act_alpha7` | 1.0 | α7 receptor activation (0 = knockout, intermediate values = partial blockade) |
-| `act_beta2` | 1.0 | β2 receptor activation |
-| `act_alpha5` | 1.0 | α5 receptor activation |
+| `act_alpha7_pv`   | 1.0 | α7 activation on PV   (per-cell, 0 = selective KO) |
+| `act_alpha7_som`  | 1.0 | α7 activation on SOM  (per-cell, 0 = selective KO) |
+| `act_alpha7_ndnf` | 1.0 | α7 activation on NDNF (per-cell, 0 = selective KO) |
+| `act_beta2`       | 1.0 | β2 activation (affects SOM and NDNF) |
+| `act_alpha5`      | 1.0 | α5 activation (affects VIP) |
 
 ### Transfer Function Parameters (Wong & Wang 2006, fixed)
 
-These six constants are **not optimised**:
+These constants are **not optimised**:
 
 | Parameter | Default | Population | Description |
 |-----------|---------|------------|-------------|
 | `alpha_pyr` | 310.0 Hz/nA | PYR | Gain (`c_e`) |
 | `Theta_pyr` | 125/310 ≈ 0.403 nA | PYR | Threshold |
 | `g_exc` | 0.16 s | PYR | Curvature |
-| `alpha_pv` / `alpha_som` / `alpha_vip` | 615.0 Hz/nA | PV, SOM, VIP | Gain (`c_i`) |
-| `Theta_pv` / `Theta_som` / `Theta_vip` | 177/615 ≈ 0.288 nA | PV, SOM, VIP | Threshold |
-| `g_inh` | 0.087 s | PV, SOM, VIP | Curvature |
+| `alpha_{pv,som,vip,ndnf}` | 615.0 Hz/nA | PV, SOM, VIP, NDNF | Gain (`c_i`) |
+| `Theta_{pv,som,vip,ndnf}` | 177/615 ≈ 0.288 nA | PV, SOM, VIP, NDNF | Threshold |
+| `g_inh` | 0.087 s | PV, SOM, VIP, NDNF | Curvature |
 
-Interneuron soft ceilings (constants, not in `CircuitParams`): `R_MAX_PV = 70.6`, `R_MAX_SOM = 70.4`, `R_MAX_VIP = 137.6` Hz (= 2 × Rooy 2021 high-state targets).
+Interneuron soft ceilings (constants, not in `CircuitParams`): `R_MAX_PV = 70.6`, `R_MAX_SOM = 70.4`, `R_MAX_VIP = 137.6`, `R_MAX_NDNF = 70.0` Hz (NDNF placeholder).
 
 ---
 
@@ -447,12 +442,13 @@ python -m circuit_model run --condition a7_KO
 ### Optimize parameters
 
 ```bash
-# Standard rate-matching fit with KO targets, chained DE → Nelder-Mead
+# Rate-matching fit (5 populations) + global α7 / α5 / β2 KO PYR targets.
 python -m circuit_model optimize \
-    --target_pyr 4.143 --target_som 3.423 --target_pv 2.079 --target_vip 1.933 \
-    --target_alpha7_ko_pyr 3.513 --target_beta2_ko_pyr 4.8 --target_alpha5_ko_pyr 3.79 \
-    --optimizer chaining --n_samples 50000 --n_workers 4 \
-    --save_best_json params/new/WT_1mo.json
+    --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
+    --target_ndnf 2.5309 \
+    --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
+    --optimizer twopointde --n_samples 50000 \
+    --save_best_json params/new/WT_NDNF_5pop.json
 ```
 
 ### Batch study across conditions
@@ -461,33 +457,11 @@ python -m circuit_model optimize \
 python -m circuit_model study --n_trials 50 --noise_type white
 ```
 
-### Ring attractor simulation
-
-```bash
-# Single condition (defaults pull params/ring params from the project WT fit)
-python -m circuit_model ring-run --condition WT
-
-# Bump-decay analysis across conditions and cue amplitudes
-python -m circuit_model ring-bump-decay-study \
-    --conditions WT WT_APP --amplitudes 10 20 30 --n_trials 50 --no_show
-
-# Joint circuit + ring optimization to match resting firing-rate targets
-python -m circuit_model ring-optimize \
-    --target_pyr 8 --target_som 5 --target_pv 3 --target_vip 2 \
-    --n_samples 5000
-```
-
 ### Verify the fast/reference integrators agree
 
 ```python
 from circuit_model import validate_fast_loop
 validate_fast_loop()   # prints "OK — bit-identical" on success
-```
-
-### Tests
-
-```bash
-python -m pytest tests/ -q
 ```
 
 ---

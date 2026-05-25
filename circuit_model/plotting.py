@@ -39,12 +39,13 @@ if TYPE_CHECKING:
     from .simulation import SimulationResult
 
 # Population names and colors (colorblind-friendly palette)
-POPULATION_NAMES = ["PYR", "SOM", "PV", "VIP"]
+POPULATION_NAMES = ["PYR", "SOM", "PV", "VIP", "NDNF"]
 POPULATION_COLORS = {
-    "PYR": "#E69F00",  # Orange - excitatory
-    "SOM": "#56B4E9",  # Sky blue
-    "PV": "#009E73",   # Bluish green
-    "VIP": "#CC79A7",  # Reddish purple
+    "PYR":  "#E69F00",  # Orange - excitatory
+    "SOM":  "#56B4E9",  # Sky blue
+    "PV":   "#009E73",  # Bluish green
+    "VIP":  "#CC79A7",  # Reddish purple
+    "NDNF": "#F0E442",  # Yellow
 }
 ADAPTATION_COLORS = {
     "PYR": "#D55E00",  # Vermillion (darker orange)
@@ -410,10 +411,11 @@ def plot_transfer_functions(
     I = np.linspace(I_range[0], I_range[1], n_points)
 
     pop_params = [
-        ("PYR", params.Theta_pyr, params.alpha_pyr, params.g_exc),
-        ("SOM", params.Theta_som, params.alpha_som, params.g_inh),
-        ("PV",  params.Theta_pv,  params.alpha_pv,  params.g_inh),
-        ("VIP", params.Theta_vip, params.alpha_vip, params.g_inh),
+        ("PYR",  params.Theta_pyr,  params.alpha_pyr,  params.g_exc),
+        ("SOM",  params.Theta_som,  params.alpha_som,  params.g_inh),
+        ("PV",   params.Theta_pv,   params.alpha_pv,   params.g_inh),
+        ("VIP",  params.Theta_vip,  params.alpha_vip,  params.g_inh),
+        ("NDNF", params.Theta_ndnf, params.alpha_ndnf, params.g_inh),
     ]
 
     created_fig = ax is None
@@ -497,6 +499,7 @@ def print_simulation_summary(result: "SimulationResult", burn_in_ms: float = 0.0
             params.I_ext_som(),
             params.I_ext_pv(),
             params.I_ext_vip(),
+            params.I_ext_ndnf(),
         ]
         print("-" * 60)
         print(f"{'Population':<10} {'I_ext (nA)':>10}")
