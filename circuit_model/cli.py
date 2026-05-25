@@ -677,17 +677,29 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
 
-    # Determine output directory for logging (next to save_best_json, or cwd)
-    out_dir_for_logs = Path(args.save_best_json).parent if args.save_best_json else Path(".")
-    save_best_json_to_use = args.save_best_json
-
-    # Auto-create log file alongside the best-params JSON if user didn't set --log_file
-    log_file_to_use = args.log_file
-    if not log_file_to_use:
-        out_dir_for_logs.mkdir(parents=True, exist_ok=True)
-        log_file_to_use = str(out_dir_for_logs / "log.jsonl")
-        log_interval_to_use = args.log_interval if args.log_interval != 500 else 50
+    # --output_dir is the canonical "put everything here" flag.
+    # Explicit --save_best_json / --log_file still override it.
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # If save_best_json is at its default ("best_params.json"), put it in out_dir.
+        if args.save_best_json == "best_params.json":
+            save_best_json_to_use = str(out_dir / "best_params.json")
+        else:
+            save_best_json_to_use = args.save_best_json
+        # Same logic for log file
+        log_file_to_use = args.log_file or str(out_dir / "log.jsonl")
     else:
+        # No --output_dir: anchor on save_best_json's parent, fall back to cwd.
+        out_dir = Path(args.save_best_json).parent if args.save_best_json else Path(".")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        save_best_json_to_use = args.save_best_json
+        log_file_to_use = args.log_file or str(out_dir / "log.jsonl")
+
+    # Auto-pick a finer log interval when the default is in effect
+    log_interval_to_use = args.log_interval if args.log_interval != 500 else 50
+    if args.log_file:
+        # User set --log_file explicitly → respect their --log_interval too
         log_interval_to_use = args.log_interval
 
     init_seed = args.seed if args.seed is not None else 0
@@ -958,10 +970,15 @@ Examples:
                             help="Upper bound for synaptic weights (nA/Hz). Default: 0.01")
 
     # I/O settings
+    opt_parser.add_argument("--output_dir", type=str, default="",
+                            help="Directory where all run outputs are written "
+                                 "(best_params.json, best_params.txt, log.jsonl, loss-evolution plots). "
+                                 "Explicit --save_best_json or --log_file still override the path.")
     opt_parser.add_argument("--save_best_json", type=str, default="best_params.json",
-                            help="Save best parameters to JSON file")
+                            help="Save best parameters to JSON file. If --output_dir is set and this is "
+                                 "left at the default, the file goes inside --output_dir.")
     opt_parser.add_argument("--log_file", type=str, default=None,
-                            help="Log results to JSONL file (default: auto-generated in figs/optim/)")
+                            help="Log results to JSONL file (default: {output_dir}/log.jsonl)")
     opt_parser.add_argument("--log_interval", type=int, default=500,
                             help="Log every N steps")
     opt_parser.add_argument("--resume", action="store_true",

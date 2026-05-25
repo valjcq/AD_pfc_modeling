@@ -145,9 +145,10 @@ The optimizer always simulates each global KO condition (so they appear in the r
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--save_best_json PATH` | `best_params.json` | Save best parameter set to this JSON |
-| `--log_file PATH` | auto | JSONL log of best-so-far per `--log_interval` steps |
-| `--log_interval INT` | 50 (auto) / 500 (explicit log_file) | Logging period |
+| `--output_dir PATH` | — | Directory for all run outputs (`best_params.json/.txt`, `log.jsonl`, loss-evolution plots). Recommended when running many experiments. |
+| `--save_best_json PATH` | `best_params.json` | Save best parameter set to this JSON. If `--output_dir` is set and this is at the default, the file goes inside `--output_dir`. |
+| `--log_file PATH` | `{output_dir}/log.jsonl` | JSONL log of best-so-far per `--log_interval` steps |
+| `--log_interval INT` | 50 | Logging period |
 | `--resume` | False | Resume from a previous run's log + best JSON |
 
 ### Example
@@ -158,7 +159,7 @@ python -m circuit_model optimize \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
     --optimizer twopointde --n_samples 20000 \
-    --save_best_json fits/WT_NDNF_5pop.json
+    --output_dir fits/WT_NDNF_5pop
 ```
 
 The optimizer prints a Jacobian sanity check and a `Condition × Population` comparison table when finished.

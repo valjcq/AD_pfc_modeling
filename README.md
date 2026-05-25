@@ -448,7 +448,7 @@ python -m circuit_model optimize \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
     --optimizer twopointde --n_samples 50000 \
-    --save_best_json params/new/WT_NDNF_5pop.json
+    --output_dir fits/WT_NDNF_5pop
 ```
 
 ### Batch study across conditions
