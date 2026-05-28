@@ -70,7 +70,7 @@ SOM interneurons provide dendritic inhibition that:
 
 ### Population Connectivity Matrix
 
-The model implements the following synaptic weight matrix (`w_XY` = weight from population Y to population X). PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`:
+The model implements the following synaptic weight matrix (`w_XY` = weight from population X to population Y). PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`:
 
 ```
                        FROM
@@ -86,10 +86,10 @@ The model implements the following synaptic weight matrix (`w_XY` = weight from 
 PV→PYR enters the PYR input *divisively* (shunting) rather than as a subtraction; see the input-current equations below.
 
 ### Notation Convention
-- **First letter**: target population (e = excitatory/PYR, p = PV, s = SOM, v = VIP)
-- **Second letter**: source population
+- **First letter**: source population (e = excitatory/PYR, p = PV, s = SOM, v = VIP)
+- **Second letter**: target population
 
-Example: `w_es` = weight from PYR (e) to SOM (s). `J_NMDA` replaces the legacy `w_ee` (a one-shot JSON migration in `io.load_params_json` rescales any old `w_ee` field by ×10; see [io.py](circuit_model/io.py)).
+Example: `w_es` = weight from PYR (e) to SOM (s). `J_NMDA` replaces the legacy `w_ee`.
 
 ---
 
