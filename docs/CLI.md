@@ -73,9 +73,16 @@ python -m circuit_model run --condition a7_KO
 
 ## `optimize`
 
-Nevergrad parameter optimization to match baseline firing rates for the 5 populations and a set of knockout conditions.
+Nevergrad parameter optimization with two stages.
 
-### Targets (required unless `--resume`)
+### `--stage` (default `weights`)
+
+| Stage | Free params | Targets |
+|-------|-------------|---------|
+| `weights` | weights + currents + adaptation + `g_alpha7`. Receptor activations (`act_alpha7_*`, `act_beta2`, `act_alpha5`) are frozen at 1.0. | baseline + global KOs + selective α7 KOs |
+| `receptors` | only `act_alpha7_pv`, `act_alpha7_som`, `act_alpha7_ndnf`, `act_beta2`, `act_alpha5` (bounded `[0, 5]`). Everything else frozen. Requires `--params_json` (Stage-1 fit). | per-drug NDNF/PV targets, fit independently per drug |
+
+### Stage-1 targets (required unless `--resume`)
 
 | Flag | Description |
 |------|-------------|
@@ -97,6 +104,18 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--target_alpha7_ndnf_ko_ndnf FLOAT`  | NDNF-selective α7-KO (only `act_alpha7_ndnf = 0`) | NDNF |
 | `--target_alpha7_pv_ko_pv FLOAT`      | PV-selective α7-KO (only `act_alpha7_pv = 0`)     | PV   |
 
+### Stage-2 drug targets (used when `--stage receptors`)
+
+| Flag | Description |
+|------|-------------|
+| `--drugs MLA,PNU[,nicotine]` | Comma-separated list of drugs to fit (default: `MLA,PNU,nicotine`) |
+| `--target_mla_ndnf FLOAT` / `--target_mla_pv FLOAT` | MLA targets (NDNF and PV) |
+| `--target_pnu_ndnf FLOAT` / `--target_pnu_pv FLOAT` | PNU targets (NDNF and PV) |
+| `--target_nicotine_ndnf FLOAT` / `--target_nicotine_pv FLOAT` | Nicotine targets (NDNF and PV) |
+
+> **Ill-posed warning.** Each drug has 2 measurements (or 1 for nicotine) vs 5 free activations.
+> Multiple activation tuples can produce the same NDNF + PV rates. Bounds `[0, 5]` keep solutions physiological but the fit is not unique.
+
 ### Optimizer settings
 
 | Flag | Default | Description |
@@ -104,7 +123,6 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--n_samples INT`     | 5000 | Total Nevergrad budget |
 | `--top_k INT`         | 10 | Number of top candidates to retain |
 | `--optimizer {de,twopointde,cma,chaining,auto}` | `de` | Nevergrad optimizer choice. `de` is an alias for `twopointde`. `chaining` = TwoPointsDE → Nelder-Mead. |
-| `--squared_loss / --no-squared_loss` | True | MSPE vs MAPE for the base firing-rate loss |
 | `--seed INT`          | None | RNG seed |
 
 ### Simulation settings
@@ -121,16 +139,27 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--init_rate_scale FLOAT` | 0.2 | Scale for random initial rates |
 | `--max_rate FLOAT`    | 200 | Reject candidates with any rate above this (Hz) |
 
-### Loss weights / penalties
+### Loss weights
+
+The per-term loss is a squared log-fold-change:
+
+```
+L_term = ( log( max(sim, ε) / target ) )²        ε = 0.01 Hz
+```
+
+— target-normalised and symmetric in over/under-shoot, diverges as `sim → 0`
+so no population can be silenced to dodge the penalty. The total loss is the
+sum over all measurements; per-bucket weights let you tune the balance:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--ko_min_effect_penalty FLOAT`      | 5.0  | Penalty when a KO produces a weak effect |
-| `--ko_wrong_direction_penalty FLOAT` | 10.0 | Penalty when a KO moves PYR the wrong way |
-| `--skip-jacobian`     | False | Disable the Jacobian connectivity penalty |
-| `--jacobian_weight FLOAT` | 1.0 | Weight on the Jacobian connectivity penalty |
-| `--ach_ratio_weight FLOAT` | 2.0 | Weight on β2/α7 ratio penalty on SOM (Koukouli 2025) |
-| `--w_hi FLOAT` | 0.01 | Upper bound for synaptic weights (nA/Hz) |
+| `--weight_base FLOAT`         | 1.0 | Weight on the 5 baseline firing-rate targets |
+| `--weight_global_ko FLOAT`    | 1.0 | Weight on global α7/α5/β2 KO PYR targets |
+| `--weight_selective_ko FLOAT` | 1.0 | Weight on NDNF/PV-selective α7 KO targets |
+| `--weight_drug FLOAT`         | 1.0 | Weight on Stage-2 drug targets |
+| `--w_hi FLOAT`                | 0.01 | Upper bound for synaptic weights (nA/Hz) |
+
+There are no Jacobian or ACh-ratio penalties anymore — disabled per project decision.
 
 ### Parameter control
 
@@ -153,7 +182,9 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--log_interval INT` | 50 | Logging period |
 | `--resume` | False | Resume from a previous run's log + best JSON |
 
-### Example
+### Examples
+
+**Stage 1** — fit weights + currents:
 
 ```bash
 python -m circuit_model optimize \
@@ -165,7 +196,19 @@ python -m circuit_model optimize \
     --output_dir fits/WT_NDNF_5pop
 ```
 
-The optimizer prints a Jacobian sanity check and a `Condition × Population` comparison table when finished.
+**Stage 2** — re-fit receptor activations under drugs (uses Stage-1 best params):
+
+```bash
+python -m circuit_model optimize --stage receptors \
+    --params_json fits/WT_NDNF_5pop/best_params.json \
+    --drugs MLA,PNU \
+    --target_mla_ndnf 2.6578 --target_mla_pv 1.5106 \
+    --target_pnu_ndnf 2.7538 --target_pnu_pv 1.5239 \
+    --optimizer twopointde --n_samples 5000 \
+    --output_dir fits/WT_NDNF_5pop_stage2
+```
+
+Stage 1 prints a Jacobian sanity-check and a `Condition × Population` comparison table. Stage 2 writes one `stage2_results.json` per drug with the fitted activations and predicted NDNF/PV rates.
 
 ---
 

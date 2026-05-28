@@ -11,9 +11,9 @@ Population order convention throughout the codebase:
     [PYR, SOM, PV, VIP, NDNF]  (indices 0..4)
 
 Weight naming convention:
-    w_XY = weight FROM population Y TO population X
+    w_XY = weight FROM population X TO population Y
     e = PYR, p = PV, s = SOM, v = VIP, n = NDNF
-    Examples: w_es = PYR → SOM, w_en = NDNF → PYR, w_ns = SOM → NDNF
+    Examples: w_es = PYR → SOM, w_ne = NDNF → PYR, w_sn = SOM → NDNF
 """
 
 from __future__ import annotations
@@ -31,10 +31,11 @@ class CircuitParams:
 
     NDNF (added 2026-05): subtractive dendritic inhibitor (like SOM).
         - Expresses α7 and β2 nAChRs (same as SOM)
-        - Receives:  PYR → NDNF (w_ne), SOM → NDNF (w_ns, subtractive)
-        - Projects:  NDNF → PYR dendrites (w_en, subtractive)
-                     NDNF → PV (w_pn, subtractive)
-                     NDNF → VIP (w_vn, subtractive)
+        - Receives:  SOM → NDNF (w_sn, subtractive)
+                     [no PYR → NDNF in this model]
+        - Projects:  NDNF → PYR dendrites (w_ne, subtractive)
+                     NDNF → PV  (w_np, subtractive)
+                     NDNF → VIP (w_nv, subtractive)
         - Transfer:  Wong-Wang + hyperbolic soft ceiling R_MAX_NDNF
     """
 
@@ -74,7 +75,6 @@ class CircuitParams:
     w_ep: float = 0.002   # PYR -> PV
     w_es: float = 0.002   # PYR -> SOM
     w_ev: float = 0.002   # PYR -> VIP
-    w_ne: float = 0.002   # PYR -> NDNF
 
     # --- Connections FROM PV (inhibitory, perisomatic / DIVISIVE) ---
     w_pe: float = 0.002   # PV -> PYR
@@ -83,16 +83,16 @@ class CircuitParams:
     # --- Connections FROM SOM (inhibitory, dendritic / subtractive) ---
     w_se: float = 0.002   # SOM -> PYR
     w_sp: float = 0.002   # SOM -> PV
-    w_ns: float = 0.002   # SOM -> NDNF
+    w_sn: float = 0.002   # SOM -> NDNF
 
     # --- Connections FROM VIP (inhibitory, disinhibitory) ---
     w_vp: float = 0.002   # VIP -> PV
     w_vs: float = 0.002   # VIP -> SOM
 
     # --- Connections FROM NDNF (inhibitory, subtractive) ---
-    w_en: float = 0.002   # NDNF -> PYR (dendrites)
-    w_pn: float = 0.002   # NDNF -> PV
-    w_vn: float = 0.002   # NDNF -> VIP
+    w_ne: float = 0.002   # NDNF -> PYR (dendrites)
+    w_np: float = 0.002   # NDNF -> PV
+    w_nv: float = 0.002   # NDNF -> VIP
 
     # =========================================================================
     # EXTERNAL CURRENTS (nA)
@@ -256,14 +256,16 @@ def default_bounds(base: CircuitParams, w_hi: float | None = None) -> dict[str, 
     _W_HI = w_hi if w_hi is not None else 0.01
 
     for w_name in (
-        "w_ep", "w_es", "w_ev", "w_ne",
+        "w_ep", "w_es", "w_ev",
         "w_pe", "w_pp",
-        "w_se", "w_sp", "w_ns",
+        "w_se", "w_sp",
         "w_vp", "w_vs",
-        "w_en", "w_pn", "w_vn",
+        "w_ne", "w_np", "w_nv",
     ):
         b[w_name] = ParamBound(_W_LO, _W_HI, mode="log")
 
+    # SOM->NDNF is the only brake on NDNF firing, so give it more headroom.
+    b["w_sn"]   = ParamBound(_W_LO, 0.05, mode="log")
     b["J_NMDA"] = ParamBound(0.05, 2.0, mode="log")
 
     # --- External tonic drives (nA) ---
@@ -271,7 +273,9 @@ def default_bounds(base: CircuitParams, w_hi: float | None = None) -> dict[str, 
     b["I0_pv"]   = ParamBound(0.01, 0.6, mode="lin")
     b["I0_som"]  = ParamBound(0.01, 0.6, mode="lin")
     b["I0_vip"]  = ParamBound(0.01, 0.6, mode="lin")
-    b["I0_ndnf"] = ParamBound(0.01, 0.6, mode="lin")
+    # NDNF lacks an excitatory PYR input, so it would self-drive easily if I0_ndnf is large.
+    # Tightened upper bound so the optimizer can actually reach the low (~2.5 Hz) NDNF target.
+    b["I0_ndnf"] = ParamBound(0.01, 0.25, mode="lin")
 
     # --- nAChR cholinergic currents (nA) ---
     b["I_alpha7_pv"]   = ParamBound(0.01, 0.5, mode="lin")

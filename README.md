@@ -66,27 +66,27 @@ SOM interneurons provide dendritic inhibition that:
 
 ### Population Connectivity Matrix
 
-The model implements the following synaptic weight matrix (`w_XY` = weight from population Y to population X). PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`:
+The model implements the following synaptic weight matrix. PYR self-excitation is NMDA-gated via the saturable variable `S^*` and carries the scalar `J_NMDA` instead of a linear `w_ee`. Rows = **source** population, columns = **target** population.
 
 ```
-                              FROM
-              PYR        PV      SOM     VIP    NDNF
-          ┌────────────────────────────────────────────┐
-   T  PYR │ J_NMDA·S*   w_pe    w_se    —      w_en    │  (NMDA ÷ PV shunting − SOM/NDNF dendritic)
-   O  PV  │ w_ep        w_pp    w_sp    w_vp   w_pn    │  (PYR drive, mutual + NDNF inhibition)
-      SOM │ w_es        —       —       w_vs   —       │  (PYR drive, VIP inhibition)
-      VIP │ w_ev        —       —       —      w_vn    │  (PYR drive, NDNF inhibition)
-      NDNF│ w_ne        —       w_ns    —      —       │  (PYR drive, SOM inhibition)
-          └────────────────────────────────────────────┘
+                              TARGET
+              PYR        PV       SOM      VIP    NDNF
+          ┌─────────────────────────────────────────────┐
+   S  PYR │ J_NMDA·S*   w_ep     w_es     w_ev    —     │
+   O  PV  │ w_pe        w_pp     —        —       —     │
+   U  SOM │ w_se        w_sp     —        —       w_sn  │
+   R  VIP │ —           w_vp     w_vs     —       —     │
+   C  NDNF│ w_ne        w_np     —        w_nv    —     │
+   E      └─────────────────────────────────────────────┘
 ```
 
-PV→PYR enters the PYR input *divisively* (shunting) rather than as a subtraction. All other inhibitory connections are subtractive and scaled by `g_gaba`.
+PV→PYR (`w_pe`) enters PYR's input *divisively* (shunting). All other inhibitory connections are subtractive and scaled by `g_gaba`. PYR → NDNF has been removed in this branch — NDNF receives only SOM (`w_sn`).
 
 ### Notation Convention
-- **First letter**: target population (e = excitatory/PYR, p = PV, s = SOM, v = VIP, n = NDNF)
-- **Second letter**: source population
+- **First letter**: source population (e = PYR, p = PV, s = SOM, v = VIP, n = NDNF)
+- **Second letter**: target population
 
-Example: `w_es` = weight from PYR (e) to SOM (s); `w_en` = weight from NDNF (n) to PYR (e). `J_NMDA` replaces the legacy `w_ee` (a one-shot JSON migration in `io.load_params_json` rescales any old `w_ee` field by ×10; see [io.py](circuit_model/io.py)).
+Example: `w_ep` = weight **from PYR (e) to PV (p)**; `w_ne` = weight **from NDNF (n) to PYR (e)**; `w_sn` = weight from SOM to NDNF. `J_NMDA` replaces the legacy `w_ee` (a one-shot JSON migration in `io.load_params_json` rescales any old `w_ee` field by ×10; see [io.py](circuit_model/io.py)).
 
 ---
 
@@ -149,7 +149,7 @@ S* = γ · τ_NMDA · r_PYR / (1 + γ · τ_NMDA · r_PYR)
 ```
 I_PYR = (J_NMDA · S*) / (1 + g_GABA · w_pe · r_PV)
         - g_GABA · w_se · r_SOM
-        - g_GABA · w_en · r_NDNF
+        - g_GABA · w_ne · r_NDNF
         - I_adapt_PYR
         + I_ext_PYR
         + sigma_noise · I_ext_PYR · ξ(t)
@@ -163,7 +163,7 @@ I_PV = w_ep · r_PYR
        - g_GABA · w_pp · r_PV
        - g_GABA · w_sp · r_SOM
        - w_vp · r_VIP
-       - g_GABA · w_pn · r_NDNF
+       - g_GABA · w_np · r_NDNF
        + I_ext_PV
        + sigma_noise · I_ext_PV · ξ(t)
 ```
@@ -180,15 +180,14 @@ I_SOM = w_es · r_PYR
 #### VIP:
 ```
 I_VIP = w_ev · r_PYR
-        - g_GABA · w_vn · r_NDNF
+        - g_GABA · w_nv · r_NDNF
         + I_ext_VIP
         + sigma_noise · I_ext_VIP · ξ(t)
 ```
 
-#### NDNF:
+#### NDNF (no PYR input in this branch):
 ```
-I_NDNF = w_ne · r_PYR
-         - g_GABA · w_ns · r_SOM
+I_NDNF = - g_GABA · w_sn · r_SOM
          + I_ext_NDNF
          + sigma_noise · I_ext_NDNF · ξ(t)
 ```
@@ -344,22 +343,21 @@ All weights are in nA/Hz (weight × rate → nA of input current). Dataclass def
 | `w_ep` | 0.002 | PYR → PV | Drives feedback inhibition |
 | `w_es` | 0.002 | PYR → SOM | Recruits dendritic inhibition |
 | `w_ev` | 0.002 | PYR → VIP | Disinhibitory drive |
-| `w_ne` | 0.002 | PYR → NDNF | Excitatory drive to NDNF |
 
 #### Inhibitory Connections
 
 | Parameter | Default | Connection | Biological Role |
 |-----------|---------|------------|-----------------|
-| `w_pe` | 0.002 | PV → PYR | Perisomatic inhibition (divisive / shunting) |
-| `w_se` | 0.002 | SOM → PYR | Dendritic inhibition (subtractive) |
-| `w_pp` | 0.002 | PV → PV | Self-inhibition |
-| `w_sp` | 0.002 | SOM → PV | Cross-inhibition |
-| `w_vp` | 0.002 | VIP → PV | Weak disinhibition of PV |
-| `w_vs` | 0.002 | VIP → SOM | Core disinhibition pathway (VIP→SOM→PYR) |
-| `w_ns` | 0.002 | SOM → NDNF | SOM gates NDNF activity |
-| `w_en` | 0.002 | NDNF → PYR | Dendritic inhibition (subtractive, parallel to SOM) |
-| `w_pn` | 0.002 | NDNF → PV | NDNF inhibition of PV |
-| `w_vn` | 0.002 | NDNF → VIP | NDNF inhibition of VIP |
+| `w_pe` | 0.002 | PV → PYR   | Perisomatic inhibition (divisive / shunting) |
+| `w_se` | 0.002 | SOM → PYR  | Dendritic inhibition (subtractive) |
+| `w_pp` | 0.002 | PV → PV    | Self-inhibition |
+| `w_sp` | 0.002 | SOM → PV   | Cross-inhibition |
+| `w_vp` | 0.002 | VIP → PV   | Weak disinhibition of PV |
+| `w_vs` | 0.002 | VIP → SOM  | Core disinhibition pathway (VIP→SOM→PYR) |
+| `w_sn` | 0.002 | SOM → NDNF | SOM gates NDNF activity |
+| `w_ne` | 0.002 | NDNF → PYR | Dendritic inhibition (subtractive, parallel to SOM) |
+| `w_np` | 0.002 | NDNF → PV  | NDNF inhibition of PV |
+| `w_nv` | 0.002 | NDNF → VIP | NDNF inhibition of VIP |
 
 ### External Currents (nA)
 
@@ -439,10 +437,13 @@ python -m circuit_model run --noise_type ou
 python -m circuit_model run --condition a7_KO
 ```
 
-### Optimize parameters
+### Optimize parameters — two stages
+
+Fitting is split into two independent stages.
+
+**Stage 1 (`--stage weights`, default).** Fit synaptic weights + currents on baseline + global KO + selective α7 KO targets. Receptor activations (`act_alpha7_*`, `act_beta2`, `act_alpha5`) are frozen at 1.0.
 
 ```bash
-# Rate-matching fit (5 populations) + global KO targets on PYR + selective α7 KOs on NDNF/PV.
 python -m circuit_model optimize \
     --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
     --target_ndnf 2.5309 \
@@ -451,6 +452,28 @@ python -m circuit_model optimize \
     --optimizer twopointde --n_samples 50000 \
     --output_dir fits/WT_NDNF_5pop
 ```
+
+**Stage 2 (`--stage receptors`).** Re-fit the receptor activations under drug conditions, with all weights and currents frozen at the Stage-1 solution. Per-drug independent fits; only `act_alpha7_pv/_som/_ndnf`, `act_beta2`, `act_alpha5` are free (5 params, bounded `[0, 5]`). `g_alpha7` stays frozen.
+
+```bash
+python -m circuit_model optimize --stage receptors \
+    --params_json fits/WT_NDNF_5pop/best_params.json \
+    --drugs MLA,PNU \
+    --target_mla_ndnf 2.6578 --target_mla_pv 1.5106 \
+    --target_pnu_ndnf 2.7538 --target_pnu_pv 1.5239 \
+    --optimizer twopointde --n_samples 5000 \
+    --output_dir fits/WT_NDNF_5pop_stage2
+```
+
+**Loss.** Every measurement contributes a single squared log-fold-change:
+
+```
+L_term = ( log( max(sim, ε) / target ) )²        ε = 0.01 Hz
+```
+
+This is target-normalised (a fold-change in dex) and **symmetric**: over- and under-shooting by the same factor cost the same. As `sim → 0` the loss diverges, so the optimizer cannot silence a population to escape the loss. Total loss is the sum over all measurements, with per-bucket CLI weights (`--weight_base`, `--weight_global_ko`, `--weight_selective_ko`, `--weight_drug`, default 1.0 each). There are no Jacobian or ACh-ratio penalties.
+
+> ⚠️ **Stage 2 is ill-posed.** With only NDNF + PV measured per drug, and 5 free activations per drug, the fit has 2 (or 1, for nicotine) measurements vs 5 parameters. Multiple activation tuples can produce the same NDNF + PV rates. Tight bounds (`[0, 5]`) keep solutions physiological, but the fit is not unique. See [AD_data/targets_stage2.md](AD_data/targets_stage2.md).
 
 ### Batch study across conditions
 

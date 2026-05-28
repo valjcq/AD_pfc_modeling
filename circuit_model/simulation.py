@@ -107,16 +107,16 @@ def simulate_circuit(
             float(ggaba),
             # PYR-side / NMDA
             float(params.J_NMDA), float(S_pyr_init),
-            float(params.w_pe), float(params.w_se), float(params.w_en),
+            float(params.w_pe), float(params.w_se), float(params.w_ne),
             # SOM input
             float(params.w_es), float(params.w_vs),
             # PV input
             float(params.w_ep), float(params.w_pp), float(params.w_sp),
-            float(params.w_vp), float(params.w_pn),
+            float(params.w_vp), float(params.w_np),
             # VIP input
-            float(params.w_ev), float(params.w_vn),
-            # NDNF input
-            float(params.w_ne), float(params.w_ns),
+            float(params.w_ev), float(params.w_nv),
+            # NDNF input (PYR -> NDNF removed; NDNF receives SOM only)
+            float(params.w_sn),
             # Adaptation
             float(params.J_adapt_pyr), float(params.tau_adapt_pyr),
             float(params.J_adapt_som), float(params.tau_adapt_som),
@@ -186,7 +186,7 @@ def simulate_circuit(
             I_pyr = (
                 (params.J_NMDA * S_pyr) / denom
                 - ggaba * params.w_se * r_som
-                - ggaba * params.w_en * r_ndnf
+                - ggaba * params.w_ne * r_ndnf
                 - Iap
                 + I_ext_pyr_val
                 + noise_scale_pyr * xi
@@ -203,19 +203,18 @@ def simulate_circuit(
                 - ggaba * params.w_pp * r_pv
                 - ggaba * params.w_sp * r_som
                 - params.w_vp * r_vip
-                - ggaba * params.w_pn * r_ndnf
+                - ggaba * params.w_np * r_ndnf
                 + I_ext_pv_val
                 + noise_scale_pv * xi
             )
             I_vip = (
                 params.w_ev * r_pyr
-                - ggaba * params.w_vn * r_ndnf
+                - ggaba * params.w_nv * r_ndnf
                 + I_ext_vip_val
                 + noise_scale_vip * xi
             )
             I_ndnf = (
-                params.w_ne * r_pyr
-                - ggaba * params.w_ns * r_som
+                - ggaba * params.w_sn * r_som
                 + I_ext_ndnf_val
                 + noise_scale_ndnf * xi
             )
@@ -297,17 +296,17 @@ def validate_fast_loop(
         xi = noise_ref[k]
         I_pyr = ((params.J_NMDA * S_pyr) / denom
                  - ggaba * params.w_se * r_som
-                 - ggaba * params.w_en * r_ndnf
+                 - ggaba * params.w_ne * r_ndnf
                  - Iap + params.I_ext_pyr() + ns_pyr * xi)
         I_som = (params.w_es * r_pyr - params.w_vs * r_vip
                  - params.J_adapt_som * r_som + params.I_ext_som() + ns_som * xi)
         I_pv  = (params.w_ep * r_pyr - ggaba * params.w_pp * r_pv
                  - ggaba * params.w_sp * r_som - params.w_vp * r_vip
-                 - ggaba * params.w_pn * r_ndnf
+                 - ggaba * params.w_np * r_ndnf
                  + params.I_ext_pv() + ns_pv * xi)
-        I_vip = (params.w_ev * r_pyr - ggaba * params.w_vn * r_ndnf
+        I_vip = (params.w_ev * r_pyr - ggaba * params.w_nv * r_ndnf
                  + params.I_ext_vip() + ns_vip * xi)
-        I_ndnf = (params.w_ne * r_pyr - ggaba * params.w_ns * r_som
+        I_ndnf = (- ggaba * params.w_sn * r_som
                   + params.I_ext_ndnf() + ns_ndnf * xi)
         Phi = np.array([
             phi_wong_wang(I_pyr, theta=params.Theta_pyr, c=params.alpha_pyr, g=params.g_exc).item(),
@@ -337,12 +336,12 @@ def validate_fast_loop(
         float(params.tau_s),
         float(ggaba),
         float(params.J_NMDA), float(S_pyr_init),
-        float(params.w_pe), float(params.w_se), float(params.w_en),
+        float(params.w_pe), float(params.w_se), float(params.w_ne),
         float(params.w_es), float(params.w_vs),
         float(params.w_ep), float(params.w_pp), float(params.w_sp),
-        float(params.w_vp), float(params.w_pn),
-        float(params.w_ev), float(params.w_vn),
-        float(params.w_ne), float(params.w_ns),
+        float(params.w_vp), float(params.w_np),
+        float(params.w_ev), float(params.w_nv),
+        float(params.w_sn),
         float(params.J_adapt_pyr), float(params.tau_adapt_pyr),
         float(params.J_adapt_som), float(params.tau_adapt_som),
         float(params.I_ext_pyr()), float(params.I_ext_som()),

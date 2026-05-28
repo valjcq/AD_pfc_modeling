@@ -23,7 +23,8 @@ import numpy as np
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
 from .io import load_params_json, save_params_json, save_fit_summary_txt, format_params_as_code, build_fit_comparison, output_dir as _output_dir
-from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBreakdown
+from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBreakdown, optimize_drug_activations, STAGE2_FREE_FIELDS
+from .loss import DrugTarget
 from .simulation import simulate_circuit
 from .jacobian import print_sanity_check, compute_jacobian
 from .defaults import DEFAULT_WT_PARAMS_PATH, DEFAULT_APP_PARAMS_PATH
@@ -227,9 +228,9 @@ def print_parameter_status(
         "Time constants": ["tau_s", "tau_adapt_pyr"],
         "Adaptation": ["J_adapt_pyr"],
         "Noise & GABA": ["sigma_noise", "g_gaba_base", "g_alpha7"],
-        "Weights (excitatory)": ["J_NMDA", "w_ep", "w_es", "w_ev", "w_ne"],
+        "Weights (excitatory)": ["J_NMDA", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs",
-                                  "w_ns", "w_en", "w_pn", "w_vn"],
+                                  "w_sn", "w_ne", "w_np", "w_nv"],
         "External currents": ["I0_pyr", "I0_pv", "I_alpha7_pv", "I0_som", "I_alpha7_som", "I_beta2_som",
                                 "I0_vip", "I_alpha5_vip", "I0_ndnf", "I_alpha7_ndnf", "I_beta2_ndnf"],
         "Transient": ["trans_factor"],
@@ -266,6 +267,7 @@ def _print_opt_init_summary(params: CircuitParams, means: np.ndarray, breakdown:
     print(f"  I0: pyr={params.I0_pyr:.6g}, som={params.I0_som:.6g}, pv={params.I0_pv:.6g}, vip={params.I0_vip:.6g}")
     print(f"  W:  J_NMDA={params.J_NMDA:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
     print(f"      w_pe={params.w_pe:.6g}, w_pp={params.w_pp:.6g}, w_se={params.w_se:.6g}, w_sp={params.w_sp:.6g}, w_vp={params.w_vp:.6g}, w_vs={params.w_vs:.6g}")
+    print(f"      w_sn={params.w_sn:.6g}, w_ne={params.w_ne:.6g}, w_np={params.w_np:.6g}, w_nv={params.w_nv:.6g}")
     print(f"  Transfer: tau_s={params.tau_s:.6g}, alpha_pyr={params.alpha_pyr:.6g}, alpha_som={params.alpha_som:.6g}, alpha_pv={params.alpha_pv:.6g}, alpha_vip={params.alpha_vip:.6g}")
     print(f"            Theta_pyr={params.Theta_pyr:.6g}, Theta_som={params.Theta_som:.6g}, Theta_pv={params.Theta_pv:.6g}, Theta_vip={params.Theta_vip:.6g}")
     print("Initial predicted rates (Hz):")
@@ -551,8 +553,106 @@ def cmd_study(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_optimize_receptors(args: argparse.Namespace) -> None:
+    """Stage 2: per-drug fit of receptor activations.
+
+    Loads a Stage-1 best_params.json (via --params_json) and, for each drug
+    in --drugs, runs an independent nevergrad fit varying only the per-cell
+    α7 activations, β2, and α5. All other circuit parameters stay frozen.
+    """
+    import json
+    if not args.params_json:
+        raise SystemExit("--stage receptors requires --params_json (a Stage-1 fit).")
+    base = load_params_json(args.params_json)
+    print(f"Stage 2: loaded base from {args.params_json}")
+
+    drugs = [d.strip() for d in args.drugs.split(",") if d.strip()]
+    drug_target_args = {
+        "MLA":      (args.target_mla_ndnf,      args.target_mla_pv),
+        "PNU":      (args.target_pnu_ndnf,      args.target_pnu_pv),
+        "nicotine": (args.target_nicotine_ndnf, args.target_nicotine_pv),
+    }
+    drug_targets: list[DrugTarget] = []
+    for d in drugs:
+        if d not in drug_target_args:
+            raise SystemExit(f"Unknown drug '{d}'. Known: {list(drug_target_args)}.")
+        ndnf_hz, pv_hz = drug_target_args[d]
+        if ndnf_hz is None or pv_hz is None:
+            raise SystemExit(
+                f"Drug '{d}' selected but its targets are not set "
+                f"(need --target_{d.lower()}_ndnf and --target_{d.lower()}_pv)."
+            )
+        drug_targets.append(DrugTarget(drug=d, population="NDNF", target_hz=ndnf_hz))
+        drug_targets.append(DrugTarget(drug=d, population="PV",   target_hz=pv_hz))
+
+    fit_cfg = FitConfig(
+        T_ms=args.T_ms,
+        dt_ms=args.dt_ms,
+        burn_in_ms=args.burn_in_ms,
+        window_ms=args.window_ms,
+        n_trials=args.n_trials,
+        init_rate_scale=args.init_rate_scale,
+        noise_type=args.noise_type,
+        tau_noise_ms=args.tau_noise_ms,
+        max_rate=args.max_rate,
+    )
+
+    # Resolve output directory
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+    elif args.save_best_json:
+        out_dir = Path(args.save_best_json).parent
+    else:
+        out_dir = Path("stage2_out")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = args.log_file or str(out_dir / "stage2_log.jsonl")
+    if Path(log_file).exists():
+        Path(log_file).unlink()
+
+    print(f"Drugs to fit: {drugs}")
+    print(f"Total measurements: {len(drug_targets)} ({len(drugs)} drugs × 2 cell types)")
+    print(f"Output dir: {out_dir}")
+    print(f"NOTE: with only 2 measurements per drug and 5 free activations, "
+          f"this fit is under-constrained — multiple activation tuples can produce "
+          f"the same NDNF + PV rates. Bounds [0, 5] keep solutions physiological.")
+
+    results = optimize_drug_activations(
+        base, drug_targets, fit_cfg,
+        n_samples=args.n_samples,
+        optimizer=args.optimizer,
+        seed=args.seed,
+        log_file=log_file,
+        log_interval=args.log_interval,
+    )
+
+    # Write summary JSON
+    summary_path = out_dir / "stage2_results.json"
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=2)
+    print(f"\nStage 2 results saved to: {summary_path}")
+
+    # Print pretty summary
+    print("\n" + "=" * 70)
+    print("STAGE 2 RESULTS")
+    print("=" * 70)
+    for drug, info in results.items():
+        print(f"\n  {drug:>10s}  loss={info['loss']:.4g}")
+        acts = info["activations"]
+        for k in STAGE2_FREE_FIELDS:
+            if k in acts:
+                print(f"      {k:<18s} = {acts[k]:.4f}")
+        for tgt in info["targets"]:
+            err = 100.0 * (tgt["predicted_hz"] - tgt["target_hz"]) / max(abs(tgt["target_hz"]), 1e-6)
+            print(f"      {tgt['population']:<5s} actual={tgt['predicted_hz']:8.3f}  target={tgt['target_hz']:8.3f}  err={err:+6.1f}%")
+    print("=" * 70 + "\n")
+
+
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Run parameter optimization."""
+    if args.stage == "receptors":
+        cmd_optimize_receptors(args)
+        return
+
     if not getattr(args, "resume", False):
         missing = [f"--target_{k}" for k, v in [
             ("pyr", args.target_pyr), ("som", args.target_som),
@@ -654,6 +754,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     freeze = parse_freeze_list(args.freeze)
     if args.no_adapt:
         freeze |= {"J_adapt_pyr", "J_adapt_som"}
+    # Stage 1: receptor activations are NOT free; only weights/currents are fit.
+    freeze |= set(STAGE2_FREE_FIELDS)
 
     # Print parameter status
     if args.show_params:
@@ -670,8 +772,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         noise_type=args.noise_type,
         tau_noise_ms=args.tau_noise_ms,
         max_rate=args.max_rate,
-        ko_min_effect_penalty=args.ko_min_effect_penalty,
-        ko_wrong_direction_penalty=args.ko_wrong_direction_penalty,
     )
 
     # Print targets
@@ -693,8 +793,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     if target.alpha7_pv_ko_pv is not None:
         print(f"  PV-selective   a7 KO (PV):   {target.alpha7_pv_ko_pv} {unit}")
     print()
-
-    jacobian_weight = 0.0 if args.skip_jacobian else args.jacobian_weight
 
     # --output_dir is the canonical "put everything here" flag.
     # Explicit --save_best_json / --log_file still override it.
@@ -728,9 +826,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         target,
         fit_cfg,
         rng=init_rng,
-        squared_loss=args.squared_loss,
-        jacobian_weight=jacobian_weight,
-        ach_ratio_weight=args.ach_ratio_weight,
+        weight_base=args.weight_base,
+        weight_global_ko=args.weight_global_ko,
+        weight_selective_ko=args.weight_selective_ko,
+        weight_drug=args.weight_drug,
     )
     _print_opt_init_summary(base, init_means, init_breakdown)
     print()
@@ -755,9 +854,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         save_best_json=save_best_json_to_use or None,
         step_offset=step_offset,
         append_log=append_log,
-        squared_loss=args.squared_loss,
-        jacobian_weight=jacobian_weight,
-        ach_ratio_weight=args.ach_ratio_weight,
+        weight_base=args.weight_base,
+        weight_global_ko=args.weight_global_ko,
+        weight_selective_ko=args.weight_selective_ko,
+        weight_drug=args.weight_drug,
     )
 
     if not best:
@@ -935,8 +1035,6 @@ Examples:
                                  "(measured on PV itself, e.g. a7flx/flx baseline)")
 
     # Optimization settings
-    opt_parser.add_argument("--squared_loss", action=argparse.BooleanOptionalAction, default=True,
-                            help="Use MSPE (squared percentage error) loss — default on. Pass --no_squared_loss to revert to MAPE.")
     opt_parser.add_argument("--n_samples", type=int, default=5000,
                             help="Number of optimization samples")
     opt_parser.add_argument("--top_k", type=int, default=10,
@@ -966,11 +1064,15 @@ Examples:
     opt_parser.add_argument("--max_rate", type=float, default=200.0,
                             help="Maximum allowed rate (stability check)")
 
-    # KO penalty settings
-    opt_parser.add_argument("--ko_min_effect_penalty", type=float, default=5.0,
-                            help="Penalty weight for weak KO effect")
-    opt_parser.add_argument("--ko_wrong_direction_penalty", type=float, default=10.0,
-                            help="Penalty weight for wrong direction KO effect")
+    # Per-bucket loss weights (loss is Σ ((actual-target)/target)² across all measurements)
+    opt_parser.add_argument("--weight_base", type=float, default=1.0,
+                            help="Weight on baseline firing-rate matching (default: 1.0)")
+    opt_parser.add_argument("--weight_global_ko", type=float, default=1.0,
+                            help="Weight on global α7/α5/β2 KO PYR matching (default: 1.0)")
+    opt_parser.add_argument("--weight_selective_ko", type=float, default=1.0,
+                            help="Weight on cell-type-selective α7 KO matching (default: 1.0)")
+    opt_parser.add_argument("--weight_drug", type=float, default=1.0,
+                            help="Weight on drug-condition matching, Stage 2 (default: 1.0)")
 
     # Parameter control
     opt_parser.add_argument("--freeze", type=str, default="",
@@ -985,15 +1087,21 @@ Examples:
                             help="Disable spike-frequency adaptation: set J_adapt_pyr=0 and J_adapt_som=0 "
                                  "and freeze them.")
 
-    opt_parser.add_argument("--skip-jacobian", action="store_true",
-                            help="Skip the Jacobian connectivity penalty during optimization.")
-    opt_parser.add_argument("--jacobian_weight", type=float, default=1.0,
-                            help="Weight of the Jacobian connectivity penalty (default: 1.0, 0 = disabled). "
-                                 "Controls the strength of connectivity constraints during optimization.")
-    opt_parser.add_argument("--ach_ratio_weight", type=float, default=2.0,
-                            help="Weight of β2/α7 ACh current ratio penalty (default: 2.0, 0 = disabled). "
-                                 "Penalises solutions where I_beta2_som / I_alpha7_som deviates from 35 "
-                                 "(Koukouli et al. 2025: β2-type currents ~35× stronger than α7 at 1.77 μM ACh).")
+    # Two-stage flow
+    opt_parser.add_argument("--stage", type=str, default="weights",
+                            choices=["weights", "receptors"],
+                            help="Optimization stage. 'weights' (default): fit synaptic weights + currents, "
+                                 "receptor activations frozen at 1. 'receptors': fit per-drug receptor "
+                                 "activations only (per-drug independent fits); requires --params_json.")
+    # Stage-2 drug targets (in Hz). Pass --drugs to choose which drugs to fit.
+    opt_parser.add_argument("--drugs", type=str, default="MLA,PNU,nicotine",
+                            help="Comma-separated drug names to fit in --stage receptors (default: MLA,PNU,nicotine)")
+    opt_parser.add_argument("--target_mla_ndnf",      type=float, default=None, help="MLA   NDNF target (Hz)")
+    opt_parser.add_argument("--target_mla_pv",        type=float, default=None, help="MLA   PV   target (Hz)")
+    opt_parser.add_argument("--target_pnu_ndnf",      type=float, default=None, help="PNU   NDNF target (Hz)")
+    opt_parser.add_argument("--target_pnu_pv",        type=float, default=None, help="PNU   PV   target (Hz)")
+    opt_parser.add_argument("--target_nicotine_ndnf", type=float, default=None, help="Nicotine NDNF target (Hz)")
+    opt_parser.add_argument("--target_nicotine_pv",   type=float, default=None, help="Nicotine PV   target (Hz)")
 
     opt_parser.add_argument("--w_hi", type=float, default=None,
                             help="Upper bound for synaptic weights (nA/Hz). Default: 0.01")

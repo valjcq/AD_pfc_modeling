@@ -26,22 +26,28 @@ from tqdm import tqdm
 
 from .params import CircuitParams, ParamBound
 from .simulation import simulate_circuit, mean_rates, NoiseType
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, jacobian_connectivity_penalty, ach_ratio_penalty
+from .loss import TargetRates, FitConfig, loss_from_means_normalized, loss_from_ko_normalized, drug_loss, DrugTarget
 from .io import log_best_result, save_params_json
 
 
 @dataclass
 class KOMeans:
-    """Container for knockout condition mean firing rates (shape (5,) each).
+    """Container for knockout/drug condition mean firing rates (shape (5,) each).
 
     Global KOs zero a receptor everywhere it acts.
     Selective α7 KOs zero α7 only on the named cell type.
+    Drug entries are keyed by drug name in `drug` dict.
     """
     alpha7_ko: Optional[np.ndarray] = None
     alpha5_ko: Optional[np.ndarray] = None
     beta2_ko: Optional[np.ndarray] = None
     alpha7_ndnf_ko: Optional[np.ndarray] = None
     alpha7_pv_ko: Optional[np.ndarray] = None
+    drug: dict[str, np.ndarray] = None  # drug name -> mean rates (5,)
+
+    def __post_init__(self):
+        if self.drug is None:
+            self.drug = {}
 
 
 @dataclass(frozen=True)
@@ -61,17 +67,21 @@ ConditionResult = tuple[str, bool, np.ndarray]  # (name, ok, means)
 
 @dataclass
 class LossBreakdown:
-    """Breakdown of loss components."""
-    firing_rate: float
-    ko_firing_rate: float
-    jacobian: float
-    ach_ratio: float
+    """Breakdown of loss components.
+
+    All four buckets are sums of normalised squared relative errors,
+    multiplied by their per-bucket CLI weight.
+    """
+    base: float
+    global_ko: float
+    selective_ko: float
+    drug: float
     total: float
 
     def __str__(self) -> str:
-        return (f"loss=[fr={self.firing_rate:.3g}, ko={self.ko_firing_rate:.3g}, "
-                f"jac={self.jacobian:.3g}, "
-                f"ach={self.ach_ratio:.3g}, total={self.total:.3g}]")
+        return (f"loss=[base={self.base:.3g}, gko={self.global_ko:.3g}, "
+                f"sko={self.selective_ko:.3g}, drug={self.drug:.3g}, "
+                f"total={self.total:.3g}]")
 
 
 def run_trials(params: CircuitParams, cfg: FitConfig, base_seed: int) -> tuple[bool, np.ndarray]:
@@ -121,8 +131,15 @@ def _build_conditions(
     target: TargetRates,
     cfg: FitConfig,
     rng: np.random.Generator,
+    *,
+    drug_param_overrides: Optional[dict[str, dict[str, float]]] = None,
 ) -> list[tuple[str, CircuitParams, FitConfig, int]]:
-    """Build list of (name, params, cfg, seed) conditions to simulate."""
+    """Build list of (name, params, cfg, seed) conditions to simulate.
+
+    `drug_param_overrides` maps a drug name (e.g. "MLA") to a dict of
+    CircuitParams field overrides applied via `dataclasses.replace`. Each
+    drug listed in `target.drug_targets` will be simulated.
+    """
     alpha7_all_off = dict(act_alpha7_pv=0.0, act_alpha7_som=0.0, act_alpha7_ndnf=0.0)
     conditions: list[tuple[str, CircuitParams, FitConfig, int]] = [
         ("base", params, cfg, int(rng.integers(0, 2**31 - 1))),
@@ -134,7 +151,24 @@ def _build_conditions(
         ("alpha7_ndnf_ko", replace(params, act_alpha7_ndnf=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
         ("alpha7_pv_ko",   replace(params, act_alpha7_pv=0.0),   cfg, int(rng.integers(0, 2**31 - 1))),
     ]
+    # Drug conditions (Stage 2)
+    if target.drug_targets and drug_param_overrides:
+        seen: set[str] = set()
+        for dt in target.drug_targets:
+            if dt.drug in seen:
+                continue
+            seen.add(dt.drug)
+            overrides = drug_param_overrides.get(dt.drug, {})
+            conditions.append((
+                f"drug_{dt.drug}",
+                replace(params, **overrides),
+                cfg,
+                int(rng.integers(0, 2**31 - 1)),
+            ))
     return conditions
+
+
+_POP_INDEX = {"PYR": 0, "SOM": 1, "PV": 2, "VIP": 3, "NDNF": 4}
 
 
 def _loss_from_results(
@@ -143,14 +177,15 @@ def _loss_from_results(
     cfg: FitConfig,
     params: CircuitParams,
     *,
-    squared_loss: bool = True,
-    jacobian_weight: float = 1.0,
-    ach_ratio_weight: float = 2.0,
+    weight_base: float = 1.0,
+    weight_global_ko: float = 1.0,
+    weight_selective_ko: float = 1.0,
+    weight_drug: float = 1.0,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
     """Compute total loss from a list of condition simulation results.
 
-    Returns:
-        Tuple of (total_loss, base_means, ko_means, breakdown).
+    All buckets are sums of normalised squared relative errors, scaled by
+    their respective per-bucket weight.
     """
     ko_means = KOMeans()
     base_means = np.zeros(5, dtype=float)
@@ -170,66 +205,49 @@ def _loss_from_results(
             ko_means.alpha7_ndnf_ko = means
         elif name == "alpha7_pv_ko":
             ko_means.alpha7_pv_ko = means
+        elif name.startswith("drug_"):
+            ko_means.drug[name[len("drug_"):]] = means
 
-    # Firing rate loss
-    fr_loss = loss_from_means(base_means, target, squared=squared_loss)
-    base_pyr = float(base_means[0])
+    # --- base : 5 baseline firing-rate targets ---
+    base_loss = loss_from_means_normalized(base_means, target)
 
-    # Knockout penalty
-    ko_loss = 0.0
-    n_ko = 0
+    # --- global_ko : PYR rate under each global KO ---
+    global_ko_loss = 0.0
     if target.alpha7_ko_pyr is not None and ko_means.alpha7_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr, base_pyr,
-            min_effect_weight=cfg.ko_min_effect_penalty,
-            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
+        global_ko_loss += loss_from_ko_normalized(float(ko_means.alpha7_ko[0]), target.alpha7_ko_pyr)
     if target.alpha5_ko_pyr is not None and ko_means.alpha5_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr, base_pyr,
-            min_effect_weight=cfg.ko_min_effect_penalty,
-            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
+        global_ko_loss += loss_from_ko_normalized(float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr)
     if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.beta2_ko[0]), target.beta2_ko_pyr, base_pyr,
-            min_effect_weight=cfg.ko_min_effect_penalty,
-            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
-        )
-        n_ko += 1
+        global_ko_loss += loss_from_ko_normalized(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)
 
-    # Selective α7 KOs are compared against the *deleted cell type's own* baseline rate
-    # (the data are flx/flx baseline measurements in NDNF / PV, not PYR-side).
+    # --- selective_ko : NDNF / PV rate under their selective α7 KOs ---
+    selective_ko_loss = 0.0
     if target.alpha7_ndnf_ko_ndnf is not None and ko_means.alpha7_ndnf_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha7_ndnf_ko[4]), target.alpha7_ndnf_ko_ndnf, float(base_means[4]),
-            min_effect_weight=cfg.ko_min_effect_penalty,
-            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
+        selective_ko_loss += loss_from_ko_normalized(
+            float(ko_means.alpha7_ndnf_ko[4]), target.alpha7_ndnf_ko_ndnf
         )
-        n_ko += 1
     if target.alpha7_pv_ko_pv is not None and ko_means.alpha7_pv_ko is not None:
-        ko_loss += loss_from_ko_pyr(
-            float(ko_means.alpha7_pv_ko[2]), target.alpha7_pv_ko_pv, float(base_means[2]),
-            min_effect_weight=cfg.ko_min_effect_penalty,
-            wrong_direction_weight=cfg.ko_wrong_direction_penalty,
+        selective_ko_loss += loss_from_ko_normalized(
+            float(ko_means.alpha7_pv_ko[2]), target.alpha7_pv_ko_pv
         )
-        n_ko += 1
 
-    # Normalise KO loss by number of KO conditions
-    ko_firing_rate = ko_loss / n_ko if n_ko > 0 else 0.0
+    # --- drug : per-drug per-population measurements ---
+    drug_loss = 0.0
+    for dt in target.drug_targets:
+        rates = ko_means.drug.get(dt.drug)
+        if rates is None:
+            continue
+        idx = _POP_INDEX[dt.population]
+        drug_loss += loss_from_ko_normalized(float(rates[idx]), dt.target_hz)
 
-    # Jacobian connectivity penalty
-    jac_loss = jacobian_connectivity_penalty(params, base_means) * jacobian_weight
+    base_w   = weight_base        * base_loss
+    gko_w    = weight_global_ko   * global_ko_loss
+    sko_w    = weight_selective_ko * selective_ko_loss
+    drug_w   = weight_drug        * drug_loss
+    total    = base_w + gko_w + sko_w + drug_w
 
-    # ACh β2/α7 ratio penalty (Koukouli et al. 2025: β2 should be ~35× α7 on SOM)
-    ach_loss = ach_ratio_penalty(params, weight=ach_ratio_weight)
-
-    total = fr_loss + ko_firing_rate + jac_loss + ach_loss
-    breakdown = LossBreakdown(firing_rate=fr_loss, ko_firing_rate=ko_firing_rate,
-                               jacobian=jac_loss, ach_ratio=ach_loss, total=total)
-
+    breakdown = LossBreakdown(base=base_w, global_ko=gko_w, selective_ko=sko_w,
+                              drug=drug_w, total=total)
     return total, base_means, ko_means, breakdown
 
 
@@ -240,25 +258,25 @@ def evaluate_params(
     *,
     rng: np.random.Generator,
     executor: Optional[ProcessPoolExecutor] = None,
-    squared_loss: bool = True,
-    jacobian_weight: float = 1.0,
-    ach_ratio_weight: float = 2.0,
+    weight_base: float = 1.0,
+    weight_global_ko: float = 1.0,
+    weight_selective_ko: float = 1.0,
+    weight_drug: float = 1.0,
+    drug_param_overrides: Optional[dict[str, dict[str, float]]] = None,
 ) -> tuple[float, np.ndarray, KOMeans, LossBreakdown]:
-    """Evaluate a parameter set under baseline and knockout conditions.
-
-    Returns:
-        Tuple of (total_loss, means, ko_means, breakdown).
-    """
-    conditions = _build_conditions(params, target, cfg, rng)
+    """Evaluate a parameter set under baseline + KO + drug conditions."""
+    conditions = _build_conditions(params, target, cfg, rng,
+                                    drug_param_overrides=drug_param_overrides)
     if executor is not None and len(conditions) > 1:
         results = list(executor.map(run_condition, conditions))
     else:
         results = [run_condition(c) for c in conditions]
     return _loss_from_results(
         results, target, cfg, params,
-        squared_loss=squared_loss,
-        jacobian_weight=jacobian_weight,
-        ach_ratio_weight=ach_ratio_weight,
+        weight_base=weight_base,
+        weight_global_ko=weight_global_ko,
+        weight_selective_ko=weight_selective_ko,
+        weight_drug=weight_drug,
     )
 
 
@@ -363,9 +381,11 @@ def nevergrad_optimize(
     save_best_json: Optional[str] = None,
     step_offset: int = 0,
     append_log: bool = False,
-    squared_loss: bool = True,
-    jacobian_weight: float = 1.0,
-    ach_ratio_weight: float = 2.0,
+    weight_base: float = 1.0,
+    weight_global_ko: float = 1.0,
+    weight_selective_ko: float = 1.0,
+    weight_drug: float = 1.0,
+    drug_param_overrides: Optional[dict[str, dict[str, float]]] = None,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -387,13 +407,14 @@ def nevergrad_optimize(
     """
     rng = np.random.default_rng(seed)
 
+    n_drug_conditions = len({dt.drug for dt in target.drug_targets})
     n_conditions = 1 + sum([
         target.alpha7_ko_pyr is not None,
         target.alpha5_ko_pyr is not None,
         target.beta2_ko_pyr is not None,
         target.alpha7_ndnf_ko_ndnf is not None,
         target.alpha7_pv_ko_pv is not None,
-    ])
+    ]) + n_drug_conditions
 
     # Parallel batching is not currently wired up to the main loop below.
     # Run sequentially.
@@ -436,12 +457,15 @@ def nevergrad_optimize(
             x = ng_optimizer.ask()
             p = params_from_ng_dict(x.value, base)
 
-            cond_results = [run_condition(c) for c in _build_conditions(p, target, fit_cfg, rng)]
+            cond_results = [run_condition(c) for c in _build_conditions(
+                p, target, fit_cfg, rng, drug_param_overrides=drug_param_overrides,
+            )]
             L, means, ko_means, breakdown = _loss_from_results(
                 cond_results, target, fit_cfg, p,
-                squared_loss=squared_loss,
-                jacobian_weight=jacobian_weight,
-                ach_ratio_weight=ach_ratio_weight,
+                weight_base=weight_base,
+                weight_global_ko=weight_global_ko,
+                weight_selective_ko=weight_selective_ko,
+                weight_drug=weight_drug,
             )
 
             ng_optimizer.tell(x, L)
@@ -531,15 +555,153 @@ def _log_candidate(
         "alpha7_ndnf_ko": cand.ko_means.alpha7_ndnf_ko.tolist() if cand.ko_means.alpha7_ndnf_ko is not None else None,
         "alpha7_pv_ko":   cand.ko_means.alpha7_pv_ko.tolist()   if cand.ko_means.alpha7_pv_ko   is not None else None,
     }
+    if cand.ko_means.drug:
+        ko_means_dict["drugs"] = {drug: rates.tolist() for drug, rates in cand.ko_means.drug.items()}
     breakdown_dict = None
     if breakdown is not None:
         breakdown_dict = {"total": float(breakdown.total)}
-        if breakdown.firing_rate > 0:
-            breakdown_dict["firing_rate"] = float(breakdown.firing_rate)
-        if breakdown.ko_firing_rate > 0:
-            breakdown_dict["ko_firing_rate"] = float(breakdown.ko_firing_rate)
-        if breakdown.jacobian > 0:
-            breakdown_dict["jacobian"] = float(breakdown.jacobian)
-        if breakdown.ach_ratio > 0:
-            breakdown_dict["ach_ratio"] = float(breakdown.ach_ratio)
+        if breakdown.base > 0:
+            breakdown_dict["base"] = float(breakdown.base)
+        if breakdown.global_ko > 0:
+            breakdown_dict["global_ko"] = float(breakdown.global_ko)
+        if breakdown.selective_ko > 0:
+            breakdown_dict["selective_ko"] = float(breakdown.selective_ko)
+        if breakdown.drug > 0:
+            breakdown_dict["drug"] = float(breakdown.drug)
     log_best_result(path, step, cand.loss, means_dict, ko_means_dict, cand.params, target, breakdown_dict)
+
+
+# ============================================================================
+# STAGE 2: per-drug receptor-activation fitting
+# ============================================================================
+
+# Free CircuitParams fields in Stage 2 (g_alpha7 is frozen per Phase C decision).
+STAGE2_FREE_FIELDS = (
+    "act_alpha7_pv",
+    "act_alpha7_som",
+    "act_alpha7_ndnf",
+    "act_beta2",
+    "act_alpha5",
+)
+
+
+def _stage2_bounds() -> dict[str, ParamBound]:
+    """Biology-informed bounds on receptor activations for Stage 2 fits."""
+    # Activations are dimensionless multipliers on receptor-driven currents.
+    # 0 = full block, 1 = baseline, >1 = potentiation.
+    return {
+        "act_alpha7_pv":   ParamBound(0.0, 5.0, mode="lin"),
+        "act_alpha7_som":  ParamBound(0.0, 5.0, mode="lin"),
+        "act_alpha7_ndnf": ParamBound(0.0, 5.0, mode="lin"),
+        "act_beta2":       ParamBound(0.0, 5.0, mode="lin"),
+        "act_alpha5":      ParamBound(0.0, 5.0, mode="lin"),
+    }
+
+
+def _stage2_eval(params: CircuitParams, cfg: FitConfig, rng: np.random.Generator) -> tuple[bool, np.ndarray]:
+    """Average per-trial mean rates for a single CircuitParams set (no KOs)."""
+    return run_trials(params, cfg, int(rng.integers(0, 2**31 - 1)))
+
+
+def optimize_drug_activations(
+    base: CircuitParams,
+    drug_targets: list[DrugTarget],
+    fit_cfg: FitConfig,
+    *,
+    n_samples: int,
+    optimizer: str = "twopointde",
+    seed: Optional[int] = 0,
+    log_file: Optional[str] = None,
+    log_interval: int = 50,
+) -> dict[str, dict]:
+    """Per-drug fit of receptor activations.
+
+    For each distinct drug in `drug_targets`, runs an independent nevergrad
+    optimization that varies only `act_alpha7_pv/_som/_ndnf`, `act_beta2`,
+    `act_alpha5` (5 free params per drug, bounded [0, 5]). All other circuit
+    parameters are frozen.
+
+    Returns
+    -------
+    dict mapping drug_name -> {
+        "activations": {act_*: value},
+        "loss": float,
+        "predicted_means": [pyr, som, pv, vip, ndnf],
+        "targets": [{"population": ..., "target_hz": ..., "predicted_hz": ...}],
+    }
+    """
+    rng_master = np.random.default_rng(seed)
+    bounds = _stage2_bounds()
+    drugs_in_order: list[str] = []
+    for dt in drug_targets:
+        if dt.drug not in drugs_in_order:
+            drugs_in_order.append(dt.drug)
+
+    out: dict[str, dict] = {}
+    for drug in drugs_in_order:
+        this_drug_targets = [dt for dt in drug_targets if dt.drug == drug]
+
+        # Build per-drug nevergrad parametrization: only act_* fields are free.
+        # All other CircuitParams stay at `base`.
+        params_dict: dict[str, Any] = {}
+        for f in fields(CircuitParams):
+            if f.name in STAGE2_FREE_FIELDS:
+                bound = bounds[f.name]
+                init = float(np.clip(float(getattr(base, f.name)), bound.lo, bound.hi))
+                params_dict[f.name] = ng.p.Scalar(lower=bound.lo, upper=bound.hi, init=init)
+            else:
+                params_dict[f.name] = getattr(base, f.name)
+        parametrization = ng.p.Dict(**params_dict)
+
+        ng_opt = _build_optimizer(optimizer, parametrization, n_samples, num_workers=1)
+        ng_opt.parametrization.random_state = np.random.RandomState(
+            int(rng_master.integers(0, 2**31 - 1))
+        )
+
+        rng_eval = np.random.default_rng(int(rng_master.integers(0, 2**31 - 1)))
+
+        best_loss = float("inf")
+        best_means: Optional[np.ndarray] = None
+        best_acts: dict[str, float] = {}
+
+        print(f"\n--- Stage 2 fit: drug = {drug} ({len(this_drug_targets)} measurement(s)) ---")
+        pbar = tqdm(range(1, n_samples + 1), desc=f"  {drug}", unit="step")
+        for step in pbar:
+            x = ng_opt.ask()
+            cand = params_from_ng_dict(x.value, base)
+            ok, means = _stage2_eval(cand, fit_cfg, rng_eval)
+            if not ok:
+                L = 1e9
+            else:
+                L = drug_loss(means, this_drug_targets, drug)
+            ng_opt.tell(x, L)
+            if L < best_loss:
+                best_loss = L
+                best_means = means.copy() if ok else None
+                best_acts = {k: float(v) for k, v in x.value.items() if k in STAGE2_FREE_FIELDS}
+            pbar.set_postfix({"loss": f"{best_loss:.4g}"})
+
+            if log_file and step % log_interval == 0:
+                with open(log_file, "a", encoding="utf-8") as fh:
+                    import json as _json
+                    fh.write(_json.dumps({
+                        "drug": drug, "step": step, "loss": best_loss,
+                        "activations": best_acts,
+                    }) + "\n")
+        pbar.close()
+
+        predicted = best_means.tolist() if best_means is not None else [float("nan")] * 5
+        out[drug] = {
+            "activations": best_acts,
+            "loss": float(best_loss),
+            "predicted_means": predicted,
+            "targets": [
+                {
+                    "population": dt.population,
+                    "target_hz": dt.target_hz,
+                    "predicted_hz": predicted[{"PYR": 0, "SOM": 1, "PV": 2, "VIP": 3, "NDNF": 4}[dt.population]],
+                }
+                for dt in this_drug_targets
+            ],
+        }
+    return out

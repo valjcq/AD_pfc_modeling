@@ -3,8 +3,9 @@
 Population order: [PYR, SOM, PV, VIP, NDNF]  (indices 0..4)
 
 NDNF (added 2026-05): subtractive dendritic inhibitor like SOM.
-  Receives PYR (w_ne) and SOM (w_ns).
-  Projects to PYR (w_en), PV (w_pn), VIP (w_vn) — all subtractive ×g_gaba.
+  Receives SOM (w_sn) only.
+  Projects to PYR (w_ne), PV (w_np), VIP (w_nv) — all subtractive ×g_gaba.
+  Naming convention: w_XY = X (source) -> Y (target).
 """
 
 from __future__ import annotations
@@ -60,16 +61,16 @@ def _euler_loop(
     ggaba: float,
     # PYR-side / NMDA
     J_NMDA: float, S_pyr_init: float,
-    w_pe: float, w_se: float, w_en: float,
+    w_pe: float, w_se: float, w_ne: float,
     # SOM input
     w_es: float, w_vs: float,
     # PV input
     w_ep: float, w_pp: float, w_sp: float,
-    w_vp: float, w_pn: float,
+    w_vp: float, w_np: float,
     # VIP input
-    w_ev: float, w_vn: float,
-    # NDNF input
-    w_ne: float, w_ns: float,
+    w_ev: float, w_nv: float,
+    # NDNF input (only SOM -> NDNF; PYR -> NDNF removed)
+    w_sn: float,
     # Adaptation
     J_adapt_pyr: float, tau_adapt_pyr: float,
     J_adapt_som: float, tau_adapt_som: float,
@@ -106,7 +107,7 @@ def _euler_loop(
         xi = noise_arr[k]
         I_pyr = (J_NMDA * S_pyr) / denom \
                 - ggaba * w_se * r_som \
-                - ggaba * w_en * r_ndnf \
+                - ggaba * w_ne * r_ndnf \
                 - Iap \
                 + I_ext_pyr \
                 + noise_scale_pyr * xi
@@ -119,15 +120,14 @@ def _euler_loop(
                 - ggaba * w_pp * r_pv \
                 - ggaba * w_sp * r_som \
                 - w_vp * r_vip \
-                - ggaba * w_pn * r_ndnf \
+                - ggaba * w_np * r_ndnf \
                 + I_ext_pv \
                 + noise_scale_pv * xi
         I_vip = w_ev * r_pyr \
-                - ggaba * w_vn * r_ndnf \
+                - ggaba * w_nv * r_ndnf \
                 + I_ext_vip \
                 + noise_scale_vip * xi
-        I_ndnf = w_ne * r_pyr \
-                 - ggaba * w_ns * r_som \
+        I_ndnf = - ggaba * w_sn * r_som \
                  + I_ext_ndnf \
                  + noise_scale_ndnf * xi
 

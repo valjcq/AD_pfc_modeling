@@ -1,25 +1,47 @@
 """
-Loss functions for parameter optimization.
+Loss functions for parameter optimization (5-population NDNF model).
 
-This module contains:
-- TargetRates: Target firing rates for optimization
-- FitConfig: Configuration for fitting/optimization
-- loss_from_means: Loss for base condition
-- loss_from_ko_pyr: Loss for knockout conditions
-- jacobian_connectivity_penalty: Penalty for degenerate (near-zero effective gain) connections
-- ach_ratio_penalty: Penalty for β2/α7 cholinergic current ratio deviating from ~35
+All loss terms are squared log-relative-errors (fold-change in dex):
+
+    L_term = ( log( max(actual, EPS) / target ) )^2
+
+This is target-normalised (a fold-change) AND symmetric: a 2× over- or
+under-shoot contribute equally, and as sim → 0 the loss diverges (no
+saturation), so the optimiser cannot park populations at zero. EPS=0.01 Hz
+is a numerical floor.
+
+No absolute "near-zero" / "wrong direction" / "min effect" ad-hoc penalties.
+
+Buckets exposed by `loss_from_means_normalized` / `loss_from_ko_normalized`:
+    - `base`           : 5 baseline firing-rate targets
+    - `global_ko`      : PYR rate under each global KO (α7, α5, β2)
+    - `selective_ko`   : NDNF / PV rate under their selective α7 KOs
+    - `drug`           : per-drug measurements (Stage 2)
+
+Per-bucket CLI weights:  --weight_base, --weight_global_ko,
+                          --weight_selective_ko, --weight_drug.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
 
 from .simulation import NoiseType
-from .jacobian import compute_jacobian
-from .params import CircuitParams
+
+
+@dataclass(frozen=True)
+class DrugTarget:
+    """Measured firing rate under a drug condition.
+
+    Each `DrugTarget` carries the drug label and the value measured on a
+    specific cell type (which population's rate to compare against).
+    """
+    drug: str         # "MLA" | "PNU" | "nicotine"
+    population: str   # "PYR" | "SOM" | "PV" | "VIP" | "NDNF"
+    target_hz: float
 
 
 @dataclass(frozen=True)
@@ -33,6 +55,10 @@ class TargetRates:
     Cell-type-selective α7 KO targets (measured on the *deleted* cell type):
       - alpha7_ndnf_ko_ndnf: NDNF firing rate under NDNF-selective α7 KO
       - alpha7_pv_ko_pv:     PV firing rate   under PV-selective   α7 KO
+
+    Drug-condition targets (Stage 2):
+      - drug_targets: list of (drug, population, target_hz) tuples.
+        Each one contributes ((actual - target_hz)/target_hz)^2 to the loss.
     """
     mean_r_pyr: float
     mean_r_som: float
@@ -46,6 +72,8 @@ class TargetRates:
     alpha7_ndnf_ko_ndnf: Optional[float] = None
     alpha7_pv_ko_pv: Optional[float] = None
 
+    drug_targets: tuple[DrugTarget, ...] = field(default_factory=tuple)
+
     def as_array(self) -> np.ndarray:
         """Return base targets as array [pyr, som, pv, vip, ndnf]."""
         return np.array(
@@ -58,179 +86,65 @@ class TargetRates:
 @dataclass(frozen=True)
 class FitConfig:
     """Configuration for simulation and optimization."""
-    T_ms: float = 2500.0          # Simulation duration
-    dt_ms: float = 0.1            # Time step
-    burn_in_ms: float = 1200.0    # Burn-in period (skip transients) — reduced for faster convergence with noise
-    window_ms: float = 500.0      # Averaging window
-    record_dt_ms: float = 2.0     # Recording interval (ms) — 2ms resolution sufficient for ring dynamics
+    T_ms: float = 2500.0
+    dt_ms: float = 0.1
+    burn_in_ms: float = 1200.0
+    window_ms: float = 500.0
+    record_dt_ms: float = 2.0
 
-    n_trials: int = 8             # Number of trials per parameter set
-    init_rate_scale: float = 0.2  # Scale for random initial conditions
+    n_trials: int = 8
+    init_rate_scale: float = 0.2
 
-    noise_type: NoiseType = "white"  # Always white noise for optimization (sigma_noise handles amplitude)
+    noise_type: NoiseType = "white"
     tau_noise_ms: float = 5.0
 
-    max_rate: float = 200.0       # Maximum allowed rate (stability check)
-
-    ko_min_effect_penalty: float = 5.0      # Penalty for weak KO effect
-    ko_wrong_direction_penalty: float = 10.0  # Penalty for wrong direction
+    max_rate: float = 200.0
 
 
-def loss_from_means(
-    means: np.ndarray,
-    target: TargetRates,
-    *,
-    near_zero_threshold: float = 0.5,
-    near_zero_weight: float = 10.0,
-    squared: bool = True,
-) -> float:
+# Numerical floor on simulated rates (Hz). Below this we treat the rate as
+# `LOG_EPS` for the log-loss to keep the gradient sane while still strongly
+# penalising silenced solutions.
+LOG_EPS = 0.01
+
+
+def _log_sq(actual: float, target: float, *, eps: float = LOG_EPS) -> float:
+    """Squared log fold-change between actual and target.
+
+    L = ( log( max(actual, eps) / max(target, eps) ) )^2
+
+    Symmetric in over/undershoot. Returns 0 when actual == target,
+    grows unboundedly as actual → 0 or actual → ∞.
     """
-    Compute loss between simulated mean firing rates and targets.
+    a = max(float(actual), eps)
+    t = max(float(target), eps)
+    return float(np.log(a / t) ** 2)
 
-    Uses MSPE (default, squared=True) or MAPE (squared=False) plus a penalty
-    for rates that are too close to zero (to avoid silent solutions).
 
-    Loss = mean((actual - target)^2 / target^2)    [squared=True, default]
-         = mean(|actual - target| / target)        [squared=False]
-    + near_zero_weight * sum(near_zero_penalties)
-    """
+def loss_from_means_normalized(means: np.ndarray, target: TargetRates) -> float:
+    """Sum of per-population log-fold-change² over the 5 baseline rates."""
     tgt = target.as_array()
-    denom = np.maximum(np.abs(tgt), 1e-3)
-    rel_err = (means - tgt) / denom
-    base_loss = float(np.mean(rel_err ** 2 if squared else np.abs(rel_err)))
-
-    # Penalize rates that are too close to zero (biologically unrealistic)
-    below = np.maximum(near_zero_threshold - means, 0.0)
-    near_zero = float(np.sum((below / near_zero_threshold) ** 2))
-    return base_loss + near_zero_weight * near_zero
+    out = 0.0
+    for i in range(len(tgt)):
+        out += _log_sq(float(means[i]), float(tgt[i]))
+    return out
 
 
-def loss_from_ko_pyr(
-    pyr_mean: float,
-    target_pyr: float,
-    base_pyr: float,
-    *,
-    near_zero_threshold: float = 0.5,
-    near_zero_weight: float = 10.0,
-    min_effect_weight: float = 5.0,
-    wrong_direction_weight: float = 10.0,
-) -> float:
+def loss_from_ko_normalized(actual: float, target_value: float) -> float:
+    """Single log-fold-change² for one KO/drug measurement."""
+    return _log_sq(actual, target_value)
+
+
+def drug_loss(means: np.ndarray, drug_targets: list[DrugTarget],
+              drug_name: str) -> float:
+    """Sum of squared log-fold-changes for every DrugTarget of `drug_name`.
+
+    `means` is a (5,) array indexed [PYR, SOM, PV, VIP, NDNF].
+    Used by Stage 2 (per-drug receptor-activation fitting).
     """
-    Compute loss for knockout (KO) condition targeting PYR firing rate.
-
-    This loss function ensures the model correctly captures receptor knockout effects:
-    1. The KO firing rate should match the target
-    2. The change from baseline should be in the correct direction
-    3. The effect magnitude should be similar to expected
-
-    Example: If alpha7 KO should increase PYR firing from 5 to 7:
-        - target_pyr = 7.0 (expected under KO)
-        - base_pyr = 5.0 (baseline condition)
-        - expected change = +2
-        - If actual change is negative, apply wrong_direction penalty
-        - If actual change is too small, apply min_effect penalty
-    """
-    # Squared percentage error (consistent with base loss)
-    denom = max(abs(target_pyr), 1e-3)
-    mse = ((pyr_mean - target_pyr) / denom) ** 2
-
-    # Penalty for near-zero firing (biologically unrealistic)
-    below = max(near_zero_threshold - pyr_mean, 0.0)
-    near_zero = (below / near_zero_threshold) ** 2
-
-    # Calculate expected vs actual effect of knockout
-    expected = target_pyr - base_pyr  # Expected change due to KO
-    actual = pyr_mean - base_pyr      # Actual change observed
-    exp_mag = abs(expected)
-    act_mag = abs(actual)
-
-    min_effect = 0.0
-    wrong_dir = 0.0
-    if exp_mag > 0.1:  # Only penalize if expected effect is substantial
-        # Penalty if effect is too weak (should see at least some change)
-        ratio = act_mag / exp_mag
-        min_effect = max(0.0, 1.0 - ratio) ** 2
-
-        # Penalty if effect is in wrong direction (e.g., decrease when should increase)
-        same_sign = (expected > 0 and actual > 0) or (expected < 0 and actual < 0) or act_mag < 0.01
-        if not same_sign:
-            wrong_dir = (act_mag / exp_mag) ** 2
-
-    return mse + near_zero_weight * near_zero + min_effect_weight * min_effect + wrong_direction_weight * wrong_dir
-
-
-# Core connections that must have non-negligible effective gain.
-# Population order in the Jacobian: PYR=0 SOM=1 PV=2 VIP=3 NDNF=4.
-_REQUIRED_CONNECTIONS: list[tuple[int, int]] = [
-    (0, 0),  # PYR  → PYR
-    (1, 0),  # PYR  → SOM
-    (2, 0),  # PYR  → PV
-    (4, 0),  # PYR  → NDNF
-    (0, 1),  # SOM  → PYR
-    (0, 2),  # PV   → PYR
-    (2, 2),  # PV   → PV
-    (1, 3),  # VIP  → SOM
-    (0, 4),  # NDNF → PYR
-]
-
-
-def ach_ratio_penalty(
-    params: CircuitParams,
-    *,
-    target_ratio: float = 35.0,
-    weight: float = 2.0,
-    min_current: float = 0.001,
-) -> float:
-    """Penalize solutions where the β2/α7 cholinergic current ratio on SOM
-    deviates from the pharmacologically expected value of ~35.
-
-    At physiological ACh (1.77 μM), β2-type currents (including α5α4β2) should be
-    35× stronger than α7 currents (Koukouli et al. 2025). SOM is the only population
-    that expresses both subtypes (I_alpha7_som and I_beta2_som), so the constraint is:
-
-        I_beta2_som / I_alpha7_som ≈ 35
-
-    The penalty is quadratic in the normalised deviation:
-
-        penalty = weight * ((ratio - target_ratio) / target_ratio)²
-
-    This is skipped when both currents are below `min_current` (i.e. in a pure
-    baseline scenario where ACh receptor parameters have not been fitted yet).
-    Set `weight=0.0` to deactivate entirely.
-    """
-    if weight == 0.0:
-        return 0.0
-
-    alpha7 = params.I_alpha7_som
-    beta2 = params.I_beta2_som
-
-    # Skip in pure-baseline scenarios where neither current has been set
-    if max(alpha7, beta2) < min_current:
-        return 0.0
-
-    ratio = beta2 / max(alpha7, min_current)
-    return weight * ((ratio - target_ratio) / target_ratio) ** 2
-
-
-def jacobian_connectivity_penalty(
-    params: CircuitParams,
-    r_ss: np.ndarray,
-    *,
-    threshold: float = 0.05,
-    weight: float = 20.0,
-) -> float:
-    """Penalize solutions where core connections have negligible effective gain.
-
-    For each required connection (i, j) in _REQUIRED_CONNECTIONS, if |J[i,j]| <
-    threshold the penalty grows quadratically:
-        weight * sum( ((threshold - |J|) / threshold)^2 ).
-    """
-    J = compute_jacobian(params, r_ss)
-    penalty = 0.0
-
-    for (i, j) in _REQUIRED_CONNECTIONS:
-        gain = abs(J[i, j])
-        if gain < threshold:
-            penalty += weight * ((threshold - gain) / threshold) ** 2
-
-    return penalty
+    pop_idx = {"PYR": 0, "SOM": 1, "PV": 2, "VIP": 3, "NDNF": 4}
+    total = 0.0
+    for dt in drug_targets:
+        if dt.drug != drug_name:
+            continue
+        total += _log_sq(float(means[pop_idx[dt.population]]), dt.target_hz)
+    return total

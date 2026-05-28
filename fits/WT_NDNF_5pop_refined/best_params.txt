@@ -2,27 +2,27 @@
   FIT SUMMARY  —  best_params.json
   Generated: 2026-05-27
 ================================================================================
-  Loss: 1.101
+  Loss: 1.003
 
   FIRING RATES: actual vs target
   ──────────────────────────────────────────────────────────────────────────────
   Condition       Pop     Actual    Target    Error
   ──────────────────────────────────────────────────────────────────────────────
-  base            PYR      0.931     1.733   -46.3%
-  base            SOM      1.784     1.356   +31.5%
-  base            PV       1.495     1.528    -2.1%
-  base            VIP      3.109     2.979    +4.4%
-  base            NDNF     3.299     2.531   +30.4%
+  base            PYR      1.019     1.733   -41.2%
+  base            SOM      1.398     1.356    +3.1%
+  base            PV       1.756     1.528   +14.9%
+  base            VIP      3.077     2.979    +3.3%
+  base            NDNF     2.809     2.531   +11.0%
   ──────────────────────────────────────────────────────────────────────────────
-  alpha7_ko       PYR      1.859     2.193   -15.2%
+  alpha7_ko       PYR      2.036     2.193    -7.2%
   ──────────────────────────────────────────────────────────────────────────────
-  alpha5_ko       PYR      0.929     0.476   +95.1%
+  alpha5_ko       PYR      1.029     0.476  +116.1%
   ──────────────────────────────────────────────────────────────────────────────
-  beta2_ko        PYR      1.246     1.083   +15.1%
+  beta2_ko        PYR      1.329     1.083   +22.7%
   ──────────────────────────────────────────────────────────────────────────────
-  alpha7_ndnf_ko  NDNF     2.344     3.077   -23.8%
+  alpha7_ndnf_ko  NDNF     2.529     3.077   -17.8%
   ──────────────────────────────────────────────────────────────────────────────
-  alpha7_pv_ko    PV       1.378     1.397    -1.3%
+  alpha7_pv_ko    PV       1.269     1.397    -9.2%
   ──────────────────────────────────────────────────────────────────────────────
 
   TRANSFER FUNCTION  Phi(I) = c·(I−Θ) / (1 − exp(−g·c·(I−Θ)))
@@ -39,29 +39,29 @@
   ──────────────────────────────────────────────────────────────────────────────
                 PYR        SOM         PV        VIP       NDNF
   ──────────────────────────────────────────────────────────────────────────────
-  PYR       +0.0687    -2.8644    -0.2185    +0.0000    -3.0605
-  SOM       +2.0057    +0.0000    +0.0000    -1.5324    +0.0000
-  PV        +0.2995    -0.5075    -3.5203    -0.5580    -0.8419
-  VIP       +0.2144    +0.0000    +0.0000    +0.0000    -4.6454
-  NDNF      +0.0000    -1.1036    +0.0000    +0.0000    +0.0000
+  PYR       +1.0036    -9.4034    -2.9769    +0.0000    -9.4653
+  SOM       +3.4768    +0.0000    +0.0000    -5.3157    +0.0000
+  PV        +0.3701    -0.6367    -0.8029    -0.5737    -1.7095
+  VIP       +0.1452    +0.0000    +0.0000    +0.0000    -4.8865
+  NDNF      +0.0000    -2.8382    +0.0000    +0.0000    +0.0000
   ──────────────────────────────────────────────────────────────────────────────
 
   CONNECTION DETAILS  (raw weight → effective gain)
   ──────────────────────────────────────────────────────────────────────────────
-  PYR  → PYR  (NMDA recurrent excitation)       w=   0.054  J=+0.0687  [moderate  ]
-  PYR  → SOM  (recruits dendritic inh.)         w=   0.003  J=+2.0057  [STRONG    ]
-  PYR  → PV   (fast feedback inh.)              w=   0.005  J=+0.2995  [STRONG    ]
-  PYR  → VIP  (recruits disinhibition)          w=   0.002  J=+0.2144  [STRONG    ]
-  SOM  → PYR  (dendritic inhibition)            w=   0.005  J=-2.8644  [STRONG    ]
-  PV   → PYR  (perisomatic inhibition)          w=   0.009  J=-0.2185  [STRONG    ]
-  PV   → PV   (self-inhibition)                 w=   0.008  J=-3.5203  [STRONG    ]
-  SOM  → PV   (cross-inhibition)                w=   0.001  J=-0.5075  [STRONG    ]
-  VIP  → SOM  (disinhibition pathway)           w=   0.002  J=-1.5324  [STRONG    ]
-  VIP  → PV   (weak disinhibition)              w=   0.009  J=-0.5580  [STRONG    ]
-  SOM  → NDNF (subtractive inhibition)          w=   0.001  J=-1.1036  [STRONG    ]
-  NDNF → PYR  (dendritic inhibition)            w=   0.005  J=-3.0605  [STRONG    ]
-  NDNF → PV   (subtractive inhibition)          w=   0.002  J=-0.8419  [STRONG    ]
-  NDNF → VIP  (subtractive inhibition)          w=   0.006  J=-4.6454  [STRONG    ]
+  PYR  → PYR  (NMDA recurrent excitation)       w=   0.256  J=+1.0036  [STRONG    ]
+  PYR  → SOM  (recruits dendritic inh.)         w=   0.006  J=+3.4768  [STRONG    ]
+  PYR  → PV   (fast feedback inh.)              w=   0.005  J=+0.3701  [STRONG    ]
+  PYR  → VIP  (recruits disinhibition)          w=   0.001  J=+0.1452  [STRONG    ]
+  SOM  → PYR  (dendritic inhibition)            w=   0.005  J=-9.4034  [STRONG    ]
+  PV   → PYR  (perisomatic inhibition)          w=   0.007  J=-2.9769  [STRONG    ]
+  PV   → PV   (self-inhibition)                 w=   0.002  J=-0.8029  [STRONG    ]
+  SOM  → PV   (cross-inhibition)                w=   0.001  J=-0.6367  [STRONG    ]
+  VIP  → SOM  (disinhibition pathway)           w=   0.009  J=-5.3157  [STRONG    ]
+  VIP  → PV   (weak disinhibition)              w=   0.008  J=-0.5737  [STRONG    ]
+  SOM  → NDNF (subtractive inhibition)          w=   0.004  J=-2.8382  [STRONG    ]
+  NDNF → PYR  (dendritic inhibition)            w=   0.005  J=-9.4653  [STRONG    ]
+  NDNF → PV   (subtractive inhibition)          w=   0.004  J=-1.7095  [STRONG    ]
+  NDNF → VIP  (subtractive inhibition)          w=   0.007  J=-4.8865  [STRONG    ]
   ──────────────────────────────────────────────────────────────────────────────
 
 ================================================================================

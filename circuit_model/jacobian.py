@@ -54,20 +54,19 @@ def _total_inputs(
     S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
     I_pyr = ((params.J_NMDA * S_star) / denom
              - ggaba * params.w_se * r_som
-             - ggaba * params.w_en * r_ndnf
+             - ggaba * params.w_ne * r_ndnf
              - I_ap + params.I_ext_pyr())
     I_som = (params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som())
     I_pv  = (params.w_ep * r_pyr
              - ggaba * params.w_pp * r_pv
              - ggaba * params.w_sp * r_som
              - params.w_vp * r_vip
-             - ggaba * params.w_pn * r_ndnf
+             - ggaba * params.w_np * r_ndnf
              + params.I_ext_pv())
     I_vip = (params.w_ev * r_pyr
-             - ggaba * params.w_vn * r_ndnf
+             - ggaba * params.w_nv * r_ndnf
              + params.I_ext_vip())
-    I_ndnf = (params.w_ne * r_pyr
-              - ggaba * params.w_ns * r_som
+    I_ndnf = (- ggaba * params.w_sn * r_som
               + params.I_ext_ndnf())
 
     return I_pyr, I_som, I_pv, I_vip, I_ndnf
@@ -101,17 +100,17 @@ def compute_jacobian(
         -ggaba * params.w_se,
         -params.J_NMDA * S_star * ggaba * params.w_pe / (denom ** 2),
         0.0,
-        -ggaba * params.w_en,
+        -ggaba * params.w_ne,
     )
     # ∂I_som / ∂r_j
     dIsom = (params.w_es, 0.0, 0.0, -params.w_vs, 0.0)
     # ∂I_pv / ∂r_j
     dIpv  = (params.w_ep, -ggaba * params.w_sp, -ggaba * params.w_pp,
-             -params.w_vp, -ggaba * params.w_pn)
+             -params.w_vp, -ggaba * params.w_np)
     # ∂I_vip / ∂r_j
-    dIvip = (params.w_ev, 0.0, 0.0, 0.0, -ggaba * params.w_vn)
-    # ∂I_ndnf / ∂r_j
-    dIndnf = (params.w_ne, -ggaba * params.w_ns, 0.0, 0.0, 0.0)
+    dIvip = (params.w_ev, 0.0, 0.0, 0.0, -ggaba * params.w_nv)
+    # ∂I_ndnf / ∂r_j  (no PYR -> NDNF; only SOM -> NDNF)
+    dIndnf = (0.0, -ggaba * params.w_sn, 0.0, 0.0, 0.0)
 
     J = np.array([
         [dphi_pyr  * x for x in dIpyr],
@@ -124,22 +123,23 @@ def compute_jacobian(
 
 
 # (row, col, attr, description, expected_sign)
+# Row = target (output channel), Col = source. Names follow the
+# `w_XY = X (source) -> Y (target)` convention used throughout the codebase.
 _CONNECTIONS = [
     (0, 0, "J_NMDA", "PYR  → PYR  (NMDA recurrent excitation)", "+"),
-    (1, 0, "w_es",   "PYR  → SOM  (recruits dendritic inh.)",    "+"),
-    (2, 0, "w_ep",   "PYR  → PV   (fast feedback inh.)",          "+"),
-    (3, 0, "w_ev",   "PYR  → VIP  (recruits disinhibition)",      "+"),
-    (4, 0, "w_ne",   "PYR  → NDNF (excitatory drive)",            "+"),
-    (0, 1, "w_se",   "SOM  → PYR  (dendritic inhibition)",        "-"),
-    (0, 2, "w_pe",   "PV   → PYR  (perisomatic inhibition)",      "-"),
-    (2, 2, "w_pp",   "PV   → PV   (self-inhibition)",             "-"),
-    (2, 1, "w_sp",   "SOM  → PV   (cross-inhibition)",            "-"),
-    (1, 3, "w_vs",   "VIP  → SOM  (disinhibition pathway)",       "-"),
-    (2, 3, "w_vp",   "VIP  → PV   (weak disinhibition)",          "-"),
-    (4, 1, "w_ns",   "SOM  → NDNF (subtractive inhibition)",      "-"),
-    (0, 4, "w_en",   "NDNF → PYR  (dendritic inhibition)",        "-"),
-    (2, 4, "w_pn",   "NDNF → PV   (subtractive inhibition)",      "-"),
-    (3, 4, "w_vn",   "NDNF → VIP  (subtractive inhibition)",      "-"),
+    (1, 0, "w_es",   "PYR  → SOM  (recruits dendritic inh.)",   "+"),
+    (2, 0, "w_ep",   "PYR  → PV   (fast feedback inh.)",         "+"),
+    (3, 0, "w_ev",   "PYR  → VIP  (recruits disinhibition)",     "+"),
+    (0, 1, "w_se",   "SOM  → PYR  (dendritic inhibition)",       "-"),
+    (0, 2, "w_pe",   "PV   → PYR  (perisomatic inhibition)",     "-"),
+    (2, 2, "w_pp",   "PV   → PV   (self-inhibition)",            "-"),
+    (2, 1, "w_sp",   "SOM  → PV   (cross-inhibition)",           "-"),
+    (1, 3, "w_vs",   "VIP  → SOM  (disinhibition pathway)",      "-"),
+    (2, 3, "w_vp",   "VIP  → PV   (weak disinhibition)",         "-"),
+    (4, 1, "w_sn",   "SOM  → NDNF (subtractive inhibition)",     "-"),
+    (0, 4, "w_ne",   "NDNF → PYR  (dendritic inhibition)",       "-"),
+    (2, 4, "w_np",   "NDNF → PV   (subtractive inhibition)",     "-"),
+    (3, 4, "w_nv",   "NDNF → VIP  (subtractive inhibition)",     "-"),
 ]
 
 _POPS = ["PYR ", "SOM ", "PV  ", "VIP ", "NDNF"]

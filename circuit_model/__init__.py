@@ -30,7 +30,7 @@ Usage:
 from .params import CircuitParams, ParamBound, default_bounds
 from .transfer import phi_wong_wang
 from .simulation import SimulationResult, simulate_circuit, mean_rates, NoiseType, validate_fast_loop
-from .loss import TargetRates, FitConfig, loss_from_means, loss_from_ko_pyr, ach_ratio_penalty
+from .loss import TargetRates, FitConfig, loss_from_means_normalized, loss_from_ko_normalized, DrugTarget
 from .optimization import (
     KOMeans,
     Candidate,
@@ -80,9 +80,9 @@ __all__ = [
     # Loss/targets
     "TargetRates",
     "FitConfig",
-    "loss_from_means",
-    "loss_from_ko_pyr",
-    "ach_ratio_penalty",
+    "loss_from_means_normalized",
+    "loss_from_ko_normalized",
+    "DrugTarget",
     # Optimization
     "KOMeans",
     "Candidate",

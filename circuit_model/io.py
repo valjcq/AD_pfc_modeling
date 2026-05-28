@@ -59,6 +59,17 @@ def load_params_json(path: str) -> "CircuitParams":
         for k in ("act_alpha7_pv", "act_alpha7_som", "act_alpha7_ndnf"):
             d.setdefault(k, a7)
 
+    # Migrate old NDNF weight names (first=target convention) → new (first=source)
+    # and drop the now-removed PYR → NDNF weight (`w_en` in the old naming).
+    _ndnf_renames = {"w_ns": "w_sn", "w_pn": "w_np", "w_vn": "w_nv"}
+    for old, new in _ndnf_renames.items():
+        if old in d:
+            d.setdefault(new, d.pop(old))
+    if "w_en" in d:
+        # old `w_en` was PYR -> NDNF; that connection has been removed.
+        warnings.warn("JSON contains 'w_en' (PYR→NDNF) which has been removed; ignoring.", stacklevel=2)
+        d.pop("w_en")
+
     base = CircuitParams()
     allowed = {fld.name for fld in fields(CircuitParams)}
     clean = {k: d[k] for k in d if k in allowed}
