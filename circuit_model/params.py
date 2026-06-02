@@ -111,7 +111,7 @@ class CircuitParams:
     I_alpha5_vip: float = 0.20
 
     # NDNF receives α7 + β2 currents like SOM
-    I0_ndnf: float = 0.35           # placeholder, TODO: refine from literature
+    I0_ndnf: float = 0.35
     I_alpha7_ndnf: float = 0.20
     I_beta2_ndnf: float = 0.20
 

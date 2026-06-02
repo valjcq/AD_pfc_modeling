@@ -19,4 +19,4 @@ GAMMA_NMDA = 0.641    # dimensionless
 R_MAX_PV   = 70.6   # Hz  (2 × 35.3)
 R_MAX_SOM  = 70.4   # Hz  (2 × 35.2)
 R_MAX_VIP  = 137.6  # Hz  (2 × 68.8)
-R_MAX_NDNF = 70.0   # Hz  (placeholder, TODO: refine from literature)
+R_MAX_NDNF = 100.0   # Hz (from Letzkus 2024)
