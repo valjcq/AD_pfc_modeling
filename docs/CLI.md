@@ -101,6 +101,7 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--target_alpha7_ko_pyr FLOAT`        | Global α7-KO (all per-cell α7 = 0) | PYR  |
 | `--target_alpha5_ko_pyr FLOAT`        | Global α5-KO  | PYR  |
 | `--target_beta2_ko_pyr FLOAT`         | Global β2-KO  | PYR  |
+| `--target_alpha7_beta2_ko_pyr FLOAT`  | α7β2 double-KO (all per-cell α7 = 0 **and** `act_beta2 = 0`) | PYR  |
 | `--target_alpha7_ndnf_ko_ndnf FLOAT`  | NDNF-selective α7-KO (only `act_alpha7_ndnf = 0`) | NDNF |
 | `--target_alpha7_pv_ko_pv FLOAT`      | PV-selective α7-KO (only `act_alpha7_pv = 0`)     | PV   |
 
@@ -123,6 +124,8 @@ The optimizer always simulates every KO condition (so they appear in the report)
 | `--n_samples INT`     | 5000 | Total Nevergrad budget |
 | `--top_k INT`         | 10 | Number of top candidates to retain |
 | `--optimizer {de,twopointde,cma,chaining,auto}` | `de` | Nevergrad optimizer choice. `de` is an alias for `twopointde`. `chaining` = TwoPointsDE → Nelder-Mead. |
+| `--polish_samples INT` | 0 | If >0, run a CMA-ES local polish warm-started from the best candidate for this many extra steps after the global search. |
+| `--final_eval_trials INT` | 0 | If > `--n_trials`, re-evaluate the top-k candidates with this many trials and re-rank, so the reported best is a low-variance estimate (reduces run-to-run variance). |
 | `--seed INT`          | None | RNG seed |
 
 ### Simulation settings
@@ -176,7 +179,7 @@ There are no Jacobian or ACh-ratio penalties anymore — disabled per project de
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--output_dir PATH` | — | Directory for all run outputs (`best_params.json/.txt`, `log.jsonl`, loss-evolution plots). Recommended when running many experiments. |
+| `--output_dir PATH` | — | Directory for all run outputs (`best_params.json/.txt`, `log.jsonl`, loss-evolution plots, `commands.log`). Recommended when running many experiments. Every run appends its exact `python -m circuit_model …` invocation to `commands.log` for reproducibility. |
 | `--save_best_json PATH` | `best_params.json` | Save best parameter set to this JSON. If `--output_dir` is set and this is at the default, the file goes inside `--output_dir`. |
 | `--log_file PATH` | `{output_dir}/log.jsonl` | JSONL log of best-so-far per `--log_interval` steps |
 | `--log_interval INT` | 50 | Logging period |
@@ -191,8 +194,10 @@ python -m circuit_model optimize \
     --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
+    --target_alpha7_beta2_ko_pyr 1.3465 \
     --target_alpha7_ndnf_ko_ndnf 3.0767 --target_alpha7_pv_ko_pv 1.3966 \
-    --optimizer twopointde --n_samples 20000 \
+    --optimizer twopointde --n_samples 50000 \
+    --polish_samples 10000 --final_eval_trials 32 \
     --output_dir fits/WT_NDNF_5pop
 ```
 

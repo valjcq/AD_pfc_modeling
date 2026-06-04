@@ -32,6 +32,28 @@ def output_dir(base_dir: str) -> str:
     return base_dir
 
 
+def append_command_log(out_dir: "str | Path", argv: Optional[list] = None) -> None:
+    """Append the invoking command line to ``<out_dir>/commands.log`` (reproducibility).
+
+    Every invocation that writes into ``out_dir`` records a timestamped, runnable
+    ``python -m circuit_model ...`` line, so the exact command that produced the
+    artifacts in that directory is always recoverable. Appends (never truncates),
+    so the file is a full history of runs touching this output dir.
+    """
+    import sys
+    import shlex
+    import datetime
+
+    argv = list(sys.argv if argv is None else argv)
+    # argv[0] is the __main__.py path; rebuild as the documented module entry point.
+    cmd = "python -m circuit_model " + shlex.join(argv[1:])
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().isoformat(timespec="seconds")
+    with open(out / "commands.log", "a", encoding="utf-8") as f:
+        f.write(f"[{stamp}] {cmd}\n")
+
+
 def load_params_json(path: str) -> "CircuitParams":
     """Load CircuitParams from a JSON file."""
     from .params import CircuitParams

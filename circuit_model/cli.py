@@ -22,7 +22,7 @@ import numpy as np
 
 from .params import CircuitParams, ParamBound, default_bounds
 from .loss import TargetRates, FitConfig
-from .io import load_params_json, save_params_json, save_fit_summary_txt, format_params_as_code, build_fit_comparison, output_dir as _output_dir
+from .io import load_params_json, save_params_json, save_fit_summary_txt, format_params_as_code, build_fit_comparison, output_dir as _output_dir, append_command_log
 from .optimization import nevergrad_optimize, evaluate_params, KOMeans, LossBreakdown, optimize_drug_activations, STAGE2_FREE_FIELDS
 from .loss import DrugTarget
 from .simulation import simulate_circuit
@@ -451,6 +451,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/single_node/runs")
+        append_command_log(out_dir)
         if condition_key:
             fname = f"circuit_simulation_{noise_tag}_{condition_key}.png"
         elif args.params_json:
@@ -546,6 +547,7 @@ def cmd_study(args: argparse.Namespace) -> None:
         save_path = args.save_plot
     else:
         out_dir = _output_dir("figs/single_node/boxplot")
+        append_command_log(out_dir)
         save_path = os.path.join(out_dir, f"study_boxplots_{cfg.noise_type}.png")
 
     # Generate box plot
@@ -611,6 +613,7 @@ def cmd_optimize_receptors(args: argparse.Namespace) -> None:
     else:
         out_dir = Path("stage2_out")
     out_dir.mkdir(parents=True, exist_ok=True)
+    append_command_log(out_dir)
     log_file = args.log_file or str(out_dir / "stage2_log.jsonl")
     if Path(log_file).exists():
         Path(log_file).unlink()
@@ -823,6 +826,9 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         save_best_json_to_use = args.save_best_json
         log_file_to_use = args.log_file or str(out_dir / "log.jsonl")
 
+    # Record the exact command that launched this run (reproducibility).
+    append_command_log(out_dir)
+
     # Auto-pick a finer log interval when the default is in effect
     log_interval_to_use = args.log_interval if args.log_interval != 500 else 50
     if args.log_file:
@@ -868,6 +874,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         weight_global_ko=args.weight_global_ko,
         weight_selective_ko=args.weight_selective_ko,
         weight_drug=args.weight_drug,
+        polish_samples=args.polish_samples,
+        final_eval_trials=args.final_eval_trials,
     )
 
     if not best:
@@ -1051,6 +1059,14 @@ Examples:
                             help="Number of optimization samples")
     opt_parser.add_argument("--top_k", type=int, default=10,
                             help="Keep top K candidates")
+    opt_parser.add_argument("--polish_samples", type=int, default=0,
+                            help="If >0, run a CMA-ES local polish warm-started from the best "
+                                 "candidate for this many extra steps after the global search "
+                                 "(cleaner objective: fast local convergence in the best basin).")
+    opt_parser.add_argument("--final_eval_trials", type=int, default=0,
+                            help="If > --n_trials, re-evaluate the top-k candidates with this many "
+                                 "trials and re-rank, so the reported best is a low-variance estimate "
+                                 "rather than a lucky low-noise draw.")
     opt_parser.add_argument(
         "--optimizer", type=str, default="de",
         choices=["de", "twopointde", "cma", "chaining", "auto"],

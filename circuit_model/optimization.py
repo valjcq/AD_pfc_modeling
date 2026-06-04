@@ -392,6 +392,8 @@ def nevergrad_optimize(
     weight_selective_ko: float = 1.0,
     weight_drug: float = 1.0,
     drug_param_overrides: Optional[dict[str, dict[str, float]]] = None,
+    polish_samples: int = 0,
+    final_eval_trials: int = 0,
 ) -> list[Candidate]:
     """
     Run Nevergrad optimization to find parameters matching target firing rates.
@@ -410,6 +412,15 @@ def nevergrad_optimize(
     4. Tell optimizer the loss
     5. Track top-k best candidates
     6. Optionally stop early if loss is below threshold
+
+    Cleaner-objective options (reduce the run-to-run variance caused by the
+    stochastic, finite-trial loss estimate):
+    - ``polish_samples`` > 0: after the global search, run a CMA-ES refinement
+      warm-started from the current best for this many extra steps. CMA learns
+      parameter correlations and converges fast once in a good basin.
+    - ``final_eval_trials`` > ``fit_cfg.n_trials``: re-evaluate the top-k
+      candidates with this many trials (a lower-variance loss estimate) and
+      re-rank, so the *reported* best is not just a lucky low-noise draw.
     """
     rng = np.random.default_rng(seed)
 
@@ -453,58 +464,97 @@ def nevergrad_optimize(
         print(f"Using {max_workers} workers ({batch_size} candidates × {n_conditions} conditions)")
 
     best: list[Candidate] = []
-    last_step = 0
 
-    interrupted = False
-    pbar = tqdm(range(1, n_samples + 1), desc="Optimizing", unit="step")
-    try:
-        for step in pbar:
-            last_step = step
+    def _evaluate(p: CircuitParams, cfg: FitConfig):
+        """Run all conditions for params `p` under config `cfg` → (L, means, ko, breakdown)."""
+        cond_results = [run_condition(c) for c in _build_conditions(
+            p, target, cfg, rng, drug_param_overrides=drug_param_overrides,
+        )]
+        return _loss_from_results(
+            cond_results, target, cfg, p,
+            weight_base=weight_base,
+            weight_global_ko=weight_global_ko,
+            weight_selective_ko=weight_selective_ko,
+            weight_drug=weight_drug,
+        )
 
-            x = ng_optimizer.ask()
-            p = params_from_ng_dict(x.value, base)
+    def _run_phase(ng_opt, n_steps: int, start_step: int, desc: str) -> tuple[int, bool]:
+        """Run `n_steps` ask/tell iterations against `ng_opt`, updating `best` in place.
 
-            cond_results = [run_condition(c) for c in _build_conditions(
-                p, target, fit_cfg, rng, drug_param_overrides=drug_param_overrides,
-            )]
-            L, means, ko_means, breakdown = _loss_from_results(
-                cond_results, target, fit_cfg, p,
-                weight_base=weight_base,
-                weight_global_ko=weight_global_ko,
-                weight_selective_ko=weight_selective_ko,
-                weight_drug=weight_drug,
-            )
+        Returns (last_step, interrupted). Steps are numbered start_step+1 .. so
+        logging across phases stays monotonic.
+        """
+        last = start_step
+        was_interrupted = False
+        pbar = tqdm(range(1, n_steps + 1), desc=desc, unit="step")
+        try:
+            for i in pbar:
+                step = start_step + i
+                last = step
 
-            ng_optimizer.tell(x, L)
+                x = ng_opt.ask()
+                p = params_from_ng_dict(x.value, base)
+                L, means, ko_means, breakdown = _evaluate(p, fit_cfg)
+                ng_opt.tell(x, L)
 
-            prev_best_loss = best[0].loss if best else float("inf")
-            cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p,
-                             breakdown=breakdown, simulated=True)
-            if len(best) < top_k:
-                best.append(cand)
-                best.sort(key=lambda c: c.loss)
-            elif L < best[-1].loss:
-                best[-1] = cand
-                best.sort(key=lambda c: c.loss)
+                prev_best_loss = best[0].loss if best else float("inf")
+                cand = Candidate(loss=L, means=means, ko_means=ko_means, params=p,
+                                 breakdown=breakdown, simulated=True)
+                if len(best) < top_k:
+                    best.append(cand)
+                    best.sort(key=lambda c: c.loss)
+                elif L < best[-1].loss:
+                    best[-1] = cand
+                    best.sort(key=lambda c: c.loss)
 
-            pbar.set_postfix({"loss": f"{best[0].loss:.4g}" if best else "N/A"})
+                pbar.set_postfix({"loss": f"{best[0].loss:.4g}" if best else "N/A"})
 
-            if save_best_json and best and best[0].loss < prev_best_loss:
-                save_params_json(save_best_json, best[0].params)
+                if save_best_json and best and best[0].loss < prev_best_loss:
+                    save_params_json(save_best_json, best[0].params)
 
-            if log_file and step % log_interval == 0 and best:
-                _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
-                try:
-                    _generate_loss_plots(log_file)
-                except Exception:
-                    pass
-    except KeyboardInterrupt:
-        interrupted = True
-        print("\nOptimization interrupted by user (Ctrl+C). Finalizing best-so-far results...")
-    finally:
-        pbar.close()
+                if log_file and step % log_interval == 0 and best:
+                    _log_candidate(log_file, step + step_offset, best[0], target, best[0].breakdown)
+                    try:
+                        _generate_loss_plots(log_file)
+                    except Exception:
+                        pass
+        except KeyboardInterrupt:
+            was_interrupted = True
+            print("\nOptimization interrupted by user (Ctrl+C). Finalizing best-so-far results...")
+        finally:
+            pbar.close()
+        return last, was_interrupted
 
-    if log_file and best and last_step % log_interval != 0:
+    # --- Phase 1: global search with the requested optimizer ---
+    last_step, interrupted = _run_phase(ng_optimizer, n_samples, 0, "Optimizing")
+
+    # --- Phase 2 (optional): CMA-ES local polish, warm-started from the best ---
+    if polish_samples > 0 and best and not interrupted:
+        print(f"\nPolishing best (loss={best[0].loss:.4g}) with CMA-ES for {polish_samples} steps...")
+        polish_param = build_nevergrad_parametrization(best[0].params, bounds, freeze)
+        cma_opt = _build_optimizer("cma", polish_param, polish_samples, num_workers=1)
+        if seed is not None:
+            cma_opt.parametrization.random_state = np.random.RandomState(seed + 1)
+        last_step, interrupted = _run_phase(cma_opt, polish_samples, last_step, "Polishing (CMA)")
+
+    # --- Final clean re-evaluation: denoise the reported best with more trials ---
+    if final_eval_trials and final_eval_trials > fit_cfg.n_trials and best and not interrupted:
+        print(f"\nRe-evaluating top {len(best)} candidate(s) with {final_eval_trials} trials "
+              f"(was {fit_cfg.n_trials}) to denoise the result...")
+        eval_cfg = replace(fit_cfg, n_trials=final_eval_trials)
+        reranked: list[Candidate] = []
+        for c in best:
+            L, means, ko_means, breakdown = _evaluate(c.params, eval_cfg)
+            reranked.append(Candidate(loss=L, means=means, ko_means=ko_means,
+                                      params=c.params, breakdown=breakdown, simulated=True))
+        reranked.sort(key=lambda c: c.loss)
+        best = reranked
+        print(f"Best after re-evaluation: loss={best[0].loss:.4g}")
+        if save_best_json and best:
+            save_params_json(save_best_json, best[0].params)
+
+    # Final log entry captures the definitive best (post-polish / post-re-eval).
+    if log_file and best:
         _log_candidate(log_file, last_step + step_offset, best[0], target, best[0].breakdown)
         try:
             _generate_loss_plots(log_file)

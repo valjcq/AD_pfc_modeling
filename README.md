@@ -452,8 +452,16 @@ python -m circuit_model optimize \
     --target_alpha7_beta2_ko_pyr 1.3465 \
     --target_alpha7_ndnf_ko_ndnf 3.0767 --target_alpha7_pv_ko_pv 1.3966 \
     --optimizer twopointde --n_samples 50000 \
+    --polish_samples 10000 --final_eval_trials 32 \
     --output_dir fits/WT_NDNF_5pop
 ```
+
+**Cleaner objective (reduces run-to-run variance).** The loss is evaluated on stochastic, finite-trial simulations, so a single run's reported best can be a lucky low-noise draw. Two optional flags tighten this:
+
+- `--polish_samples N` — after the global `twopointde` search, run an **CMA-ES local polish** warm-started from the best candidate for `N` extra steps. CMA learns parameter correlations and converges quickly once in a good basin.
+- `--final_eval_trials M` — re-evaluate the top-k candidates with `M` trials (vs `--n_trials`, default 8) and re-rank, so the *saved* best is a low-variance estimate rather than the noisiest lucky draw.
+
+**Reproducibility.** Every command that writes to an `--output_dir` appends a timestamped, runnable `python -m circuit_model …` line to `<output_dir>/commands.log`, so the exact invocation that produced the artifacts is always recoverable.
 
 **Stage 2 (`--stage receptors`).** Re-fit the receptor activations under drug conditions, with all weights and currents frozen at the Stage-1 solution. Per-drug independent fits; only `act_alpha7_pv/_som/_ndnf`, `act_beta2`, `act_alpha5` are free (5 params, bounded `[0, 5]`). `g_alpha7` stays frozen.
 
