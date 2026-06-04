@@ -222,6 +222,7 @@ GABA scaling: `g_gaba = g_gaba_base + g_alpha7 · mean(act_alpha7_pv, act_alpha7
 
 **Knockouts simulated by the optimizer:**
 - Global α7-KO  (all three per-cell α7 = 0)
+- α7β2 double-KO (all three per-cell α7 = 0 **and** `act_beta2 = 0`; PYR target `--target_alpha7_beta2_ko_pyr`)
 - NDNF-selective α7-KO (`act_alpha7_ndnf = 0` only)
 - PV-selective   α7-KO (`act_alpha7_pv   = 0` only)
 
@@ -448,6 +449,7 @@ python -m circuit_model optimize \
     --target_pyr 1.7328 --target_som 1.3564 --target_pv 1.5281 --target_vip 2.9791 \
     --target_ndnf 2.5309 \
     --target_alpha7_ko_pyr 2.1928 --target_beta2_ko_pyr 1.0825 --target_alpha5_ko_pyr 0.4762 \
+    --target_alpha7_beta2_ko_pyr 1.3465 \
     --target_alpha7_ndnf_ko_ndnf 3.0767 --target_alpha7_pv_ko_pv 1.3966 \
     --optimizer twopointde --n_samples 50000 \
     --output_dir fits/WT_NDNF_5pop

@@ -134,6 +134,11 @@ def build_fit_comparison(
             comparison["beta2_ko"] = {"PYR": _entry(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)}
         else:
             comparison["beta2_ko"] = {"PYR": _entry_info(float(ko_means.beta2_ko[0]), display_ko_targets.beta2_ko_pyr if display_ko_targets else None)}
+    if ko_means.alpha7_beta2_ko is not None:
+        if target.alpha7_beta2_ko_pyr is not None:
+            comparison["alpha7_beta2_ko"] = {"PYR": _entry(float(ko_means.alpha7_beta2_ko[0]), target.alpha7_beta2_ko_pyr)}
+        else:
+            comparison["alpha7_beta2_ko"] = {"PYR": _entry_info(float(ko_means.alpha7_beta2_ko[0]), display_ko_targets.alpha7_beta2_ko_pyr if display_ko_targets else None)}
     if ko_means.alpha7_ndnf_ko is not None:
         if target.alpha7_ndnf_ko_ndnf is not None:
             comparison["alpha7_ndnf_ko"] = {"NDNF": _entry(float(ko_means.alpha7_ndnf_ko[4]), target.alpha7_ndnf_ko_ndnf)}
@@ -243,11 +248,12 @@ def save_fit_summary_txt(
             )
 
         ko_rows = [
-            ("alpha7_ko",      "PYR"),
-            ("alpha5_ko",      "PYR"),
-            ("beta2_ko",       "PYR"),
-            ("alpha7_ndnf_ko", "NDNF"),
-            ("alpha7_pv_ko",   "PV"),
+            ("alpha7_ko",       "PYR"),
+            ("alpha5_ko",       "PYR"),
+            ("beta2_ko",        "PYR"),
+            ("alpha7_beta2_ko", "PYR"),
+            ("alpha7_ndnf_ko",  "NDNF"),
+            ("alpha7_pv_ko",    "PV"),
         ]
         for cond_key, pop in ko_rows:
             if cond_key not in cmp:

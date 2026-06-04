@@ -51,6 +51,7 @@ class TargetRates:
     Global KO targets (all measured on PYR):
       - alpha7_ko_pyr: global α7-KO (all per-cell α7 zeroed)
       - alpha5_ko_pyr, beta2_ko_pyr: global α5 / β2 KO
+      - alpha7_beta2_ko_pyr: α7β2 double-KO (all per-cell α7 zeroed AND β2 off)
 
     Cell-type-selective α7 KO targets (measured on the *deleted* cell type):
       - alpha7_ndnf_ko_ndnf: NDNF firing rate under NDNF-selective α7 KO
@@ -69,6 +70,7 @@ class TargetRates:
     alpha7_ko_pyr: Optional[float] = None
     alpha5_ko_pyr: Optional[float] = None
     beta2_ko_pyr: Optional[float] = None
+    alpha7_beta2_ko_pyr: Optional[float] = None
     alpha7_ndnf_ko_ndnf: Optional[float] = None
     alpha7_pv_ko_pv: Optional[float] = None
 

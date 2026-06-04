@@ -175,6 +175,12 @@ def print_comparison_table(
         err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
         print(f"  {'beta2_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
 
+    if target.alpha7_beta2_ko_pyr is not None and ko_means.alpha7_beta2_ko is not None:
+        actual = float(ko_means.alpha7_beta2_ko[0])
+        tgt = target.alpha7_beta2_ko_pyr
+        err = 100.0 * (actual - tgt) / max(abs(tgt), 1e-6)
+        print(f"  {'a7b2_ko':<14}  {'PYR':<4}  {actual:8.3f}  {tgt:8.3f}  {err:+6.1f}%")
+
     if target.alpha7_ndnf_ko_ndnf is not None and ko_means.alpha7_ndnf_ko is not None:
         actual = float(ko_means.alpha7_ndnf_ko[4])
         tgt = target.alpha7_ndnf_ko_ndnf
@@ -699,6 +705,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             alpha7_ko_pyr=t.get("alpha7_ko_pyr"),
             alpha5_ko_pyr=t.get("alpha5_ko_pyr"),
             beta2_ko_pyr=t.get("beta2_ko_pyr"),
+            alpha7_beta2_ko_pyr=t.get("alpha7_beta2_ko_pyr"),
             alpha7_ndnf_ko_ndnf=t.get("alpha7_ndnf_ko_ndnf"),
             alpha7_pv_ko_pv=t.get("alpha7_pv_ko_pv"),
         )
@@ -715,6 +722,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             alpha7_ko_pyr=args.target_alpha7_ko_pyr,
             alpha5_ko_pyr=args.target_alpha5_ko_pyr,
             beta2_ko_pyr=args.target_beta2_ko_pyr,
+            alpha7_beta2_ko_pyr=args.target_alpha7_beta2_ko_pyr,
             alpha7_ndnf_ko_ndnf=args.target_alpha7_ndnf_ko_ndnf,
             alpha7_pv_ko_pv=args.target_alpha7_pv_ko_pv,
         )
@@ -788,6 +796,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(f"  alpha5 KO PYR: {target.alpha5_ko_pyr} {unit}")
     if target.beta2_ko_pyr is not None:
         print(f"  beta2 KO PYR:  {target.beta2_ko_pyr} {unit}")
+    if target.alpha7_beta2_ko_pyr is not None:
+        print(f"  a7b2 KO PYR:   {target.alpha7_beta2_ko_pyr} {unit}")
     if target.alpha7_ndnf_ko_ndnf is not None:
         print(f"  NDNF-selective a7 KO (NDNF): {target.alpha7_ndnf_ko_ndnf} {unit}")
     if target.alpha7_pv_ko_pv is not None:
@@ -1025,6 +1035,8 @@ Examples:
                             help="Target PYR rate under global alpha7 knockout")
     opt_parser.add_argument("--target_alpha5_ko_pyr", type=float, default=None,
                             help="Target PYR rate under alpha5 knockout")
+    opt_parser.add_argument("--target_alpha7_beta2_ko_pyr", type=float, default=None,
+                            help="Target PYR rate under α7β2 double knockout")
     opt_parser.add_argument("--target_beta2_ko_pyr", type=float, default=None,
                             help="Target PYR rate under beta2 knockout")
     opt_parser.add_argument("--target_alpha7_ndnf_ko_ndnf", type=float, default=None,

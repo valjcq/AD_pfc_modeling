@@ -41,6 +41,7 @@ class KOMeans:
     alpha7_ko: Optional[np.ndarray] = None
     alpha5_ko: Optional[np.ndarray] = None
     beta2_ko: Optional[np.ndarray] = None
+    alpha7_beta2_ko: Optional[np.ndarray] = None
     alpha7_ndnf_ko: Optional[np.ndarray] = None
     alpha7_pv_ko: Optional[np.ndarray] = None
     drug: dict[str, np.ndarray] = None  # drug name -> mean rates (5,)
@@ -147,6 +148,7 @@ def _build_conditions(
         ("alpha7_ko", replace(params, **alpha7_all_off),     cfg, int(rng.integers(0, 2**31 - 1))),
         ("alpha5_ko", replace(params, act_alpha5=0.0),       cfg, int(rng.integers(0, 2**31 - 1))),
         ("beta2_ko",  replace(params, act_beta2=0.0),        cfg, int(rng.integers(0, 2**31 - 1))),
+        ("alpha7_beta2_ko", replace(params, **alpha7_all_off, act_beta2=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
         # Cell-type-selective α7 KOs — measured on the deleted cell type itself
         ("alpha7_ndnf_ko", replace(params, act_alpha7_ndnf=0.0), cfg, int(rng.integers(0, 2**31 - 1))),
         ("alpha7_pv_ko",   replace(params, act_alpha7_pv=0.0),   cfg, int(rng.integers(0, 2**31 - 1))),
@@ -201,6 +203,8 @@ def _loss_from_results(
             ko_means.alpha5_ko = means
         elif name == "beta2_ko":
             ko_means.beta2_ko = means
+        elif name == "alpha7_beta2_ko":
+            ko_means.alpha7_beta2_ko = means
         elif name == "alpha7_ndnf_ko":
             ko_means.alpha7_ndnf_ko = means
         elif name == "alpha7_pv_ko":
@@ -219,6 +223,8 @@ def _loss_from_results(
         global_ko_loss += loss_from_ko_normalized(float(ko_means.alpha5_ko[0]), target.alpha5_ko_pyr)
     if target.beta2_ko_pyr is not None and ko_means.beta2_ko is not None:
         global_ko_loss += loss_from_ko_normalized(float(ko_means.beta2_ko[0]), target.beta2_ko_pyr)
+    if target.alpha7_beta2_ko_pyr is not None and ko_means.alpha7_beta2_ko is not None:
+        global_ko_loss += loss_from_ko_normalized(float(ko_means.alpha7_beta2_ko[0]), target.alpha7_beta2_ko_pyr)
 
     # --- selective_ko : NDNF / PV rate under their selective α7 KOs ---
     selective_ko_loss = 0.0
@@ -412,6 +418,7 @@ def nevergrad_optimize(
         target.alpha7_ko_pyr is not None,
         target.alpha5_ko_pyr is not None,
         target.beta2_ko_pyr is not None,
+        target.alpha7_beta2_ko_pyr is not None,
         target.alpha7_ndnf_ko_ndnf is not None,
         target.alpha7_pv_ko_pv is not None,
     ]) + n_drug_conditions
@@ -552,6 +559,7 @@ def _log_candidate(
         "alpha7_ko":      cand.ko_means.alpha7_ko.tolist()      if cand.ko_means.alpha7_ko      is not None else None,
         "alpha5_ko":      cand.ko_means.alpha5_ko.tolist()      if cand.ko_means.alpha5_ko      is not None else None,
         "beta2_ko":       cand.ko_means.beta2_ko.tolist()       if cand.ko_means.beta2_ko       is not None else None,
+        "alpha7_beta2_ko": cand.ko_means.alpha7_beta2_ko.tolist() if cand.ko_means.alpha7_beta2_ko is not None else None,
         "alpha7_ndnf_ko": cand.ko_means.alpha7_ndnf_ko.tolist() if cand.ko_means.alpha7_ndnf_ko is not None else None,
         "alpha7_pv_ko":   cand.ko_means.alpha7_pv_ko.tolist()   if cand.ko_means.alpha7_pv_ko   is not None else None,
     }
