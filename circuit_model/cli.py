@@ -557,14 +557,14 @@ def cmd_study(args: argparse.Namespace) -> None:
 
 
 def cmd_ko_sweep(args: argparse.Namespace) -> None:
-    """Sweep all 2^3 receptor-KO combinations and generate box plots."""
+    """Sweep receptor-KO combinations and generate box plots.
+
+    --mode global         : 8 global α7/α5/β2 combinations (single figure).
+    --mode per_population  : 64 per-population (population, receptor) KO
+                             combinations → a folder of faceted box plots +
+                             a heatmap overview + a tidy CSV.
+    """
     from .study import StudyConfig
-    from .ko_sweep import (
-        detect_target_combos,
-        enumerate_combos,
-        run_ko_sweep,
-        plot_ko_sweep_boxplots,
-    )
 
     # Load base (WT) parameters, preferring the project default fit.
     if args.params_json:
@@ -586,15 +586,14 @@ def cmd_ko_sweep(args: argparse.Namespace) -> None:
         base_params = replace(base_params, sigma_noise=args.sigma_noise)
         print(f"Noise amplitude overridden: sigma_noise = {args.sigma_noise}")
 
-    # Detect which KO combinations were optimization targets. Prefer an explicit
-    # --log_file, else the log.jsonl next to the params file.
+    # Detect optimization-target conditions. Prefer an explicit --log_file, else
+    # the log.jsonl next to the params file.
     if args.log_file:
         log_path = Path(args.log_file)
     elif params_path is not None:
         log_path = params_path.parent / "log.jsonl"
     else:
         log_path = None
-    target_combos = detect_target_combos(log_path)
 
     cfg = StudyConfig(
         n_runs=args.n_runs,
@@ -607,27 +606,44 @@ def cmd_ko_sweep(args: argparse.Namespace) -> None:
         n_workers=args.n_workers,
     )
 
-    combos = enumerate_combos(target_combos)
-    n_targets = sum(1 for c in combos if c.category == "target")
-    n_preds = sum(1 for c in combos if c.category == "prediction")
-
-    print(f"\nKO sweep configuration:")
-    print(f"  Combinations: {len(combos)} ({n_targets} fit targets, "
-          f"{n_preds} predictions, 1 WT baseline)")
-    print(f"  Targets detected from: {log_path if log_path and log_path.exists() else 'canonical fallback'}")
-    print(f"  Runs per combination: {cfg.n_runs}")
-    print(f"  Total simulations: {len(combos) * cfg.n_runs}")
     if cfg.noise_type == "ou":
         noise_detail = f"ou, sigma_noise={base_params.sigma_noise:.4f}, tau_noise={cfg.tau_noise_ms}ms"
     elif cfg.noise_type == "white":
         noise_detail = f"white, sigma_noise={base_params.sigma_noise:.4f}"
     else:
         noise_detail = "none"
+
+    seed = args.seed if args.seed is not None else 0
+    detected_src = log_path if (log_path and log_path.exists()) else "canonical fallback"
+
+    if getattr(args, "mode", "global") == "per_population":
+        _run_ko_sweep_perpop(
+            base_params, cfg, log_path, detected_src, noise_detail, seed,
+            params_path=params_path,
+            max_ko=getattr(args, "max_ko", None),
+            output_dir=args.output_dir,
+            unit=args.unit,
+        )
+        return
+
+    # --- global mode (original 8-combo behavior) ---
+    from .ko_sweep import detect_target_combos, enumerate_combos, run_ko_sweep, plot_ko_sweep_boxplots
+
+    target_combos = detect_target_combos(log_path)
+    combos = enumerate_combos(target_combos)
+    n_targets = sum(1 for c in combos if c.category == "target")
+    n_preds = sum(1 for c in combos if c.category == "prediction")
+
+    print(f"\nKO sweep configuration (global mode):")
+    print(f"  Combinations: {len(combos)} ({n_targets} fit targets, "
+          f"{n_preds} predictions, 1 WT baseline)")
+    print(f"  Targets detected from: {detected_src}")
+    print(f"  Runs per combination: {cfg.n_runs}")
+    print(f"  Total simulations: {len(combos) * cfg.n_runs}")
     print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={noise_detail}")
     print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
     print()
 
-    seed = args.seed if args.seed is not None else 0
     results = run_ko_sweep(base_params, cfg, target_combos, base_seed=seed, verbose=True)
 
     if args.save_plot:
@@ -645,6 +661,58 @@ def cmd_ko_sweep(args: argparse.Namespace) -> None:
         show=not args.no_show,
         unit=args.unit,
     )
+
+
+def _run_ko_sweep_perpop(
+    base_params, cfg, log_path, detected_src, noise_detail, seed, *,
+    params_path, max_ko, output_dir, unit,
+) -> None:
+    """Per-population KO sweep: 64 combinations → folder of artifacts."""
+    from .ko_sweep import (
+        detect_target_slotsets,
+        enumerate_perpop_combos,
+        run_perpop_sweep,
+        plot_perpop_heatmap,
+        plot_perpop_boxplots_faceted,
+        write_perpop_csv,
+    )
+
+    target_slotsets = detect_target_slotsets(log_path)
+    combos = enumerate_perpop_combos(target_slotsets, max_ko=max_ko)
+    n_targets = sum(1 for c in combos if c.category == "target")
+    n_preds = sum(1 for c in combos if c.category == "prediction")
+
+    # Resolve output folder: explicit --output_dir, else figs/.../<fit_stem>/.
+    if output_dir:
+        out_dir = Path(output_dir)
+    else:
+        stem = params_path.parent.name if params_path is not None else "default"
+        out_dir = Path(_output_dir("figs/single_node/ko_sweep_perpop")) / stem
+    (out_dir / "overview").mkdir(parents=True, exist_ok=True)
+    (out_dir / "boxplots").mkdir(parents=True, exist_ok=True)
+    append_command_log(out_dir)
+
+    print(f"\nKO sweep configuration (per-population mode):")
+    print(f"  Combinations: {len(combos)} ({n_targets} fit targets, "
+          f"{n_preds} predictions, 1 WT baseline)"
+          + (f"  [capped at max_ko={max_ko}]" if max_ko is not None else ""))
+    print(f"  Targets detected from: {detected_src}")
+    print(f"  Runs per combination: {cfg.n_runs}")
+    print(f"  Total simulations: {len(combos) * cfg.n_runs}")
+    print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={noise_detail}")
+    print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
+    print(f"  Output folder: {out_dir}")
+    print()
+
+    results = run_perpop_sweep(
+        base_params, cfg, target_slotsets, base_seed=seed, max_ko=max_ko, verbose=True,
+    )
+
+    print("\nWriting outputs...")
+    write_perpop_csv(results, str(out_dir / "overview" / "summary.csv"))
+    plot_perpop_heatmap(results, str(out_dir / "overview" / "heatmap_foldchange.png"))
+    plot_perpop_boxplots_faceted(results, str(out_dir / "boxplots"), unit=unit)
+    print(f"\nDone. All artifacts under: {out_dir}")
 
 
 def cmd_optimize_receptors(args: argparse.Namespace) -> None:
@@ -1296,10 +1364,20 @@ Examples:
                     "box plots of firing-rate distributions for all 5 populations. Boxes are "
                     "colored to distinguish optimization targets from model predictions."
     )
+    ko_parser.add_argument("--mode", choices=["global", "per_population"], default="global",
+                           help="'global' (default): 8 global α7/α5/β2 combinations in one figure. "
+                                "'per_population': all 64 per-population (population, receptor) KO "
+                                "combinations → a folder of faceted box plots + heatmap overview + CSV.")
+    ko_parser.add_argument("--max_ko", type=int, default=None,
+                           help="per_population mode only: cap the number of simultaneous KOs "
+                                "(e.g. 2 for WT/single/double only). Default: all 6.")
+    ko_parser.add_argument("--output_dir", type=str, default="",
+                           help="per_population mode only: output folder. "
+                                "Default: figs/single_node/ko_sweep_perpop/<fit_stem>/")
     ko_parser.add_argument("--n_runs", type=int, default=50,
                            help="Number of simulations per combination (default: 50)")
     ko_parser.add_argument("--save_plot", type=str, default="",
-                           help="Save box plot to file (e.g., 'ko_sweep.png')")
+                           help="global mode only: save box plot to file (e.g., 'ko_sweep.png')")
     ko_parser.add_argument("--no_show", action="store_true",
                            help="Don't display the plot")
     ko_parser.add_argument("--T_ms", type=float, default=2500.0,

@@ -69,6 +69,17 @@ from .ko_sweep import (
     apply_ko_combo,
     run_ko_sweep,
     plot_ko_sweep_boxplots,
+    # Per-population sweep
+    KO_SLOTS,
+    PerPopCombo,
+    PerPopSweepResults,
+    detect_target_slotsets,
+    enumerate_perpop_combos,
+    apply_perpop_combo,
+    run_perpop_sweep,
+    plot_perpop_heatmap,
+    plot_perpop_boxplots_faceted,
+    write_perpop_csv,
 )
 from .cli import main
 
@@ -130,6 +141,16 @@ __all__ = [
     "apply_ko_combo",
     "run_ko_sweep",
     "plot_ko_sweep_boxplots",
+    "KO_SLOTS",
+    "PerPopCombo",
+    "PerPopSweepResults",
+    "detect_target_slotsets",
+    "enumerate_perpop_combos",
+    "apply_perpop_combo",
+    "run_perpop_sweep",
+    "plot_perpop_heatmap",
+    "plot_perpop_boxplots_faceted",
+    "write_perpop_csv",
     # CLI
     "main",
 ]

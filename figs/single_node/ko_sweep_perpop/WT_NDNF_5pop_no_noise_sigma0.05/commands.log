@@ -1,0 +1,1 @@
+[2026-06-12T10:20:57] python -m circuit_model ko-sweep --mode per_population --params_json fits/WT_NDNF_5pop_no_noise/best_params.json --noise_type white --sigma_noise 0.05 --n_runs 50 --no_show --output_dir figs/single_node/ko_sweep_perpop/WT_NDNF_5pop_no_noise_sigma0.05

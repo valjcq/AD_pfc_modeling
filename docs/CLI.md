@@ -249,10 +249,22 @@ python -m circuit_model study --n_runs 100 --noise_type white
 
 ## `ko-sweep`
 
+Simulate combinations of nicotinic-receptor knockouts at a fixed noise level and
+produce box plots of the firing-rate distribution for all 5 populations. Two
+modes via `--mode`:
+
+- **`global`** (default) — the three receptors as global switches → 2³ = 8
+  combinations in a single figure (described below).
+- **`per_population`** — each receptor knocked out independently *per population*
+  → 2⁶ = 64 combinations, written as a folder of faceted box plots + a heatmap
+  overview + a CSV (see [per_population mode](#ko-sweep-per_population-mode)).
+
+### `global` mode
+
 Simulate **every combination** of the three global nicotinic-receptor knockouts
-(α7, α5, β2) at a fixed noise level and produce box plots of the firing-rate
-distribution for all 5 populations. With three receptors there are 2³ = 8
-combinations: WT, three single KOs, three double KOs, and the triple KO.
+(α7, α5, β2) and produce box plots for all 5 populations. With three receptors
+there are 2³ = 8 combinations: WT, three single KOs, three double KOs, and the
+triple KO.
 
 Boxes **and their x-axis tick labels** are colored by category so the
 optimization **targets** are visually distinguished from model **predictions**.
@@ -300,3 +312,63 @@ python -m circuit_model ko-sweep \
     --params_json fits/WT_NDNF_5pop/best_params.json \
     --n_runs 100 --noise_type white
 ```
+
+### `ko-sweep per_population` mode
+
+Receptors are expressed only on specific populations, so a knockout is really a
+**(population, receptor) slot**. The model has **6 such slots**, giving
+**2⁶ = 64 combinations** (each population's receptors can be knocked out
+independently — e.g. "α7 KO everywhere *plus* β2 KO on SOM only"):
+
+| Population | Expresses | KO mechanism (field → 0) |
+|------------|-----------|--------------------------|
+| PYR  | — (no nicotinic receptor; always locally-WT, still shown as a readout) | — |
+| SOM  | α7, β2 | `act_alpha7_som` / `I_beta2_som` |
+| PV   | α7 | `act_alpha7_pv` |
+| VIP  | α5 | `act_alpha5` |
+| NDNF | α7, β2 | `act_alpha7_ndnf` / `I_beta2_ndnf` |
+
+α7/α5 KOs zero the activation multiplier (matching how optimization builds its KO
+conditions, including the `g_alpha7` mean-scaling); per-population β2 KO zeroes
+the population-specific current `I_beta2_<pop>` because `act_beta2` is shared
+across SOM and NDNF.
+
+The 6 optimization targets map onto exact slot-sets and are **auto-detected** from
+the fit's `log.jsonl` (same mechanism as global mode), so each of the 64 combos is
+labelled `WT` (gray), `fit target` (blue), or `prediction` (red). Phenotype labels
+list only the knocked-out slots, e.g. `PV α7 + NDNF β2`; the intact combo is `WT`.
+
+**Outputs** (folder, `--output_dir` or `figs/single_node/ko_sweep_perpop/<fit_stem>/`):
+
+```
+overview/heatmap_foldchange.png   # 64 phenotypes × 5 populations, log₂(rate/WT),
+                                  #   cells annotated with mean Hz, target rows ★
+overview/summary.csv              # tidy: phenotype,category,ko_count,run_idx,<5 pops>
+boxplots/ko0.png … ko6.png        # box plots grouped by # simultaneous KOs,
+                                  #   auto-paginated (_partN) at >16 boxes/figure
+commands.log                      # exact invocation, for reproducibility
+```
+
+#### per_population-only flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mode per_population` | `global` | Select the 64-combo per-population sweep |
+| `--max_ko INT` | all 6 | Cap the number of simultaneous KOs (e.g. `2` → WT/single/double only) |
+| `--output_dir PATH` | `figs/single_node/ko_sweep_perpop/<fit_stem>/` | Output folder |
+
+All the shared `global`-mode flags (`--n_runs`, `--T_ms`, `--noise_type`,
+`--sigma_noise`, `--seed`, `--params_json`, `--log_file`, …) apply here too.
+`--save_plot` is ignored in this mode (output is a folder).
+
+#### Example
+
+```bash
+python -m circuit_model ko-sweep --mode per_population \
+    --params_json fits/WT_NDNF_5pop/best_params.json \
+    --n_runs 50 --noise_type white
+```
+
+> **Runtime.** 64 combos × `--n_runs` simulations. At `--n_runs 50`, T=2500 ms
+> that's ~3200 runs (a few minutes across cores). Use `--max_ko` and a lower
+> `--n_runs` for a quick preview.
