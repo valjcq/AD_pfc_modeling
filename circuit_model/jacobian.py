@@ -29,14 +29,12 @@ def _phi_derivative(I: float, *, theta: float, c: float, g: float) -> float:
 def _total_inputs(
     params: CircuitParams,
     r: np.ndarray,
-    i_adapt: np.ndarray | None = None,
 ) -> tuple[float, float, float, float, float]:
     """Compute total synaptic input currents at steady-state rates r.
 
     Parameters
     ----------
     r : [r_pyr, r_som, r_pv, r_vip, r_ndnf]
-    i_adapt : [I_adapt_pyr, I_adapt_som] at steady state; if None, uses fixed-point.
 
     Returns
     -------
@@ -45,17 +43,12 @@ def _total_inputs(
     r_pyr, r_som, r_pv, r_vip, r_ndnf = r
     ggaba = params.g_gaba()
 
-    if i_adapt is None:
-        I_ap = params.J_adapt_pyr * r_pyr
-    else:
-        I_ap = i_adapt[0]
-
     denom = 1.0 + ggaba * params.w_pe * r_pv
     S_star = (GAMMA_NMDA * r_pyr * TAU_NMDA_MS) / (1.0 + GAMMA_NMDA * r_pyr * TAU_NMDA_MS)
     I_pyr = ((params.J_NMDA * S_star) / denom
              - ggaba * params.w_se * r_som
              - ggaba * params.w_ne * r_ndnf
-             - I_ap + params.I_ext_pyr())
+             + params.I_ext_pyr())
     I_som = (params.w_es * r_pyr - params.w_vs * r_vip + params.I_ext_som())
     I_pv  = (params.w_ep * r_pyr
              - ggaba * params.w_pp * r_pv

@@ -10,7 +10,7 @@ $$\Phi(I) = \frac{\alpha(I - \theta)}{1 - e^{-g \cdot \alpha(I - \theta)}}$$
 
 This function is monotonically increasing and **does not saturate**. For large inputs, it grows approximately linearly without bound. In practice this creates two classes of pathological behavior during optimization and simulation:
 
-- **Runaway excitation**: in ring simulations, PYR rates can saturate at the 200 Hz hard clip used as a numerical safety net, contaminating adaptation state and preventing clean bump formation. (The single-node integrator does not hard-clip PYR.)
+- **Runaway excitation**: in ring simulations, PYR rates can saturate at the 200 Hz hard clip used as a numerical safety net, preventing clean bump formation. (The single-node integrator does not hard-clip PYR.)
 - **Interneuron over-activation**: SOM neurons were observed firing at 85–159 Hz at rest in bistable parameter regimes — far above any physiological range and inconsistent with the biological role of these cells.
 
 Both problems require introducing a saturation mechanism into the transfer function. However, the **biological justification and implementation differ** between PYR and the three interneuron populations (PV, SOM, VIP).

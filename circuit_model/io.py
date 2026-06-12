@@ -401,7 +401,7 @@ def log_best_result(
     Each line is a JSON object with step, loss, target, means, ko_means, params, and optionally breakdown.
     
     Args:
-        breakdown: Optional dict with loss component breakdown {firing_rate, ko_firing_rate, jacobian, turing, ach_ratio, total}
+        breakdown: Optional dict with loss component breakdown {base, global_ko, selective_ko, drug, total}
     """
     entry = {
         "step": step,

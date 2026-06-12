@@ -150,7 +150,6 @@ S* = γ · τ_NMDA · r_PYR / (1 + γ · τ_NMDA · r_PYR)
 I_PYR = (J_NMDA · S*) / (1 + g_GABA · w_pe · r_PV)
         - g_GABA · w_se · r_SOM
         - g_GABA · w_ne · r_NDNF
-        - I_adapt_PYR
         + I_ext_PYR
         + sigma_noise · I_ext_PYR · ξ(t)
 ```
@@ -172,7 +171,6 @@ I_PV = w_ep · r_PYR
 ```
 I_SOM = w_es · r_PYR
         - w_vs · r_VIP
-        - I_adapt_SOM
         + I_ext_SOM
         + sigma_noise · I_ext_SOM · ξ(t)
 ```
@@ -191,16 +189,6 @@ I_NDNF = - g_GABA · w_sn · r_SOM
          + I_ext_NDNF
          + sigma_noise · I_ext_NDNF · ξ(t)
 ```
-
-### Spike-Frequency Adaptation
-
-PYR (and optionally SOM) exhibit spike-frequency adaptation:
-
-```
-τ_adapt · dI_adapt/dt = -I_adapt + J_adapt · r
-```
-
-Adaptation provides slow negative feedback that prevents runaway excitation and shapes the temporal envelope of cue-driven bumps. SOM adaptation (`J_adapt_som`) is **off by default** (`J_adapt_som = 0`); the thesis model uses PYR adaptation only.
 
 ---
 
@@ -305,17 +293,8 @@ These are the **dataclass defaults** in [`circuit_model/params.py`](circuit_mode
 | Parameter | Default | Unit | Description |
 |-----------|---------|------|-------------|
 | `tau_s` | 20.0 | ms | Synaptic/membrane time constant (all populations; fixed, not optimised) |
-| `tau_adapt_pyr` | 600.0 | ms | PYR adaptation time constant |
-| `tau_adapt_som` | 150.0 | ms | SOM adaptation time constant |
 
 NMDA gating kinetics (fixed from W&W 2006, in `constants.py`): `τ_NMDA = 100 ms`, `γ_NMDA = 0.641`.
-
-### Adaptation
-
-| Parameter | Default | Unit | Description |
-|-----------|---------|------|-------------|
-| `J_adapt_pyr` | 0.002 | nA/Hz | PYR adaptation strength |
-| `J_adapt_som` | 0.0 | nA/Hz | SOM adaptation strength (off by default) |
 
 ### Noise
 

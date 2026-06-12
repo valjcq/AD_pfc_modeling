@@ -1,0 +1,2 @@
+[2026-06-10T16:26:24] python -m circuit_model ko-sweep --n_runs 4 --T_ms 800 --burn_in_ms 400 --no_show --n_workers 2
+[2026-06-10T16:26:39] python -m circuit_model ko-sweep --params_json fits/WT_NDNF_5pop/best_params.json --n_runs 3 --T_ms 600 --burn_in_ms 300 --no_show --n_workers 2

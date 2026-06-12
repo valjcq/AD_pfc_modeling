@@ -43,14 +43,6 @@ class CircuitParams:
     # TIME CONSTANTS (ms)
     # =========================================================================
     tau_s: float = 20.0
-    tau_adapt_pyr: float = 600.0
-    tau_adapt_som: float = 150.0
-
-    # =========================================================================
-    # SPIKE-FREQUENCY ADAPTATION
-    # =========================================================================
-    J_adapt_pyr: float = 0.002
-    J_adapt_som: float = 0.0
 
     # =========================================================================
     # NOISE
@@ -238,14 +230,6 @@ class ParamBound:
 def default_bounds(base: CircuitParams, w_hi: float | None = None) -> dict[str, ParamBound]:
     """Default search bounds for the 5-population model."""
     b: dict[str, ParamBound] = {}
-
-    # --- Time constants (ms) ---
-    b["tau_adapt_pyr"] = ParamBound(200.0, 1200.0, mode="log")
-    b["tau_adapt_som"] = ParamBound(20.0, 300.0, mode="log")
-
-    # --- Adaptation strengths (nA/Hz) ---
-    b["J_adapt_pyr"] = ParamBound(0.001, 0.2, mode="log")
-    b["J_adapt_som"] = ParamBound(0.001, 0.2, mode="lin")
 
     # --- GABA modulation ---
     b["g_gaba_base"] = ParamBound(0.1, 5.0, mode="lin")

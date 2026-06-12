@@ -3,7 +3,6 @@ Visualization utilities for the circuit model.
 
 This module provides functions to plot simulation results:
 - Firing rates over time for all populations
-- Adaptation currents over time
 - Combined dashboard view
 
 Note: Requires matplotlib. Install with: pip install matplotlib
@@ -46,10 +45,6 @@ POPULATION_COLORS = {
     "PV":   "#009E73",  # Bluish green
     "VIP":  "#CC79A7",  # Reddish purple
     "NDNF": "#F0E442",  # Yellow
-}
-ADAPTATION_COLORS = {
-    "PYR": "#D55E00",  # Vermillion (darker orange)
-    "SOM": "#0072B2",  # Blue (darker)
 }
 TRANSIENT_COLOR = "#888888"  # Gray for transient markers
 
@@ -170,63 +165,6 @@ def plot_firing_rates(
     return ax
 
 
-def plot_adaptation(
-    result: "SimulationResult",
-    ax=None,
-    title: str = "Adaptation Currents",
-    show_legend: bool = True,
-    time_range: Optional[tuple[float, float]] = None,
-    show_transient: bool = True,
-):
-    """
-    Plot adaptation currents (I_adapt) over time for PYR and SOM.
-
-    Parameters:
-        result: SimulationResult from simulate_circuit
-        ax: Matplotlib axis (creates new figure if None)
-        title: Plot title
-        show_legend: Whether to show legend
-        time_range: Optional (t_start, t_end) in ms to zoom in
-        show_transient: Whether to show transient window markers (if present)
-
-    Returns:
-        The matplotlib axis object
-    """
-    import matplotlib.pyplot as plt
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 3))
-
-    t = result.t_ms
-    I_adapt = result.I_adapt
-
-    # Apply time range filter if specified
-    if time_range is not None:
-        mask = (t >= time_range[0]) & (t <= time_range[1])
-        t = t[mask]
-        I_adapt = I_adapt[mask]
-
-    # Draw transient markers first (so they're behind the data)
-    if show_transient and result.transient_window is not None:
-        _add_transient_markers(ax, result.transient_window, time_range, add_legend=False)
-    if show_transient and getattr(result, "transient_window2", None) is not None:
-        _add_transient_markers(ax, result.transient_window2, time_range, add_legend=False)
-
-    ax.plot(t, I_adapt[:, 0], label="I_adapt (PYR)", color=ADAPTATION_COLORS["PYR"], linewidth=1.5)
-
-    ax.set_xlabel("Time (ms)", fontsize=11)
-    ax.set_ylabel("Adaptation Current", fontsize=11)
-    ax.set_title(title, fontsize=12, fontweight="bold")
-    ax.set_xlim(t[0], t[-1])
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    if show_legend:
-        ax.legend(loc="upper right", framealpha=0.9)
-
-    return ax
-
-
 def plot_simulation_dashboard(
     result: "SimulationResult",
     title: str = "Circuit Model Simulation",
@@ -242,8 +180,7 @@ def plot_simulation_dashboard(
 
     Creates a figure with:
     - Top: Firing rates for all 4 populations
-    - Middle: Individual population subplots
-    - Bottom: Adaptation currents
+    - Bottom: Individual population subplots
 
     Parameters:
         result: SimulationResult from simulate_circuit
@@ -261,11 +198,10 @@ def plot_simulation_dashboard(
 
     fig = plt.figure(figsize=figsize, constrained_layout=True)
 
-    # Create grid: 3 rows
+    # Create grid: 2 rows
     # Row 0: Combined firing rates (spans full width)
-    # Row 1: Individual populations (4 subplots)
-    # Row 2: Adaptation currents (spans full width)
-    gs = fig.add_gridspec(3, 4, height_ratios=[2, 1.5, 1])
+    # Row 1: Individual populations (5 subplots)
+    gs = fig.add_gridspec(2, 5, height_ratios=[2, 1.5])
 
     # Top plot: Combined firing rates
     ax_combined = fig.add_subplot(gs[0, :])
@@ -293,10 +229,6 @@ def plot_simulation_dashboard(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.tick_params(labelsize=8)
-
-    # Bottom plot: Adaptation currents
-    ax_adapt = fig.add_subplot(gs[2, :])
-    plot_adaptation(result, ax=ax_adapt, title="Adaptation Currents", time_range=time_range)
 
     # Main title
     fig.suptitle(title, fontsize=14, fontweight="bold")

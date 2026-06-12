@@ -43,7 +43,6 @@ from .optimization import (
 from .io import load_params_json, save_params_json, format_params_as_code, log_best_result
 from .plotting import (
     plot_firing_rates,
-    plot_adaptation,
     plot_simulation_dashboard,
     plot_mean_rates_bar,
     print_simulation_summary,
@@ -61,6 +60,15 @@ from .study import (
     run_condition_batch,
     run_study,
     plot_study_boxplots,
+)
+from .ko_sweep import (
+    KOCombo,
+    KOSweepResults,
+    enumerate_combos,
+    detect_target_combos,
+    apply_ko_combo,
+    run_ko_sweep,
+    plot_ko_sweep_boxplots,
 )
 from .cli import main
 
@@ -98,7 +106,6 @@ __all__ = [
     "log_best_result",
     # Plotting
     "plot_firing_rates",
-    "plot_adaptation",
     "plot_simulation_dashboard",
     "plot_mean_rates_bar",
     "print_simulation_summary",
@@ -115,6 +122,14 @@ __all__ = [
     "run_condition_batch",
     "run_study",
     "plot_study_boxplots",
+    # KO sweep
+    "KOCombo",
+    "KOSweepResults",
+    "enumerate_combos",
+    "detect_target_combos",
+    "apply_ko_combo",
+    "run_ko_sweep",
+    "plot_ko_sweep_boxplots",
     # CLI
     "main",
 ]

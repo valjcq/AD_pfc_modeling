@@ -574,12 +574,15 @@ def _generate_loss_plots(log_file: str) -> None:
     Saves plots to the same directory as the log file.
     """
     try:
-        from .loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
-        
+        from .loss_evolution_plot import (
+            plot_loss_evolution, plot_loss_evolution_ratios, plot_total_loss,
+        )
+
         log_path = Path(log_file)
         output_dir = str(log_path.parent)
-        
-        # Generate both plots
+
+        # Generate the plots
+        plot_total_loss(log_file, output_dir=output_dir, dpi=72)
         plot_loss_evolution(log_file, output_dir=output_dir, dpi=72)
         plot_loss_evolution_ratios(log_file, output_dir=output_dir, dpi=72)
     except ImportError:

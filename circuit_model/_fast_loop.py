@@ -48,7 +48,6 @@ def _phi_capped_scalar(I: float, r_max: float, theta: float, c: float, g: float)
 @_njit(cache=True)
 def _euler_loop(
     r_out: np.ndarray,       # (n_steps, 5) — [PYR, SOM, PV, VIP, NDNF]
-    I_adapt_out: np.ndarray, # (n_steps, 2)
     noise_arr: np.ndarray,
     n_steps: int,
     dt_ms: float,
@@ -71,9 +70,6 @@ def _euler_loop(
     w_ev: float, w_nv: float,
     # NDNF input (only SOM -> NDNF; PYR -> NDNF removed)
     w_sn: float,
-    # Adaptation
-    J_adapt_pyr: float, tau_adapt_pyr: float,
-    J_adapt_som: float, tau_adapt_som: float,
     # External currents
     I_ext_pyr: float, I_ext_som: float, I_ext_pv: float, I_ext_vip: float,
     I_ext_ndnf: float,
@@ -95,8 +91,6 @@ def _euler_loop(
         r_pv   = r_out[k, 2]
         r_vip  = r_out[k, 3]
         r_ndnf = r_out[k, 4]
-        Iap = I_adapt_out[k, 0]
-        Ias = I_adapt_out[k, 1]
 
         # NMDA gating
         dS = (-S_pyr + (1.0 - S_pyr) * GAMMA_NMDA * r_pyr) * (dt_ms / TAU_NMDA_MS)
@@ -108,12 +102,10 @@ def _euler_loop(
         I_pyr = (J_NMDA * S_pyr) / denom \
                 - ggaba * w_se * r_som \
                 - ggaba * w_ne * r_ndnf \
-                - Iap \
                 + I_ext_pyr \
                 + noise_scale_pyr * xi
         I_som = w_es * r_pyr \
                 - w_vs * r_vip \
-                - J_adapt_som * r_som \
                 + I_ext_som \
                 + noise_scale_som * xi
         I_pv  = w_ep * r_pyr \
@@ -147,6 +139,3 @@ def _euler_loop(
         r_out[k + 1, 2] = max(0.0, r_pv   + dt_ms * dr_pv)
         r_out[k + 1, 3] = max(0.0, r_vip  + dt_ms * dr_vip)
         r_out[k + 1, 4] = max(0.0, r_ndnf + dt_ms * dr_ndnf)
-
-        I_adapt_out[k + 1, 0] = Iap + dt_ms * (-Iap + J_adapt_pyr * r_pyr) / tau_adapt_pyr
-        I_adapt_out[k + 1, 1] = Ias + dt_ms * (-Ias + J_adapt_som * r_som) / tau_adapt_som

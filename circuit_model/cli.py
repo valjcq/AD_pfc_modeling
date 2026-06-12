@@ -39,8 +39,6 @@ DEFAULT_FIT_INIT_KWARGS = {
     "I_alpha7_pv": 0.0,
     "I_alpha7_som": 0.0,
     "I_beta2_som": 0.0,
-    "J_adapt_pyr": 0.002,
-    "J_adapt_som": 0.0,
     "Theta_pv": 0.2878,
     "Theta_pyr": 0.40323,
     "Theta_som": 0.2878,
@@ -59,8 +57,6 @@ DEFAULT_FIT_INIT_KWARGS = {
     "g_gaba_base": 1.0,
     "g_inh": 0.087,
     "sigma_noise": 0.3,
-    "tau_adapt_pyr": 600.0,
-    "tau_adapt_som": 150.0,
     "tau_s": 20.0,
     "trans_duration_ms": 500.0,
     "trans_enabled": False,
@@ -231,8 +227,7 @@ def print_parameter_status(
 
     # Group parameters by category
     categories = {
-        "Time constants": ["tau_s", "tau_adapt_pyr"],
-        "Adaptation": ["J_adapt_pyr"],
+        "Time constants": ["tau_s"],
         "Noise & GABA": ["sigma_noise", "g_gaba_base", "g_alpha7"],
         "Weights (excitatory)": ["J_NMDA", "w_ep", "w_es", "w_ev"],
         "Weights (inhibitory)": ["w_pe", "w_pp", "w_se", "w_sp", "w_vp", "w_vs",
@@ -269,7 +264,7 @@ def print_parameter_status(
 
 def _print_opt_init_summary(params: CircuitParams, means: np.ndarray, breakdown: "LossBreakdown") -> None:  # type: ignore
     """Print effective optimization initialization and its predicted rates."""
-    print("Initial condition (effective after --set/--no_adapt):")
+    print("Initial condition (effective after --set):")
     print(f"  I0: pyr={params.I0_pyr:.6g}, som={params.I0_som:.6g}, pv={params.I0_pv:.6g}, vip={params.I0_vip:.6g}")
     print(f"  W:  J_NMDA={params.J_NMDA:.6g}, w_ep={params.w_ep:.6g}, w_es={params.w_es:.6g}, w_ev={params.w_ev:.6g}")
     print(f"      w_pe={params.w_pe:.6g}, w_pp={params.w_pp:.6g}, w_se={params.w_se:.6g}, w_sp={params.w_sp:.6g}, w_vp={params.w_vp:.6g}, w_vs={params.w_vs:.6g}")
@@ -561,6 +556,97 @@ def cmd_study(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_ko_sweep(args: argparse.Namespace) -> None:
+    """Sweep all 2^3 receptor-KO combinations and generate box plots."""
+    from .study import StudyConfig
+    from .ko_sweep import (
+        detect_target_combos,
+        enumerate_combos,
+        run_ko_sweep,
+        plot_ko_sweep_boxplots,
+    )
+
+    # Load base (WT) parameters, preferring the project default fit.
+    if args.params_json:
+        base_params = load_params_json(args.params_json)
+        params_path = Path(args.params_json)
+        print(f"Loaded parameters from: {args.params_json}")
+    elif DEFAULT_WT_PARAMS_PATH.exists():
+        base_params = load_params_json(str(DEFAULT_WT_PARAMS_PATH))
+        params_path = DEFAULT_WT_PARAMS_PATH
+        print(f"Loaded default project WT parameters from: {DEFAULT_WT_PARAMS_PATH}")
+    else:
+        base_params = _default_fit_init_params()
+        params_path = None
+        print("Using hardcoded fit-init default parameters")
+
+    # Override noise amplitude if provided.
+    if args.sigma_noise is not None:
+        from dataclasses import replace
+        base_params = replace(base_params, sigma_noise=args.sigma_noise)
+        print(f"Noise amplitude overridden: sigma_noise = {args.sigma_noise}")
+
+    # Detect which KO combinations were optimization targets. Prefer an explicit
+    # --log_file, else the log.jsonl next to the params file.
+    if args.log_file:
+        log_path = Path(args.log_file)
+    elif params_path is not None:
+        log_path = params_path.parent / "log.jsonl"
+    else:
+        log_path = None
+    target_combos = detect_target_combos(log_path)
+
+    cfg = StudyConfig(
+        n_runs=args.n_runs,
+        T_ms=args.T_ms,
+        dt_ms=args.dt_ms,
+        burn_in_ms=args.burn_in_ms,
+        window_ms=args.window_ms,
+        noise_type=args.noise_type,
+        tau_noise_ms=args.tau_noise_ms,
+        n_workers=args.n_workers,
+    )
+
+    combos = enumerate_combos(target_combos)
+    n_targets = sum(1 for c in combos if c.category == "target")
+    n_preds = sum(1 for c in combos if c.category == "prediction")
+
+    print(f"\nKO sweep configuration:")
+    print(f"  Combinations: {len(combos)} ({n_targets} fit targets, "
+          f"{n_preds} predictions, 1 WT baseline)")
+    print(f"  Targets detected from: {log_path if log_path and log_path.exists() else 'canonical fallback'}")
+    print(f"  Runs per combination: {cfg.n_runs}")
+    print(f"  Total simulations: {len(combos) * cfg.n_runs}")
+    if cfg.noise_type == "ou":
+        noise_detail = f"ou, sigma_noise={base_params.sigma_noise:.4f}, tau_noise={cfg.tau_noise_ms}ms"
+    elif cfg.noise_type == "white":
+        noise_detail = f"white, sigma_noise={base_params.sigma_noise:.4f}"
+    else:
+        noise_detail = "none"
+    print(f"  Simulation: T={cfg.T_ms}ms, dt={cfg.dt_ms}ms, noise={noise_detail}")
+    print(f"  Statistics: burn_in={cfg.burn_in_ms}ms, window={cfg.window_ms}ms")
+    print()
+
+    seed = args.seed if args.seed is not None else 0
+    results = run_ko_sweep(base_params, cfg, target_combos, base_seed=seed, verbose=True)
+
+    if args.save_plot:
+        save_path = args.save_plot
+    else:
+        out_dir = _output_dir("figs/single_node/boxplot")
+        append_command_log(out_dir)
+        save_path = os.path.join(out_dir, f"ko_sweep_boxplots_{cfg.noise_type}.png")
+
+    print("\nGenerating box plot...")
+    plot_ko_sweep_boxplots(
+        results,
+        title=f"Receptor-KO Combination Sweep ({cfg.n_runs} runs per combination)",
+        save_path=save_path,
+        show=not args.no_show,
+        unit=args.unit,
+    )
+
+
 def cmd_optimize_receptors(args: argparse.Namespace) -> None:
     """Stage 2: per-drug fit of receptor activations.
 
@@ -753,18 +839,10 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             base = replace(base, **clean)
             print(f"Overrides applied: {', '.join(f'{k}={v}' for k, v in clean.items())}")
 
-    # --no_adapt: zero and freeze adaptation strengths
-    if args.no_adapt:
-        from dataclasses import replace
-        base = replace(base, J_adapt_pyr=0.0, J_adapt_som=0.0)
-        print("--no_adapt: J_adapt_pyr=0, J_adapt_som=0 (frozen)")
-
     n_samples = args.n_samples
 
     bounds = default_bounds(base, w_hi=getattr(args, "w_hi", None))
     freeze = parse_freeze_list(args.freeze)
-    if args.no_adapt:
-        freeze |= {"J_adapt_pyr", "J_adapt_som"}
     # Stage 1: receptor activations are NOT free; only weights/currents are fit.
     freeze |= set(STAGE2_FREE_FIELDS)
 
@@ -926,8 +1004,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     # Generate loss evolution plots
     if log_file_to_use:
         try:
-            from .loss_evolution_plot import plot_loss_evolution, plot_loss_evolution_ratios
+            from .loss_evolution_plot import (
+                plot_loss_evolution, plot_loss_evolution_ratios, plot_total_loss,
+            )
             log_dir = Path(log_file_to_use).parent
+            plot_total_loss(log_file_to_use, output_dir=str(log_dir))
             plot_loss_evolution(log_file_to_use, output_dir=str(log_dir))
             plot_loss_evolution_ratios(log_file_to_use, output_dir=str(log_dir))
         except Exception as e:
@@ -1110,11 +1191,6 @@ Examples:
     opt_parser.add_argument("--show_params", action="store_true",
                             help="Show which parameters are free vs frozen")
 
-    # Adaptation
-    opt_parser.add_argument("--no_adapt", action="store_true",
-                            help="Disable spike-frequency adaptation: set J_adapt_pyr=0 and J_adapt_som=0 "
-                                 "and freeze them.")
-
     # Two-stage flow
     opt_parser.add_argument("--stage", type=str, default="weights",
                             choices=["weights", "receptors"],
@@ -1209,13 +1285,56 @@ Examples:
                               choices=["Hz"],
                               help="Rate unit for display (default: Hz)")
 
+    # =========================================================================
+    # KO-SWEEP subcommand
+    # =========================================================================
+    ko_parser = subparsers.add_parser(
+        "ko-sweep",
+        help="Sweep all 2^3 receptor-KO combinations and generate box plots",
+        description="Simulate every combination of the three global nicotinic-receptor "
+                    "knockouts (alpha7, alpha5, beta2) at a fixed noise level and produce "
+                    "box plots of firing-rate distributions for all 5 populations. Boxes are "
+                    "colored to distinguish optimization targets from model predictions."
+    )
+    ko_parser.add_argument("--n_runs", type=int, default=50,
+                           help="Number of simulations per combination (default: 50)")
+    ko_parser.add_argument("--save_plot", type=str, default="",
+                           help="Save box plot to file (e.g., 'ko_sweep.png')")
+    ko_parser.add_argument("--no_show", action="store_true",
+                           help="Don't display the plot")
+    ko_parser.add_argument("--T_ms", type=float, default=2500.0,
+                           help="Simulation duration (ms)")
+    ko_parser.add_argument("--dt_ms", type=float, default=0.1,
+                           help="Integration time step (ms)")
+    ko_parser.add_argument("--noise_type", choices=["none", "white", "ou"], default="white",
+                           help="Noise type (default: white)")
+    ko_parser.add_argument("--sigma_noise", type=float, default=None,
+                           help="Noise ratio sigma_noise (overrides params_json value)")
+    ko_parser.add_argument("--tau_noise_ms", type=float, default=5.0,
+                           help="OU noise time constant (ms)")
+    ko_parser.add_argument("--seed", type=int, default=None,
+                           help="Random seed for reproducibility")
+    ko_parser.add_argument("--params_json", type=str, default="",
+                           help="Load base (WT) parameters from JSON file")
+    ko_parser.add_argument("--log_file", type=str, default="",
+                           help="Fit log.jsonl used to auto-detect which KO combinations "
+                                "were optimization targets (default: log.jsonl next to params_json)")
+    ko_parser.add_argument("--burn_in_ms", type=float, default=1800.0,
+                           help="Burn-in period for statistics (ms)")
+    ko_parser.add_argument("--window_ms", type=float, default=500.0,
+                           help="Averaging window (ms)")
+    ko_parser.add_argument("--n_workers", type=int, default=None,
+                           help="Parallel workers (auto if None)")
+    ko_parser.add_argument("--unit", type=str, default="Hz", choices=["Hz"],
+                           help="Rate unit for display (default: Hz)")
+
     # Parse arguments
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         print("\nNo command specified. Use 'run', 'optimize', 'study', "
-              "or 'plot-transfer'.")
+              "'ko-sweep', or 'plot-transfer'.")
         sys.exit(1)
     elif args.command == "plot-transfer":
         cmd_plot_transfer(args)
@@ -1225,6 +1344,8 @@ Examples:
         cmd_optimize(args)
     elif args.command == "study":
         cmd_study(args)
+    elif args.command == "ko-sweep":
+        cmd_ko_sweep(args)
     else:
         parser.print_help()
         sys.exit(1)

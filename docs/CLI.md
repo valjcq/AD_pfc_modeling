@@ -11,6 +11,7 @@ Available commands:
 - [`run`](#run)
 - [`optimize`](#optimize)
 - [`study`](#study)
+- [`ko-sweep`](#ko-sweep)
 
 ---
 
@@ -79,7 +80,7 @@ Nevergrad parameter optimization with two stages.
 
 | Stage | Free params | Targets |
 |-------|-------------|---------|
-| `weights` | weights + currents + adaptation + `g_alpha7`. Receptor activations (`act_alpha7_*`, `act_beta2`, `act_alpha5`) are frozen at 1.0. | baseline + global KOs + selective α7 KOs |
+| `weights` | weights + currents + `g_alpha7`. Receptor activations (`act_alpha7_*`, `act_beta2`, `act_alpha5`) are frozen at 1.0. | baseline + global KOs + selective α7 KOs |
 | `receptors` | only `act_alpha7_pv`, `act_alpha7_som`, `act_alpha7_ndnf`, `act_beta2`, `act_alpha5` (bounded `[0, 5]`). Everything else frozen. Requires `--params_json` (Stage-1 fit). | per-drug NDNF/PV targets, fit independently per drug |
 
 ### Stage-1 targets (required unless `--resume`)
@@ -173,7 +174,6 @@ There are no Jacobian or ACh-ratio penalties anymore — disabled per project de
 | `--set NAME=VAL,...` | Override specific parameters before optimizing |
 | `--freeze NAME,...` | Comma-separated parameter names to freeze (not optimized) |
 | `--show_params` | Print which parameters are free vs frozen |
-| `--no_adapt` | Set and freeze `J_adapt_pyr=0` and `J_adapt_som=0` |
 
 ### I/O
 
@@ -243,4 +243,60 @@ The study sweeps over the entries in `circuit_model.study.CONDITION_ORDER` (e.g.
 
 ```bash
 python -m circuit_model study --n_runs 100 --noise_type white
+```
+
+---
+
+## `ko-sweep`
+
+Simulate **every combination** of the three global nicotinic-receptor knockouts
+(α7, α5, β2) at a fixed noise level and produce box plots of the firing-rate
+distribution for all 5 populations. With three receptors there are 2³ = 8
+combinations: WT, three single KOs, three double KOs, and the triple KO.
+
+Boxes **and their x-axis tick labels** are colored by category so the
+optimization **targets** are visually distinguished from model **predictions**.
+Every tick is a two-line label naming the receptor(s) knocked out and its
+category, e.g. `α7 KO (fit target)`, `α7+α5 KO (predicted)`, `WT (baseline)`:
+
+| Category | Color | Combinations |
+|----------|-------|--------------|
+| WT baseline | gray | WT |
+| Fit target | blue | α7, α5, β2, α7β2 (each entered the optimization loss) |
+| Prediction (simulated only) | red | α7α5, α5β2, α7α5β2 (not fit — genuine model predictions) |
+
+The target/prediction split is **auto-detected** from the fit's `log.jsonl`
+(its `target` entry): any combination whose target value is set counts as a fit
+target. The log is taken next to `--params_json` by default, or from
+`--log_file`. When no log is found, a canonical fallback (α7, α5, β2, α7β2) is used.
+
+KO conditions are built exactly as during optimization: a global α7 KO zeroes
+α7 activation on every cell type (`act_alpha7_pv/som/ndnf = 0`); α5/β2 KOs zero
+their single activation. Each combination uses the *same* base parameters and
+varies only the noise seed across `--n_runs`.
+
+### Selected parameters
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--n_runs INT` | 50 | Trials per combination |
+| `--T_ms FLOAT` | 2500 | Per-trial duration |
+| `--burn_in_ms FLOAT` | 1800 | Burn-in discarded before averaging |
+| `--window_ms FLOAT` | 500 | Trailing averaging window |
+| `--noise_type {none,white,ou}` | white | Noise model |
+| `--sigma_noise FLOAT` | — | Override noise ratio from params |
+| `--tau_noise_ms FLOAT` | 5.0 | OU time constant |
+| `--n_workers INT` | auto | Parallel worker count |
+| `--params_json PATH` | default WT fit | Base (WT) circuit parameters |
+| `--log_file PATH` | `{params_dir}/log.jsonl` | Fit log used to auto-detect targets |
+| `--seed INT` | None | RNG seed |
+| `--save_plot PATH` | auto | Explicit save path |
+| `--no_show` | False | Don't open the figure window |
+
+### Example
+
+```bash
+python -m circuit_model ko-sweep \
+    --params_json fits/WT_NDNF_5pop/best_params.json \
+    --n_runs 100 --noise_type white
 ```
