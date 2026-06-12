@@ -1,0 +1,1 @@
+[2026-06-12T10:38:56] python -m circuit_model ko-sweep --mode per_population --params_json figs/single_node/ko_sweep_perpop/WT_NDNF_5pop_noise_bestsofar/params_used.json --log_file fits/WT_NDNF_5pop_noise/log.jsonl --noise_type white --n_runs 50 --no_show --output_dir figs/single_node/ko_sweep_perpop/WT_NDNF_5pop_noise_bestsofar
