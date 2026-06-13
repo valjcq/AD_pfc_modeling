@@ -28,8 +28,8 @@ figs/**/study_metrics.csv
 *.pklfigs/**/*.png
 results/**/*.png
 
-figs/**/*.png
-figs/**/*.pkl
+figs/ring/**/*.png
+figs/ring/**/*.pkl
 
 old_figs/
 
